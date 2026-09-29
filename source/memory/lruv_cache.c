@@ -378,6 +378,12 @@ void lruv_debug_to_file(
 {
 	FILE *stream;
 	struct lruv_cache_block *block;
+
+#ifdef HALO_XBOX
+	/* the console: a cache that failed to make room is logged, but not
+	dumped block by block to a file on the game's thread mid-game */
+	return;
+#endif
 	long page_size;
 	long allocation_page_count;
 	long page_index;
@@ -772,6 +778,11 @@ void lruv_cache_verify(
 	match_assert("c:\\halo\\SOURCE\\memory\\lruv_cache.c", 754, cache);
 	match_assert("c:\\halo\\SOURCE\\memory\\lruv_cache.c", 755, cache->signature==LRUV_CACHE_SIGNATURE);
 	data_verify(cache->blocks);
+#ifdef HALO_XBOX
+	/* the console: not the walk of every block on every allocation and
+	free (the texture and sound caches'), which only checks */
+	verify_blocks = FALSE;
+#endif
 
 	if (verify_blocks)
 	{

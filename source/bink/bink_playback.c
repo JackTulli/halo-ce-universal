@@ -518,6 +518,14 @@ void bink_playback_start(
 		return;
 	if (cache_files_precache_in_progress())
 		return;
+#ifdef HALO_XBOX
+	/* no movie file (attract_mode.c has said so): nothing to play, and no
+	memory to steal for it */
+	if (!full_pathname)
+		return;
+	/* the console build's 12 MB texture cache cannot lend the 16 MB pool */
+	flags&= ~FLAG(_bink_playback_eat_up_memory_like_a_goddamn_beaver_bit);
+#endif
 
 	match_dassert(
 		"c:\\halo\\SOURCE\\bink\\bink_playback.c",

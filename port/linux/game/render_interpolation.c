@@ -40,7 +40,13 @@ on top of it, fading each tick.
 
 /* ---------- constants */
 
+#ifdef HALO_XBOX
+/* the game's object array (the editor's is five times as large; the
+console runs no editor) */
+#define MAXIMUM_INTERPOLATED_OBJECTS MAXIMUM_OBJECTS_PER_MAP
+#else
 #define MAXIMUM_INTERPOLATED_OBJECTS (MAXIMUM_OBJECTS_PER_MAP * 5)
+#endif
 #define MAXIMUM_INTERPOLATED_NODES 64
 
 /* world units (10 feet each) a node may move in one tick before it snaps:
@@ -277,6 +283,29 @@ static real distance_squared(real_point3d const *a, real_point3d const *b)
 	return x * x + y * y + z * z;
 }
 
+/* ---------- maps */
+
+/* the old map's objects are gone: their snapshots too (each record keeps
+the largest node array its slot has held, which would otherwise only grow
+from map to map) */
+void render_interpolation_dispose_from_old_map(void)
+{
+	long index;
+
+	if (!interpolated_objects)
+		return;
+	for (index = 0; index < MAXIMUM_INTERPOLATED_OBJECTS; index++)
+	{
+		struct interpolated_object *record = &interpolated_objects[index];
+
+		/* (the game's free takes no NULL: its debug memory halts on one) */
+		if (record->nodes)
+			free(record->nodes);
+		memset(record, 0, sizeof(*record));
+		record->object_index = NONE;
+	}
+}
+
 /* ---------- ticks */
 
 void render_interpolation_tick(void)
@@ -316,15 +345,20 @@ void render_interpolation_tick(void)
 		}
 		if (record->node_capacity < node_count)
 		{
-			real_matrix4x3 *nodes = realloc(record->nodes, 3 * node_count * sizeof(real_matrix4x3));
+			/* in powers of two: few sizes, so the freed blocks fit again */
+			short capacity = 4;
+			real_matrix4x3 *nodes;
 
+			while (capacity < node_count)
+				capacity *= 2;
+			nodes = realloc(record->nodes, 3 * capacity * sizeof(real_matrix4x3));
 			if (!nodes)
 			{
 				record->object_index = NONE;
 				continue;
 			}
 			record->nodes = nodes;
-			record->node_capacity = node_count;
+			record->node_capacity = capacity;
 			record->object_index = NONE; /* the old snapshots moved */
 		}
 		continuing = record->object_index == iterator.index &&

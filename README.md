@@ -1,7 +1,7 @@
-# Halo: Combat Evolved for Linux, Windows and Android
+# Halo: Combat Evolved for Linux, Windows, Android and the original Xbox
 
 This project is a port of the Halo: Combat Evolved decompilation to Linux,
-Windows and Android. The decompilation is of the Xbox build 2342
+Windows and Android, and back to the original Xbox. The decompilation is of the Xbox build 2342
 (`cachebeta.exe`, SHA-256
 `4cc87b45f721270392a96f1674ed2b5cd4a7bb4355faeab4531d1cf1884d9520`).
 
@@ -29,6 +29,11 @@ Each build of the `main` branch that passes on all three platforms is a new
 release. The [Releases](https://github.com/cybersecurity/halo-ce-universal/releases)
 page keeps the last five releases. If the latest build has a problem, get
 an older build from that page.
+
+These links are the builds of the upstream project. They do not have the
+Xbox port or the master server, and their network protocol is older, so
+they do not play with the builds of this repository. Build every machine's
+copy of the game from this repository instead.
 
 ## Game data
 
@@ -59,6 +64,7 @@ Each platform has its own instructions:
 | Linux (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/linux/README.md](port/linux/README.md) |
 | Windows (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/windows/README.md](port/windows/README.md) |
 | Android (arm64 app, OpenGL ES 3, SDL3) | [port/android/README.md](port/android/README.md) |
+| Original Xbox (nxdk, the NV2A through pbkit, the MCPX sound hardware) | [port/xbox/README.md](port/xbox/README.md) |
 
 The Linux README also gives the controls, the settings and the multiplayer
 functions. These are almost the same on all platforms.
@@ -67,10 +73,14 @@ functions. These are almost the same on all platforms.
 
 The game can play system link games on a local network and on the internet:
 
-- A system link game can have up to 128 players on up to 128 machines.
-- Linux, Windows and Android machines can play in the same game.
-- An invite link lets a machine join a game on the internet. No server of
-  this project is necessary.
+- A system link game can have up to 16 players on up to 16 machines.
+  `python configure.py --big-sessions` builds the native ports for up to
+  128 players on up to 128 machines instead.
+- Linux, Windows, Android and Xbox machines can play in the same game when
+  they are built from the same sources.
+- On the internet, a master server lists the games and helps the machines
+  find each other ([port/master/README.md](port/master/README.md)). An
+  invite link lets a machine join a game directly.
 - The default netcode is new. Each machine moves its own player at once,
   and the host makes the decisions for the game. Refer to
   [port/linux/NETCODE.md](port/linux/NETCODE.md).

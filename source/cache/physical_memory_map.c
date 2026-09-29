@@ -53,7 +53,14 @@ symbols in this file:
 #endif
 #define TAG_CACHE_BASE_ADDRESS 0x803A6000
 #define TAG_CACHE_SIZE 0x1600000
+#ifdef HALO_XBOX
+/* the Xbox build's texture cache is 12 MB (xbox_texture_cache.c agrees):
+this build of the game, the January beta with its debug buffers, does not
+fit the retail console's 64 MB with the retail 22 MB (port/xbox/README.md) */
+#define TEXTURE_CACHE_SIZE 0xC00000
+#else
 #define TEXTURE_CACHE_SIZE 0x1600000
+#endif
 #define SOUND_CACHE_SIZE 0x400000
 
 /* ---------- macros */

@@ -82,6 +82,13 @@ parser.add_argument(
     help="release builds of the native ports (Linux, Windows, Android): assertions are not checked",
 )
 parser.add_argument(
+    "--big-sessions",
+    action="store_true",
+    help="native ports (Linux, Windows, Android): system link sessions of up to 128 players and machines with "
+    "larger pools (port/linux/include/halo_port_limits.h); such builds play only with each other. The default, "
+    "16 players on 16 machines with the retail pools, plays with the Xbox build",
+)
+parser.add_argument(
     "--lto",
     choices=["full", "thin", "off"],
     default="full",
@@ -120,6 +127,22 @@ parser.add_argument(
     "--android-guest-cc",
     type=str,
     help="clang with the arm64_32 target for the Android guest (default: clang)",
+)
+parser.add_argument(
+    "--nxdk",
+    metavar="DIR",
+    type=Path,
+    help="nxdk, for `ninja xbox` (default: NXDK_DIR, or ~/nxdk)",
+)
+parser.add_argument(
+    "--xbox-cc",
+    metavar="BINARY",
+    help="compiler for the Xbox build, `ninja xbox` (default: clang)",
+)
+parser.add_argument(
+    "--xbox-linker",
+    metavar="BINARY",
+    help="linker for the Xbox build (default: lld-link)",
 )
 if not is_windows():
     parser.add_argument(
@@ -181,12 +204,16 @@ sln.ml_path = args.ml
 sln.linux_cc = args.linux_cc
 sln.compiler_launcher = args.compiler_launcher
 sln.port_release = args.release
+sln.port_big_sessions = args.big_sessions
 sln.port_lto = args.lto
 sln.port_portable = args.portable
 sln.port_pgo = args.pgo
 sln.port_pgo_profile = args.pgo_profile
 sln.android_ndk = args.android_ndk
 sln.android_guest_cc = args.android_guest_cc
+sln.nxdk = args.nxdk
+sln.xbox_cc = args.xbox_cc
+sln.xbox_linker = args.xbox_linker
 if not is_windows():
     sln.wrapper = args.wrapper
 

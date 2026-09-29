@@ -796,7 +796,12 @@ boolean render_camera_build_clipped_frustum_bounds(
 	{
 		long viewport_height = camera->viewport_bounds.y1 - camera->viewport_bounds.y0;
 		long viewport_width = camera->viewport_bounds.x1 - camera->viewport_bounds.x0;
+#ifdef HALO_LINUX
+		/* as the projection's horizontal scale (render_camera_build_frustum) */
+		real aspect_ratio = (real)viewport_height / ((real)viewport_width * halo_pixel_aspect());
+#else
 		real aspect_ratio = (real)viewport_height / (real)viewport_width;
+#endif
 		real inverse_tangent = 1.0f /
 			tangent(camera->vertical_field_of_view * 0.5f);
 		real horizontal_scale = inverse_tangent * aspect_ratio;
@@ -1163,9 +1168,18 @@ void render_camera_build_frustum(
 		(frustum->frustum_bounds.y0 + frustum->frustum_bounds.y1) /
 		half_bounds_height * -0.5f;
 	field_of_view_tangent = tangent(camera->vertical_field_of_view * 0.5f);
+#ifdef HALO_LINUX
+	/* a display that shows each pixel wider than it is (the console's
+	anamorphic widescreen mode) shows that much more of the world: the
+	viewport is that much wider to the projection */
+	projection_x_scale = 1.0f /
+		(half_bounds_width / viewport_height * viewport_width * halo_pixel_aspect() *
+		field_of_view_tangent);
+#else
 	projection_x_scale = 1.0f /
 		(half_bounds_width / viewport_height * viewport_width *
 		field_of_view_tangent);
+#endif
 	projection_y_scale = 1.0f /
 		(field_of_view_tangent * half_bounds_height);
 

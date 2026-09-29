@@ -286,7 +286,13 @@ enum
 {
 	MAXIMUM_PROFILE_SECTIONS = 256,
 	MAXIMUM_GAME_TICKS_PER_FRAME = 150,
+#ifdef HALO_XBOX
+	/* the console's memory: a short history (every index is taken modulo
+	this, and the dump looks three frames back) */
+	MAXIMUM_PROFILE_FRAMES = 8,
+#else
 	MAXIMUM_PROFILE_FRAMES = 256,
+#endif
 	MAXIMUM_PROFILE_WINDOWS = 4,
 };
 
@@ -326,7 +332,14 @@ enum profile_frame_value
 
 /* ---------- macros */
 
-#ifdef HALO_LINUX
+#ifdef HALO_XBOX
+/* the console: the time stamp counter itself, which its performance
+counter is (at the 733 MHz QueryPerformanceFrequency gives) */
+#define QUERY_TIMEBASE(timebase) \
+{ \
+	*(__int64 *)&(timebase) = (__int64)__builtin_ia32_rdtsc(); \
+}
+#elif defined(HALO_LINUX)
 /* the native ports: the platform's performance counter stands in for the
 time stamp counter, at its own rate (profile_initialize) */
 #define QUERY_TIMEBASE(timebase) \
@@ -1495,6 +1508,20 @@ void profile_frame_end(
 	}
 
 	profile_timesection_inherit(&profile_globals.current_frame.frame, &profile_globals.current_frame.idle);
+
+#ifdef HALO_XBOX
+	{
+		real ticks = 0.0f;
+
+		for (game_tick_index = 0; game_tick_index<profile_globals.current_frame.game_tick_count; game_tick_index++)
+		{
+			ticks += profile_globals.current_frame.game_ticks[game_tick_index].frame_total;
+		}
+		halo_frame_profile(profile_globals.current_frame.frame.frame_total, ticks,
+			profile_globals.current_frame.game_tick_count, profile_globals.current_frame.render.frame_total,
+			profile_globals.current_frame.idle.frame_total, profile_globals.current_frame.texture.frame_total);
+	}
+#endif
 
 	profile_globals.frames[profile_globals.current_frame_history_index] = profile_globals.current_frame;
 

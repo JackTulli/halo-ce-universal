@@ -633,6 +633,22 @@ void network_objects_handle_vehicle_prediction(
 
 		if (!vehicle || vehicle->unit.driver_object_index == NONE || vehicle->object.parent_object_index != NONE)
 			continue;
+		/* numbers arithmetic can use (a NaN passes no check, and fails
+		none) */
+		if (!(state->position.x == state->position.x && state->position.x - state->position.x == 0.0f &&
+			state->position.y - state->position.y == 0.0f && state->position.z - state->position.z == 0.0f &&
+			state->forward.i - state->forward.i == 0.0f && state->forward.j - state->forward.j == 0.0f &&
+			state->forward.k - state->forward.k == 0.0f && state->up.i - state->up.i == 0.0f &&
+			state->up.j - state->up.j == 0.0f && state->up.k - state->up.k == 0.0f &&
+			state->translational_velocity.i - state->translational_velocity.i == 0.0f &&
+			state->translational_velocity.j - state->translational_velocity.j == 0.0f &&
+			state->translational_velocity.k - state->translational_velocity.k == 0.0f &&
+			state->angular_velocity.i - state->angular_velocity.i == 0.0f &&
+			state->angular_velocity.j - state->angular_velocity.j == 0.0f &&
+			state->angular_velocity.k - state->angular_velocity.k == 0.0f))
+		{
+			continue;
+		}
 		driver = unit_get(vehicle->unit.driver_object_index);
 		if (driver->unit.player_index == NONE ||
 			!distributed_machine_has_player(machine_index, (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(driver->unit.player_index)))
@@ -886,9 +902,116 @@ void network_objects_handle_states(
 }
 
 /* the unit carries what the host's does */
+/* A client's own players spend their ammunition and grenades as they fire
+and throw, and the host counts the same shots a round trip later: an
+inventory the host sent before it had them arrives higher than the
+client's count. Taken as a pickup, that gave back thrown grenades (one the
+host never had, whose hits it then took) and undid reloads; and the margin
+that kept the host's trailing count from undoing shots left a wrong lower
+count in place for good. So each own player's counts are remembered from
+inventory to inventory, and while they change here (firing, reloading,
+throwing) the host's are not applied; once they have been still for a
+while, the host's are, exactly, both ways (a pickup made meanwhile shows a
+moment later). */
+enum
+{
+	/* longer than any round trip the game is playable at */
+	INVENTORY_QUIET_TICKS = 45,
+};
+
+struct local_inventory
+{
+	long unit_index;
+	long changed_time;
+	short rounds_total[MAXIMUM_WEAPONS_PER_UNIT][2];
+	short rounds_loaded[MAXIMUM_WEAPONS_PER_UNIT][2];
+	real age[MAXIMUM_WEAPONS_PER_UNIT];
+	short grenades[NUMBER_OF_UNIT_GRENADE_TYPES];
+};
+
+static struct local_inventory local_inventories[MAXIMUM_TRACKED_PLAYERS];
+
+/* the unit's counts now, as the memory keeps them */
+static void local_inventory_read(
+	struct unit_datum const *unit,
+	struct local_inventory *counts)
+{
+	short weapon_slot;
+	short magazine;
+	short grenade_type;
+
+	for (weapon_slot = 0; weapon_slot < MAXIMUM_WEAPONS_PER_UNIT; weapon_slot++)
+	{
+		long weapon_index = unit->unit.weapon_object_indices[weapon_slot];
+		struct weapon_datum *weapon = weapon_index != NONE ? weapon_try_and_get(weapon_index) : NULL;
+
+		for (magazine = 0; magazine < 2; magazine++)
+		{
+			counts->rounds_total[weapon_slot][magazine] = weapon ? weapon->weapon.magazines[magazine].rounds_total : 0;
+			counts->rounds_loaded[weapon_slot][magazine] = weapon ? weapon->weapon.magazines[magazine].rounds_loaded : 0;
+		}
+		counts->age[weapon_slot] = weapon ? weapon->weapon.age : 0.0f;
+	}
+	for (grenade_type = 0; grenade_type < NUMBER_OF_UNIT_GRENADE_TYPES; grenade_type++)
+		counts->grenades[grenade_type] = unit->unit.grenade_counts[grenade_type];
+}
+
+/* whether an own player's counts are still changing here: the host's are
+not applied until they have been still for INVENTORY_QUIET_TICKS */
+static boolean local_inventory_busy(
+	long player_index,
+	long unit_index,
+	struct unit_datum const *unit)
+{
+	struct local_inventory *memory;
+	struct local_inventory now;
+
+	if (player_index == NONE)
+		return FALSE;
+	memory = &local_inventories[DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index) % MAXIMUM_TRACKED_PLAYERS];
+	/* (zeroed: the comparison below takes the padding too) */
+	csmemset(&now, 0, sizeof(now));
+	local_inventory_read(unit, &now);
+	if (memory->unit_index != unit_index)
+	{
+		/* a new life: its counts are the host's from the start */
+		*memory = now;
+		memory->unit_index = unit_index;
+		memory->changed_time = game_time_get() - INVENTORY_QUIET_TICKS;
+		return FALSE;
+	}
+	now.unit_index = unit_index;
+	now.changed_time = memory->changed_time;
+	if (csmemcmp(&now, memory, sizeof(now)) != 0)
+		now.changed_time = game_time_get();
+	*memory = now;
+	return game_time_get() - memory->changed_time < INVENTORY_QUIET_TICKS;
+}
+
+/* after the host's counts were applied: the memory holds them, so they do
+not count as a change here */
+static void local_inventory_applied(
+	long player_index,
+	struct unit_datum const *unit)
+{
+	struct local_inventory *memory;
+	long unit_index;
+	long changed_time;
+
+	if (player_index == NONE)
+		return;
+	memory = &local_inventories[DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index) % MAXIMUM_TRACKED_PLAYERS];
+	unit_index = memory->unit_index;
+	changed_time = memory->changed_time;
+	local_inventory_read(unit, memory);
+	memory->unit_index = unit_index;
+	memory->changed_time = changed_time;
+}
+
 static void distributed_client_apply_inventory(
 	struct distributed_inventory const *inventory)
 {
+	boolean busy;
 	struct unit_datum *unit;
 	boolean local;
 	short weapon_slot;
@@ -902,6 +1025,7 @@ static void distributed_client_apply_inventory(
 	if (TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
 		return;
 	local = distributed_player_is_local(unit->unit.player_index);
+	busy = local && local_inventory_busy(unit->unit.player_index, inventory->unit_index, unit);
 	/* picked up, swapped or dropped on the host: the same weapons here,
 	slot for slot (the host's own objects, moved in and out as
 	unit_add_weapon_to_inventory and unit_drop_current_weapon do, without
@@ -936,9 +1060,10 @@ static void distributed_client_apply_inventory(
 	{
 		unit->unit.desired_weapon_index = inventory->current_weapon_index;
 	}
-	/* the ammunition: a client's own player spends its own as it fires
-	(the host's count trails it), so it is only brought into line when it
-	differs by more than that, or the host's is higher (a pickup) */
+	/* the ammunition, the batteries and the grenades: the host's, but for a
+	client's own player while it is spending its own (see above) */
+	if (busy)
+		return;
 	for (weapon_slot = 0; weapon_slot < MAXIMUM_WEAPONS_PER_UNIT; weapon_slot++)
 	{
 		long weapon_index = unit->unit.weapon_object_indices[weapon_slot];
@@ -953,27 +1078,19 @@ static void distributed_client_apply_inventory(
 			short total = inventory->rounds_total[weapon_slot][magazine];
 			short loaded = inventory->rounds_loaded[weapon_slot][magazine];
 
-			if (!local || total > state->rounds_total || state->rounds_total - total > 8)
-			{
-				state->rounds_total = total;
-				state->rounds_loaded = loaded;
-			}
+			state->rounds_total = total;
+			state->rounds_loaded = loaded;
 		}
-		if (!local || inventory->age[weapon_slot] < weapon->weapon.age - 0.1f)
-			weapon->weapon.age = inventory->age[weapon_slot];
+		weapon->weapon.age = inventory->age[weapon_slot];
 	}
 	{
 		short grenade_type;
 
 		for (grenade_type = 0; grenade_type < NUMBER_OF_UNIT_GRENADE_TYPES; grenade_type++)
-		{
-			if (!local || inventory->grenade_counts[grenade_type] > unit->unit.grenade_counts[grenade_type] ||
-				unit->unit.grenade_counts[grenade_type] - inventory->grenade_counts[grenade_type] > 1)
-			{
-				unit->unit.grenade_counts[grenade_type] = inventory->grenade_counts[grenade_type];
-			}
-		}
+			unit->unit.grenade_counts[grenade_type] = inventory->grenade_counts[grenade_type];
 	}
+	if (local)
+		local_inventory_applied(unit->unit.player_index, unit);
 }
 
 void network_objects_handle_inventories(

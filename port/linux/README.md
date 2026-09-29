@@ -162,10 +162,10 @@ the setting for one start of the game. It has priority over the file.
 | `network.netcode` | `"distributed"` | `HALO_NETCODE` | `"distributed"`: each machine moves its own player at once, and the host makes the decisions (refer to `NETCODE.md`). `"lockstep"`: as on the Xbox. All machines in a game must use the same netcode. |
 | `network.address` | `""` | `HALO_NET_ADDRESS` | The IPv4 address of this machine for system link. Refer to "Play on one computer". |
 | `network.broadcast` | `""` | `HALO_NET_BROADCAST` | IPv4 addresses, with commas between them, that get the broadcasts of the game. Empty: 255.255.255.255. |
-| `network.online` | `true` | `HALO_NET_ONLINE` | `true`: internet play. `false`: system link on the local network only. |
+| `network.online` | `true` | `HALO_NET_ONLINE` | `true`: internet play (the master server lists the game, and an invite link). `false`: system link on the local network only. |
 | `network.join_from_clipboard` | `true` | `HALO_NET_JOIN_FROM_CLIPBOARD` | `true`: when the game comes to the front, it joins the game of an invite link on the clipboard. |
 | `network.tunnel_port` | `0` | `HALO_NET_TUNNEL_PORT` | The UDP port for internet play. `0`: the game selects a port. Refer to "Internet play". |
-| `network.signalling_brokers` | three public brokers | `HALO_NET_BROKERS` | The public MQTT brokers (`host:port`, with commas between them) that let the machines of an invite find each other. |
+| `network.master_server` | `"172.104.30.93:27920"` | `HALO_NET_MASTER` | The master server (`host:port`, UDP) that lists the games and lets the machines find each other. Empty: no list and no invites. Refer to "Internet play" and `port/master`. |
 | `network.stun_servers` | Google and Cloudflare | `HALO_NET_STUN` | The public STUN servers (`host:port`, with commas between them) that give the internet address of a machine. |
 | `discord.application_id` | the application of the project | `HALO_DISCORD_APPLICATION` | The Discord application for invites. Empty: no Discord. |
 | `debug.exit_after` | `0.0` | `HALO_EXIT_AFTER` | The game stops after this number of seconds. `0`: never. |
@@ -178,6 +178,15 @@ the setting for one start of the game. It has priority over the file.
 
 With Mesa drivers, the game sends its GL calls through the GL thread of
 Mesa. To stop this, set the environment variable `mesa_glthread=false`.
+
+## Performance mode
+
+A file named `performance.txt` in the data root (next to `maps/`) turns
+off the costliest effects: soft shadows and the environment's shadows,
+dynamic lights, specular lightmaps and reflections, grass, bump mapping,
+the sun's rays, the lens flares' visibility tests and the second pass of
+active camouflage, and the terminal's lines are no longer drawn every
+frame. The console build reads the same file from its disc.
 
 ## Frame rate
 
@@ -211,21 +220,30 @@ half a second.
 ## System link
 
 The Xbox game lets 16 players on 4 machines play a system link game. This
-port lets up to 128 players on up to 128 machines play. Each machine can
+port lets 16 players on up to 16 machines play, with the pools of the Xbox
+game, so that it plays with the Xbox build (`port/xbox`). Each machine can
 have up to 4 players (split screen).
 
-- `include/halo_port_limits.h` sets the limits.
-- `include/halo_port_capacity.h` sets the memory for the limits. The game
-  state is 16 MB at `0x81A00000` (3.3 MB on the Xbox). The pools of objects,
-  effects, particles, contrails, lights and sounds are also larger.
+- `port/include/halo_session_limits.h` sets these limits for every build.
+- `python configure.py --big-sessions` builds the native ports for up to
+  128 players on up to 128 machines instead: `include/halo_port_limits.h`
+  sets the limits, and `include/halo_port_capacity.h` the memory for them
+  (larger pools of objects, effects, particles, contrails, lights and
+  sounds). The game state is 16 MB at `0x81A00000` (3.3 MB on the Xbox).
 - The byte-matching build keeps the limits of the Xbox. All the changes are
   in `#ifdef HALO_LINUX`.
 
 Obey these rules:
 
-- All the machines in a game must use a build with the same limits.
-- The port uses protocol version 2. It does not see the Xbox game or older
-  builds of the port. They do not see the port.
+- All the machines in a game must use a build with the same limits. A game
+  built with `--big-sessions` does not see the other builds, and they do
+  not see it: the game settings have a different layout.
+- The port uses protocol version 3. A build with `--big-sessions` uses
+  version 2, the layout of the earlier releases. The port does not see the
+  Xbox game, and the Xbox game does not see the port.
+- Build every machine's copy from the same sources. Builds of different
+  sources can use a different protocol and then do not see each other's
+  games.
 
 These are the differences from the Xbox:
 
@@ -242,13 +260,16 @@ These are the differences from the Xbox:
   The other machines are also in the game.
 - In free-for-all games, each player is a team.
 
-Linux, Windows and Android machines can play in the same game. With the
-netcode `"lockstep"`, each machine must calculate the same floating-point
-results. Thus all the ports:
+Linux, Windows, Android and original Xbox machines can play in the same
+game. With the netcode `"lockstep"`, each machine must calculate the same
+floating-point results. Thus all the ports:
 
 - Compile without fused multiply-add (`-ffp-contract=off`).
 - Use the math functions of musl (`port/include/halo_math.h`,
   `port/third_party/musl-math`), not the math functions of the system.
+- Round every single-precision operation to single precision: SSE on
+  every x86 port, the console's included (its double precision is the
+  x87's at 53 bits, which the game sets; see `port/xbox/README.md`).
 
 ### Play on one computer
 
@@ -283,43 +304,56 @@ host has no `network.address`, do not give `--host`.
 
 ## Internet play
 
-Machines with an invite link can play system link on the internet. This
-project has no server.
+Machines play system link over the internet through a master server
+(`network.master_server`; the server is in `port/master`). Anyone can run
+one; the setting names the one this project's players use.
 
-When a copy of the game starts to host a system link game, it makes an
-invite link: `halo://join/<44 hexadecimal digits>`. The game writes the link
-to the standard error and puts it on the clipboard.
+- When a copy of the game hosts a system link game, the server lists it.
+  Every machine's Multiplayer, System Link screen shows the listed games
+  next to the games on the local network: the screen searches by broadcast,
+  the server passes the searches to the hosts and their answers back, and
+  the game shows them as it shows a LAN game. Select one to join it, as on
+  a local network.
+- A host also makes an invite link, `halo://join/<44 hexadecimal digits>`,
+  written to the standard error and put on the clipboard, that joins its
+  game without the list. To use one, do one of these steps: open the link
+  (the game is the handler of `halo://` links; if the game already
+  operates, the new copy gives the link to it and stops); copy the link (or
+  the 44 digits) and go to the game; enter `halo <link>`; accept a Discord
+  invite (refer to "Discord").
 
-To join a game, do one of these steps:
-
-- Open the link. The game is the handler of `halo://` links. If the game
-  already operates, the new copy gives the link to it and stops.
-- Copy the link (or the 44 digits) and go to the game.
-- Enter `halo <link>`.
-- Accept a Discord invite. Refer to "Discord".
-
-When the machines connect, the game of the host shows in Multiplayer,
-System Link. Join the game as on a local network. System link on a local
-network does not need an invite.
+The Xbox build (`port/xbox`) uses the same server and protocol, so consoles
+and computers play together.
 
 ### Security
 
-Only machines with the invite can find the game:
-
-- The link contains the identifier of the host and a random 16-byte token.
-- The machines exchange their addresses through public MQTT brokers
-  (`network.signalling_brokers`). The topics are HMACs of the token. A key
-  from the token encrypts and authenticates the messages
-  (`src/p2p_signal.c`, `src/p2p_crypto.c`).
+- The server lists a host's identifier and a random 16-byte token. Whoever
+  has them (from the list, or from an invite link) can join. Nothing else
+  about a machine is published.
+- The machines exchange their addresses through the server in messages
+  sealed with a key from the token (`src/p2p_master.c`, `src/p2p_crypto.c`).
+  The token is the listing's, which the server hands to everyone searching
+  (a listed game is open to all): the seal keeps the messages from being
+  altered or read on the way by anyone who never searched, not from the
+  server or from someone who did. An invite link's game is not listed, and
+  there only the link's holders have the token.
 - A key from the host encrypts and authenticates each packet between two
-  machines.
-- An invite operates while the copy of the game that made it operates.
+  machines. It is exchanged in those sealed messages, so the same holds for
+  it.
+- The server binds each machine's identifier to the address it first said
+  hello from, limits how much each address may send, and lists nothing a
+  machine did not say itself. A machine accepts from the tunnel only the
+  game's ports (5150 and 5151): the other programs on it (the telnet console
+  among them) cannot be reached through internet play.
+- A listing and an invite operate while the copy of the game that hosts
+  operates.
 
 ### Connection
 
-Each machine gets its public address from public STUN servers. Then the two
-machines send packets to each other until the packets get through (UDP hole
-punching). There is no relay.
+Each machine gets its public address from the master server (and from
+public STUN servers, `network.stun_servers`). Then the two machines send
+packets to each other until the packets get through (UDP hole punching).
+There is no relay.
 
 Some networks give a different port for each destination (for example some
 mobile and company networks). Two machines behind such networks cannot
@@ -332,8 +366,8 @@ In the game, each machine has an address in 100.64.0.0/10:
   local sockets on 127.0.0.1 (or `network.address`).
 - `src/p2p.c` sends that traffic through one UDP socket. UDP datagrams go
   as they are. TCP connections go as KCP streams (`port/third_party/kcp`).
-- The broadcasts of the game go to all the machines. Thus the game of the
-  host shows on the other machines.
+- The broadcasts of the game go to all the connected machines and to the
+  master server. Thus the game of the host shows on the other machines.
 
 ### Discord
 

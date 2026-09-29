@@ -737,7 +737,12 @@ boolean network_game_client_handle_message(
 
 			case _message_type_data:
 #ifdef HALO_LINUX
-				/* the distributed netcode's messages (port/linux/NETCODE.md) */
+				/* the distributed netcode's messages (port/linux/NETCODE.md).
+				(Not checked against the host's address: over internet play an
+				unreliable message's source is the tunnel's local stand-in, which
+				the connected socket's peer name does not translate back to the
+				host's, so the check dropped every per-tick state; see
+				port/xbox/README.md, Bug audit) */
 				network_distributed_handle_message(NONE, message, message_size);
 #else
 				network_event("client received a bad message type (_message_type_data)");

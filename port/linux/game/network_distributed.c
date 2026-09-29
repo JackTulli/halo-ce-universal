@@ -330,7 +330,9 @@ static void distributed_state_from_player(
 
 	csmemset(state, 0, sizeof(*state));
 	state->player_index = (byte)player_index;
-	state->unit_index = NONE;
+	/* (dead: the unit that died, so a client kills that life only, not a
+	newer one a late or reordered state would otherwise find) */
+	state->unit_index = unit_index == NONE ? player->dead_unit_index : NONE;
 	state->vehicle_index = NONE;
 	state->seat_index = NONE;
 	if (unit_index != NONE)
@@ -440,6 +442,35 @@ static void distributed_send_unit_states(
 
 /* (the host) a client's own players: taken as they are, within a
 tolerance, from the players of that machine only */
+/* the host tick each player's last prediction was applied in */
+static long distributed_predicted_tick[MAXIMUM_TRACKED_PLAYERS];
+
+static boolean distributed_real_finite(
+	real value)
+{
+	return value == value && value - value == 0.0f;
+}
+
+/* a state whose numbers arithmetic can use */
+static boolean distributed_state_finite(
+	struct distributed_unit_state const *state)
+{
+	real const *values[] = {
+		&state->position.x, &state->position.y, &state->position.z,
+		&state->velocity.i, &state->velocity.j, &state->velocity.k,
+		&state->forward.i, &state->forward.j, &state->forward.k,
+		&state->up.i, &state->up.j, &state->up.k,
+	};
+	short index;
+
+	for (index = 0; index < (short)NUMBEROF(values); index++)
+	{
+		if (!distributed_real_finite(*values[index]))
+			return FALSE;
+	}
+	return TRUE;
+}
+
 static void distributed_handle_predictions(
 	long machine_index,
 	struct distributed_unit_state const *states,
@@ -452,10 +483,22 @@ static void distributed_handle_predictions(
 		struct distributed_unit_state const *state = &states[index];
 		long unit_index;
 
-		if (!distributed_machine_has_player(machine_index, state->player_index))
+		if (!distributed_machine_has_player(machine_index, state->player_index) ||
+			state->player_index >= MAXIMUM_TRACKED_PLAYERS)
+		{
 			continue;
+		}
 		unit_index = distributed_living_unit(distributed_player(state->player_index));
-		if (unit_index != NONE && object_get(unit_index)->object.parent_object_index == NONE)
+		/* the unit of this life (not a prediction from the last), numbers
+		arithmetic can use, and one prediction a player a tick: each one moves
+		the unit, and the tolerance is measured from where the last left it */
+		if (unit_index == NONE || state->unit_index != unit_index ||
+			!distributed_state_finite(state) || distributed_predicted_tick[state->player_index] == game_time_get())
+		{
+			continue;
+		}
+		distributed_predicted_tick[state->player_index] = game_time_get();
+		if (object_get(unit_index)->object.parent_object_index == NONE)
 		{
 			struct object_datum *object = object_get(unit_index);
 			real dx = state->position.x - object->object.position.x;
@@ -504,8 +547,9 @@ static void distributed_handle_unit_states(
 		if (!alive)
 		{
 			/* died on the host (who counts it; the damage that killed it,
-			network_damage.c, usually kills it here first) */
-			if (unit_index != NONE)
+			network_damage.c, usually kills it here first): the life the host
+			names, never a newer one (NONE: an older host, which names none) */
+			if (unit_index != NONE && (state->unit_index == NONE || state->unit_index == unit_index))
 				unit_kill_no_statistics(unit_index);
 			continue;
 		}
@@ -846,6 +890,32 @@ void network_distributed_handle_message(
 		size < sizeof(header) + header.count * entry_size)
 	{
 		return;
+	}
+	/* the snapshots that go unreliably (every tick's unit states, where
+	objects are, what units carry, the statistics) apply in order: an older
+	one than the newest applied arrived late or out of order, and would put
+	back what is no longer so (a player's death over their next life). A
+	tick may take several datagrams, which share its time; a time far back
+	is a new game's */
+	switch (header.type)
+	{
+	case _distributed_message_unit_states:
+	case _distributed_message_object_states:
+	case _distributed_message_inventories:
+	case _distributed_message_player_statistics:
+	case _distributed_message_player_prediction:
+	case _distributed_message_vehicle_prediction:
+	{
+		static long newest_time[NUMBER_OF_DISTRIBUTED_MESSAGES][HALO_PORT_MAXIMUM_NETWORK_MACHINES + 1];
+		long sender = machine_index >= 0 && machine_index < HALO_PORT_MAXIMUM_NETWORK_MACHINES ?
+			machine_index + 1 : 0;
+		long *newest = &newest_time[header.type][sender];
+
+		if (header.game_time < *newest && header.game_time + 10 * TICKS_PER_SECOND >= *newest)
+			return;
+		*newest = header.game_time;
+		break;
+	}
 	}
 	distributed_statistics.received++;
 

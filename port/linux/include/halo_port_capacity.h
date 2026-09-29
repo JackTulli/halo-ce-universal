@@ -1,10 +1,13 @@
 /*
 HALO_PORT_CAPACITY.H
 
-Memory capacity of the native builds (Windows, Linux, Android), sized for the
-session limits in halo_port_limits.h, which includes this file. Game sources
-use these values only under #ifdef HALO_LINUX, so the byte-matching MSVC build
-keeps the Xbox sizes (given in parentheses below).
+Memory capacity of the native builds (Windows, Linux, Android): where their
+game state lives, and the pools of big sessions (HALO_BIG_SESSIONS, 128
+players and machines; halo_port_limits.h includes this file). Without
+HALO_BIG_SESSIONS the pools are the retail game's, shared with the Xbox
+build (port/include/halo_session_limits.h), in the same game state. Game
+sources use these values only under #ifdef HALO_LINUX, so the byte-matching
+MSVC build keeps the Xbox sizes (given in parentheses below).
 
 Every machine in a session must be built with the same values: the game is
 simulated in lockstep on every machine, and a pool that runs full changes the
@@ -32,6 +35,8 @@ vertices, as on the Xbox. */
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0x40000 /* (0x40000) */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
 
+#ifdef HALO_BIG_SESSIONS
+
 /* ---------- objects */
 
 #define HALO_PORT_MAXIMUM_OBJECTS_PER_MAP 8192 /* (2048) */
@@ -57,5 +62,7 @@ objects, noncollideable objects, lights) */
 #define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 8192 /* (1024) */
 #define HALO_PORT_MAXIMUM_LIGHTS_PER_MAP 4096 /* (896) */
 #define HALO_PORT_MAXIMUM_GAME_LOOPING_SOUNDS 4096 /* (1024) */
+
+#endif /* HALO_BIG_SESSIONS */
 
 #endif /* __HALO_PORT_CAPACITY_H */

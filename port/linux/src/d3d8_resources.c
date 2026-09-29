@@ -78,7 +78,7 @@ void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned lon
 	/* owned by the device: without D3DCOMMON_D3DCREATED, Release never frees it */
 	surface->Common = D3DCOMMON_TYPE_SURFACE | 1;
 	surface->Data = memory ? PLATFORM_VIRTUAL_TO_PHYSICAL(memory) : 0;
-	surface->Format = ((DWORD)format << D3DFORMAT_FORMAT_SHIFT) | (2 << D3DFORMAT_DIMENSION_SHIFT) | D3DFORMAT_DMACHANNEL_A;
+	surface->Format = ((DWORD)format << D3DFORMAT_FORMAT_SHIFT) | (2 << D3DFORMAT_DIMENSION_SHIFT) | D3DFORMAT_DMACHANNEL_A | D3DFORMAT_BORDERSOURCE_COLOR;
 	surface->Size = ((pitch / D3DTEXTURE_PITCH_ALIGNMENT - 1) << D3DSIZE_PITCH_SHIFT) |
 		((height - 1) << D3DSIZE_HEIGHT_SHIFT) | (width - 1);
 }
@@ -152,13 +152,18 @@ static HRESULT create_texture(unsigned long width, unsigned long height, unsigne
 	if (!levels || levels > maximum_levels)
 		levels = maximum_levels;
 	texture->Common = D3DCOMMON_TYPE_TEXTURE | D3DCOMMON_D3DCREATED | 1;
+	/* every header the library made carries the border-source-colour bit
+	(the January build's own bitmaps read 0x29 in the low byte): without it
+	the GPU, and xemu after it, take the texture to hold a four-texel border
+	and sample it offset, which turned the text cache's small glyphs into
+	their neighbours */
 	if (format_is_linear(format))
 	{
 		unsigned long pitch = (width * bytes_per_texel(format) + D3DTEXTURE_PITCH_ALIGNMENT - 1) &
 			~(unsigned long)(D3DTEXTURE_PITCH_ALIGNMENT - 1);
 
 		texture->Format = ((DWORD)format << D3DFORMAT_FORMAT_SHIFT) | (1 << D3DFORMAT_MIPMAP_SHIFT) |
-			(2 << D3DFORMAT_DIMENSION_SHIFT) | D3DFORMAT_DMACHANNEL_A;
+			(2 << D3DFORMAT_DIMENSION_SHIFT) | D3DFORMAT_DMACHANNEL_A | D3DFORMAT_BORDERSOURCE_COLOR;
 		texture->Size = ((pitch / D3DTEXTURE_PITCH_ALIGNMENT - 1) << D3DSIZE_PITCH_SHIFT) |
 			((height - 1) << D3DSIZE_HEIGHT_SHIFT) | (width - 1);
 	}
@@ -171,7 +176,7 @@ static HRESULT create_texture(unsigned long width, unsigned long height, unsigne
 			(levels << D3DFORMAT_MIPMAP_SHIFT) |
 			((depth > 1 ? 3 : 2) << D3DFORMAT_DIMENSION_SHIFT) |
 			(cube_map ? D3DFORMAT_CUBEMAP : 0) |
-			D3DFORMAT_DMACHANNEL_A;
+			D3DFORMAT_DMACHANNEL_A | D3DFORMAT_BORDERSOURCE_COLOR;
 		texture->Size = 0;
 	}
 	xgpu_texture_describe(texture->Format, texture->Size, &description);

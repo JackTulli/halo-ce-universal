@@ -657,3 +657,8 @@ void posix_discord_close(int handle)
 	if (handle >= 0)
 		close(handle);
 }
+
+int posix_network_link_up(void)
+{
+	return posix_local_ipv4_address() != 0;
+}

@@ -520,6 +520,10 @@ static void dxt_decode_level(unsigned char kind, const unsigned char *source, un
 }
 #endif
 
+#ifndef HALO_XBOX
+/* ---------- OpenGL: the upload and the cache (the Xbox build uses the layout
+functions above with the console's own textures) */
+
 static GLenum compressed_format(unsigned char kind)
 {
 	switch (kind)
@@ -834,3 +838,5 @@ void xgpu_texture_cache_begin_frame(void)
 		}
 	}
 }
+
+#endif /* HALO_XBOX */

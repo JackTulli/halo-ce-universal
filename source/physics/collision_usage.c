@@ -574,6 +574,15 @@ static short collision_log_get_current_user(
 void collision_log_start_time(
 	LARGE_INTEGER *start_time)
 {
+#ifdef HALO_XBOX
+	/* the console: the counts and timings feed only the collision display
+	(a debug key), and cost two clock reads around every collision query */
+	if (!collision_log_render_enable)
+	{
+		start_time->QuadPart = 0;
+		return;
+	}
+#endif
 	QueryPerformanceCounter(start_time);
 
 	return;
@@ -586,6 +595,10 @@ void collision_log_end_time(
 	LARGE_INTEGER end_time;
 	short user;
 
+#ifdef HALO_XBOX
+	if (!collision_log_render_enable)
+		return;
+#endif
 	QueryPerformanceCounter(&end_time);
 	user = collision_log_get_current_user(collision_function);
 	if (user != NONE)
@@ -606,6 +619,10 @@ void collision_log_usage(
 {
 	short user;
 
+#ifdef HALO_XBOX
+	if (!collision_log_render_enable)
+		return;
+#endif
 	user = collision_log_get_current_user(collision_function);
 	if (user != NONE)
 	{

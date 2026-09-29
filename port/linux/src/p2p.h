@@ -1,10 +1,11 @@
 /*
 P2P.H
 
-Internet play (p2p.c): machines that shared an invite reach each other's
-system link games as if they were on one LAN. xnet.c routes the game's
-traffic for them through here; sdl_platform.c passes invite links in and
-out through the clipboard.
+Internet play (p2p.c): machines reach each other's system link games over
+the internet as if they were on one LAN, through the master server that
+lists them (p2p_master.c) or an invite. xnet.c routes the game's traffic
+for them through here; sdl_platform.c passes invite links in and out
+through the clipboard.
 
 Addresses and ports are in network byte order.
 */
@@ -45,6 +46,10 @@ int p2p_broadcast_targets(unsigned short port, unsigned long *addresses, unsigne
 /* the game listens (it is hosting) on socket, or closes a socket */
 void p2p_socket_listening(int socket);
 void p2p_socket_closed(int socket);
+/* the game broadcast a datagram from socket to port (after it was sent on
+the LAN): a search for games, or a hosting game's answer to one, which the
+master server passes on (p2p_master.c) */
+void p2p_broadcast_sent(int socket, unsigned short port, const void *data, int size);
 
 /* text for the clipboard (a new invite link), once; NULL if none. Called
 from the main thread */

@@ -467,12 +467,22 @@ argb_color *interface_get_rgb_color(
 	return color;
 }
 
+#ifdef HALO_LINUX
+boolean console_is_active(
+	void);
+#endif
+
 void interface_draw_fullscreen_overlays(
 	void)
 {
 	cinematic_render();
 	interface_splitscreen_render();
 	hud_render_timer();
+#ifdef HALO_LINUX
+	/* performance mode: the terminal's lines cost a draw per glyph every
+	frame; only the console itself still shows */
+	if (!halo_performance_mode() || console_is_active())
+#endif
 	terminal_draw();
 	main_framerate_render();
 	render_debug_profile();

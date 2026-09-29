@@ -34,6 +34,7 @@ being hit looks and feels like on the clients).
 #include "items/projectile_definitions.h"
 #include "scenario/scenario.h"
 #include "units/units.h"
+#include "physics/collision_model_definitions.h"
 #include "network_distributed.h"
 
 #include <math.h>
@@ -630,6 +631,31 @@ static void distributed_note_weapons(
 	}
 }
 
+/* a float from the wire that arithmetic can use (not a NaN or an infinity,
+for which every range check would pass or fail at random) */
+static boolean distributed_finite(
+	real value)
+{
+	return value == value && value - value == 0.0f;
+}
+
+static boolean distributed_point_finite(
+	real_point3d const *point)
+{
+	return distributed_finite(point->x) && distributed_finite(point->y) && distributed_finite(point->z);
+}
+
+static boolean distributed_vector_finite(
+	real_vector3d const *vector)
+{
+	return distributed_finite(vector->i) && distributed_finite(vector->j) && distributed_finite(vector->k);
+}
+
+/* the damage flags a client's hit may carry; killing outright, getting past
+shields and scoring nothing are the host's to decide */
+#define REPORT_DAMAGE_FLAGS (FLAG(_damage_area_of_effect_bit) | FLAG(_damage_create_localized_effect_bit) | \
+	FLAG(_damage_from_weapon_bit) | FLAG(_damage_silent_bit) | FLAG(_damage_damaged_one_object_bit))
+
 /* whether the host takes the report */
 static boolean distributed_report_valid(
 	long machine_index,
@@ -649,14 +675,47 @@ static boolean distributed_report_valid(
 	{
 		return FALSE;
 	}
+	/* no more than any weapon fires (first: what follows walks tags) */
+	{
+		real *hit_reports = &damage_players[player_index].hit_reports;
+		long elapsed = game_time_get() - damage_players[player_index].hit_reports_time;
+
+		*hit_reports = MIN((real)HIT_REPORT_BURST,
+			*hit_reports + (real)elapsed * HIT_REPORTS_PER_SECOND / TICKS_PER_SECOND);
+		damage_players[player_index].hit_reports_time = game_time_get();
+		if (*hit_reports < 1.0f)
+			return FALSE;
+		*hit_reports -= 1.0f;
+	}
+	/* numbers arithmetic can use */
+	if (!distributed_point_finite(&report->target_position) || !distributed_point_finite(&report->damage.origin) ||
+		!distributed_point_finite(&report->damage.epicenter) || !distributed_vector_finite(&report->damage.direction) ||
+		!distributed_finite(report->damage.scale) || !distributed_finite(report->damage.multiplier) ||
+		!distributed_finite(report->damage.material_effect_scale) ||
+		(report->has_normal && !distributed_vector_finite(&report->object_normal)))
+	{
+		return FALSE;
+	}
 	/* one of the host's objects */
 	target = (struct object_datum *)object_try_and_get_and_verify_type(report->object_index,
 		_object_mask_biped | _object_mask_vehicle | _object_mask_weapon | _object_mask_equipment);
 	if (!target || !tag_index_is_group(report->damage.definition_index, DAMAGE_EFFECT_DEFINITION_TAG))
 		return FALSE;
-	/* damage that player could deal */
-	if (!distributed_player_deals(player_index, report->damage.definition_index))
-		return FALSE;
+	/* a region the target has (the host indexes its damage by it) */
+	if (report->region_index != NONE)
+	{
+		struct object_definition const *target_definition = object_definition_get(target->definition_index);
+		struct collision_model const *collision_model;
+
+		if (report->region_index < 0 || report->region_index >= MAXIMUM_REGIONS_PER_OBJECT ||
+			target_definition->object.collision_model.index == NONE)
+		{
+			return FALSE;
+		}
+		collision_model = collision_model_definition_get(target_definition->object.collision_model.index);
+		if (report->region_index >= collision_model->resistance.regions.count)
+			return FALSE;
+	}
 	/* the target about where the host has it */
 	tolerance = REPORT_TARGET_TOLERANCE + REPORT_TARGET_LEAD_TICKS *
 		(real)sqrt(target->object.translational_velocity.i * target->object.translational_velocity.i +
@@ -665,7 +724,7 @@ static boolean distributed_report_valid(
 	dx = report->target_position.x - target->object.position.x;
 	dy = report->target_position.y - target->object.position.y;
 	dz = report->target_position.z - target->object.position.z;
-	if (dx * dx + dy * dy + dz * dz > tolerance * tolerance)
+	if (!(dx * dx + dy * dy + dz * dz <= tolerance * tolerance))
 		return FALSE;
 	/* the impact at the target (an explosion's within its reach) */
 	definition = damage_effect_definition_get(report->damage.definition_index);
@@ -680,21 +739,38 @@ static boolean distributed_report_valid(
 	dy = report->damage.epicenter.y - report->target_position.y;
 	dz = report->damage.epicenter.z - report->target_position.z;
 	impact_distance_squared = MIN(impact_distance_squared, dx * dx + dy * dy + dz * dz);
-	if (impact_distance_squared > reach * reach)
+	if (!(impact_distance_squared <= reach * reach))
 		return FALSE;
-	/* no more than any weapon fires */
-	{
-		real *hit_reports = &damage_players[player_index].hit_reports;
-		long elapsed = game_time_get() - damage_players[player_index].hit_reports_time;
-
-		*hit_reports = MIN((real)HIT_REPORT_BURST,
-			*hit_reports + (real)elapsed * HIT_REPORTS_PER_SECOND / TICKS_PER_SECOND);
-		damage_players[player_index].hit_reports_time = game_time_get();
-		if (*hit_reports < 1.0f)
-			return FALSE;
-		*hit_reports -= 1.0f;
-	}
+	/* damage that player could deal (last: it walks the weapons' tags) */
+	if (!distributed_player_deals(player_index, report->damage.definition_index))
+		return FALSE;
 	return TRUE;
+}
+
+/* what of a report the host decides itself: the flags beyond the hit's
+own, the scale (a falloff, 0 to 1), the multiplier (the host's own damage
+works it out), and the owner's team and object (the reporting player's, as
+the host has them: its unit, or the vehicle the unit rides) */
+static void distributed_report_sanitize(
+	struct distributed_hit_report const *report,
+	struct damage_data *damage)
+{
+	struct player_datum *player = distributed_player(report->damage.owner_player_index);
+
+	damage->flags &= REPORT_DAMAGE_FLAGS;
+	damage->scale = PIN(damage->scale, 0.0f, 1.0f);
+	damage->multiplier = 1.0f;
+	if (player)
+	{
+		long unit_index = player->unit_index;
+		struct object_datum *unit = unit_index != NONE ? (struct object_datum *)object_try_and_get(unit_index) : NULL;
+
+		damage->owner_team_index = (short)player->team_index;
+		if (!unit)
+			damage->owner_object_index = NONE;
+		else if (damage->owner_object_index != unit_index && damage->owner_object_index != unit->object.parent_object_index)
+			damage->owner_object_index = unit_index;
+	}
 }
 
 void network_damage_handle_reports(
@@ -715,6 +791,7 @@ void network_damage_handle_reports(
 			damage_rejected_reports++;
 			continue;
 		}
+		distributed_report_sanitize(report, &damage);
 		damage_dealt_reports++;
 		damage_dealing_report = TRUE;
 		object_cause_damage(&damage, report->object_index, report->node_index, report->region_index,

@@ -14,9 +14,11 @@ it exists, so that the player's edits and comments stay.
 #include "port_config.h"
 #include "tomlc17.h"
 
+#ifndef HALO_XBOX
 #include <SDL3/SDL.h>
-#include <ctype.h>
 #include <pthread.h>
+#endif
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +50,8 @@ enum
 {
 	_platform_desktop = 1,
 	_platform_android = 2,
-	_platform_all = _platform_desktop | _platform_android,
+	_platform_console = 4,
+	_platform_all = _platform_desktop | _platform_android | _platform_console,
 };
 
 struct config_setting
@@ -78,11 +81,23 @@ static const struct config_setting config_settings[] =
 	{ "display.interpolation", _config_boolean, "true", "HALO_INTERPOLATION", _environment_value, _platform_all,
 		"Draw a frame for every display refresh, blending between the game's 30\n"
 		"ticks a second; false keeps the original 30 frames a second." },
+	{ "display.unlocked_framerate", _config_boolean, "false", "HALO_UNLOCKED_FRAMERATE", _environment_value,
+		_platform_all,
+		"The console: draw as many frames as the display shows (60 a second),\n"
+		"with movement interpolated between the game's 30 ticks; off draws one\n"
+		"frame per tick, as the retail game did. The desktop builds have\n"
+		"display.interpolation and display.vsync instead." },
 
 	{ "audio.enabled", _config_boolean, "true", "HALO_NO_AUDIO", _environment_set_is_false, _platform_all,
 		"Play sound." },
 	{ "audio.volume", _config_real, "1.0", "HALO_VOLUME", _environment_value, _platform_all,
 		"The volume of everything, 0.0 to 1.0." },
+	{ "audio.backend", _config_string, "\"auto\"", "HALO_AUDIO_BACKEND", _environment_value, _platform_console,
+		"The console's output path: \"apu\" plays through the audio processor's\n"
+		"voice processor, which the emulator's sound comes from; \"ac97\" through\n"
+		"the AC97 controller's DMA, nxdk's way, which a console plays; \"auto\"\n"
+		"picks by the AC97 codec's identity (the emulator's SigmaTel against the\n"
+		"console's Analog Devices part)." },
 
 	{ "input.mouse_sensitivity", _config_real, "1.0", "HALO_MOUSE_SENSITIVITY", _environment_value, _platform_desktop,
 		"How far the view turns for the mouse's movement." },
@@ -113,10 +128,10 @@ static const struct config_setting config_settings[] =
 		"player's own moves and lets the host decide the rest; \"lockstep\" plays\n"
 		"system link as the Xbox game did. Every machine must use the same." },
 	{ "network.online", _config_boolean, "true", "HALO_NET_ONLINE", _environment_value, _platform_all,
-		"Internet play: hosting makes an invite link (logged, and put on the\n"
-		"clipboard) that lets whoever has it join over the internet; opening a\n"
-		"link (or copying one before switching to the game) joins. Only people\n"
-		"with the invite can join. Off keeps system link to the local network." },
+		"Internet play: a hosted game is listed on the master server, where\n"
+		"everyone's System Link screen shows it, and gets an invite link (logged,\n"
+		"and put on the clipboard) that also joins it. Off keeps system link to\n"
+		"the local network." },
 	{ "network.join_from_clipboard", _config_boolean, "true", "HALO_NET_JOIN_FROM_CLIPBOARD", _environment_value,
 		_platform_all,
 		"Join the game of an invite link found on the clipboard when the game\n"
@@ -124,11 +139,11 @@ static const struct config_setting config_settings[] =
 	{ "network.tunnel_port", _config_integer, "0", "HALO_NET_TUNNEL_PORT", _environment_value, _platform_all,
 		"The UDP port internet play uses; 0 picks one. A fixed one can be\n"
 		"forwarded on the router, for networks whose NAT stops connections." },
-	{ "network.signalling_brokers", _config_string,
-		"\"broker.emqx.io:1883,broker.hivemq.com:1883,test.mosquitto.org:1883\"",
-		"HALO_NET_BROKERS", _environment_value, _platform_all,
-		"Public MQTT brokers through which the machines of an invite find each\n"
-		"other (its messages are encrypted); comma-separated host:port." },
+	{ "network.master_server", _config_string, "\"172.104.30.93:27920\"", "HALO_NET_MASTER", _environment_value,
+		_platform_all,
+		"The master server (host:port, UDP; port/master) that lists games on the\n"
+		"internet under Multiplayer, System Link, and through which machines\n"
+		"find each other; empty lists nothing and answers no invite." },
 	{ "network.stun_servers", _config_string, "\"stun.l.google.com:19302,stun.cloudflare.com:3478\"",
 		"HALO_NET_STUN", _environment_value, _platform_all,
 		"Public STUN servers that tell this machine its internet address;\n"
@@ -206,6 +221,8 @@ static const struct config_setting config_settings[] =
 
 #ifdef HALO_ANDROID
 #define CONFIG_PLATFORM _platform_android
+#elif defined(HALO_XBOX)
+#define CONFIG_PLATFORM _platform_console
 #else
 #define CONFIG_PLATFORM _platform_desktop
 #endif
@@ -220,7 +237,15 @@ struct config_value
 
 static struct config_value config_values[NUMBER_OF_CONFIG_SETTINGS];
 static int config_loaded = 0;
+#ifdef HALO_XBOX
+/* a spin lock: the settings are read once, early, and the console's
+threads are few */
+static volatile long config_lock;
+#define pthread_mutex_lock(lock) do { while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE)) {} } while (0)
+#define pthread_mutex_unlock(lock) __atomic_store_n(lock, 0, __ATOMIC_RELEASE)
+#else
 static pthread_mutex_t config_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* ---------- the file */
 
@@ -231,6 +256,9 @@ static void config_path(char *path, size_t size)
 	const char *root = getenv("HALO_DATA_ROOT");
 
 	snprintf(path, size, "%s/config.toml", root && *root ? root : ".");
+#elif defined(HALO_XBOX)
+	/* beside the game's data: the disc, or the folder the XBE runs from */
+	snprintf(path, size, "D:\\config.toml");
 #else
 	/* the executable's folder, with its separator */
 	const char *base = SDL_GetBasePath();
@@ -242,7 +270,7 @@ static void config_path(char *path, size_t size)
 /* the whole file, NUL terminated, or NULL; free() it */
 static char *config_read_file(const char *path, size_t *size)
 {
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_XBOX)
 	FILE *file = fopen(path, "rb");
 	char *text = NULL;
 	long length;
@@ -285,7 +313,7 @@ static char *config_read_file(const char *path, size_t *size)
 
 static int config_write_file(const char *path, const char *text)
 {
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_XBOX)
 	FILE *file = fopen(path, "wb");
 	int written;
 
@@ -670,6 +698,10 @@ static void config_load(void)
 	}
 	else
 	{
+#ifdef HALO_XBOX
+		/* the disc is read-only: nothing to write */
+		platform_log("settings: no %s; using the defaults", path);
+#else
 		char *defaults = config_default_text();
 
 		if (defaults && config_write_file(path, defaults))
@@ -677,8 +709,11 @@ static void config_load(void)
 		else
 			platform_log("settings: cannot write %s; using the defaults", path);
 		free(defaults);
+#endif
 	}
 
+#ifndef HALO_XBOX
+	/* the environment; the console has none */
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
 	{
 		const struct config_setting *setting = &config_settings[index];
@@ -699,6 +734,7 @@ static void config_load(void)
 			break;
 		}
 	}
+#endif
 }
 
 static const struct config_value *config_value(const char *name, enum config_type type)

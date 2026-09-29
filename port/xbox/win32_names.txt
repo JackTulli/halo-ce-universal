@@ -1,0 +1,47 @@
+# The Win32 functions the game calls that nxdk implements (cdecl); each
+# gets a __stdcall thunk (tools/xbox_win32_bridge.py). A name followed by
+# "bridge-only" gets the nxdk-facing half only: its thunk is written by
+# hand in port/xbox/src/xbox_kernel.c. A name followed by "path" has its
+# string parameters translated by platform_redirect_path (the writable
+# folders of the development kit's D: are the cache partition here).
+CloseHandle bridge-only
+CompareFileTime
+CopyFileA path
+CreateDirectoryA path
+CreateEventA
+CreateFileA bridge-only
+CreateMutexA
+DeleteFileA path
+FindFirstFileA bridge-only
+FindNextFileA
+GetDiskFreeSpaceExA path
+GetExitCodeThread
+GetFileAttributesA path
+GetFileAttributesExA path
+GetFileSize
+GetFileTime
+GetLastError
+GetSystemTime
+GetTickCount bridge-only
+MoveFileA path
+QueryPerformanceCounter bridge-only
+QueryPerformanceFrequency bridge-only
+ReadFile
+ReleaseMutex
+RemoveDirectoryA path
+ResetEvent
+ResumeThread
+SetEndOfFile
+SetEvent
+SetFileAttributesA path
+SetFilePointer
+SetFileTime
+SetLastError
+SetThreadPriority
+Sleep
+SleepEx bridge-only
+SwitchToThread
+SystemTimeToFileTime
+WaitForSingleObject
+WaitForSingleObjectEx bridge-only
+WriteFile bridge-only

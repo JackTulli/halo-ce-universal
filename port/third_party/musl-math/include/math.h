@@ -12,9 +12,21 @@ says why). Written for this port, not musl's.
 /* sin, pow and the rest are defined as the halo_ functions */
 #include "../../../include/halo_math.h"
 
-/* no excess precision anywhere (x87, FLT_EVAL_METHOD 2, is not used) */
+/* the evaluation method: the compiler's when the C library's <float.h>
+does not say (nxdk's); the ports compile without excess precision
+(-ffp-eval-method=source on the Xbox's x87), so this is 0 everywhere */
+#include <float.h>
+#if !defined(FLT_EVAL_METHOD) || FLT_EVAL_METHOD < 0
+#undef FLT_EVAL_METHOD
+#define FLT_EVAL_METHOD __FLT_EVAL_METHOD__
+#endif
+#if FLT_EVAL_METHOD == 2
+typedef long double double_t;
+typedef long double float_t;
+#else
 typedef double double_t;
 typedef float float_t;
+#endif
 
 /* musl chooses an FMA instruction where the target has one; one code path
 for every port */

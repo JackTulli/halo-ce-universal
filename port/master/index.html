@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halo Internet Play</title>
+<meta name="description" content="The games being hosted for Halo's internet play, their players and pings, and the master server's lifetime statistics.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600;700&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+<!--
+The master server's status page (port/master): it reads status.json, which
+halo_master.py writes beside it every few seconds, and shows what is online
+the way the original Xbox's dashboard showed things: green light on black.
+Everything from the file goes into the page as text, never as markup.
+-->
+<style>
+:root {
+  --black: #000400;
+  --panel: rgba(8, 40, 10, 0.72);
+  --panel-edge: rgba(126, 214, 36, 0.35);
+  --green: #8ee02c;
+  --green-bright: #c6ff5c;
+  --green-dim: #4e8f1c;
+  --text: #e4ffd0;
+  --muted: #8fbf72;
+  --red: #ff5a3c;
+  --blue: #4fb4ff;
+  --amber: #ffc53d;
+  --glow: 0 0 12px rgba(142, 224, 44, 0.55);
+  --radius: 22px;
+}
+* { box-sizing: border-box; }
+html { background: var(--black); }
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--black);
+  font-family: "Exo 2", "Segoe UI", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  overflow-x: hidden;
+}
+/* the dashboard's core: a green orb breathing behind everything */
+.core {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 38%, rgba(120, 220, 30, 0.28), transparent 70%),
+    radial-gradient(circle at 50% 38%, rgba(60, 150, 20, 0.35) 0, rgba(10, 50, 8, 0.25) 30%, transparent 62%),
+    radial-gradient(ellipse at 50% 120%, rgba(40, 110, 10, 0.4), transparent 60%),
+    var(--black);
+  animation: breathe 7s ease-in-out infinite;
+}
+.core::after {
+  /* the dashboard's honeycomb, faint */
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.12;
+  background-image: radial-gradient(circle at 10px 10px, rgba(142, 224, 44, 0.9) 1.2px, transparent 1.6px);
+  background-size: 22px 19px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 38%, #000 20%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 38%, #000 20%, transparent 75%);
+}
+.ring {
+  position: fixed;
+  left: 50%;
+  top: 38vh;
+  width: min(90vw, 760px);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  border-radius: 50%;
+  border: 2px solid rgba(142, 224, 44, 0.12);
+  box-shadow: 0 0 60px rgba(142, 224, 44, 0.12), inset 0 0 60px rgba(142, 224, 44, 0.08);
+  pointer-events: none;
+  z-index: 0;
+  animation: spin 60s linear infinite;
+}
+.ring::before {
+  content: "";
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  border: 1px dashed rgba(142, 224, 44, 0.16);
+}
+@keyframes breathe { 50% { filter: brightness(1.25); } }
+@keyframes spin { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: reduce) {
+  .core, .ring { animation: none; }
+}
+main {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 16px 48px;
+}
+header { text-align: center; margin-bottom: 26px; }
+.logo {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 900;
+  font-size: clamp(44px, 11vw, 92px);
+  letter-spacing: 0.18em;
+  margin: 0;
+  padding-left: 0.18em;
+  color: var(--green-bright);
+  text-shadow: 0 0 18px rgba(142, 224, 44, 0.8), 0 0 42px rgba(142, 224, 44, 0.45);
+}
+.tagline {
+  font-family: "Orbitron", sans-serif;
+  font-size: clamp(11px, 2.6vw, 14px);
+  letter-spacing: 0.42em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin: 6px 0 16px;
+}
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: rgba(10, 60, 12, 0.7);
+  border: 1px solid var(--panel-edge);
+  font-size: 14px;
+  max-width: 100%;
+}
+.state .dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--green-bright);
+  box-shadow: var(--glow);
+}
+.state.off { border-color: rgba(255, 90, 60, 0.5); }
+.state.off .dot { background: var(--red); box-shadow: 0 0 12px rgba(255, 90, 60, 0.7); }
+/* the big numbers: the dashboard's round-cornered pods */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin: 0 0 28px;
+}
+.tile {
+  position: relative;
+  padding: 18px 12px 14px;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(30, 90, 18, 0.65), rgba(6, 30, 8, 0.8));
+  border: 1px solid var(--panel-edge);
+  box-shadow: inset 0 1px 0 rgba(198, 255, 92, 0.25), 0 8px 30px rgba(0, 0, 0, 0.5);
+  text-align: center;
+  overflow: hidden;
+}
+.tile::before {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 0;
+  height: 40%;
+  border-radius: 0 0 50% 50%;
+  background: linear-gradient(180deg, rgba(198, 255, 92, 0.16), transparent);
+  pointer-events: none;
+}
+.tile .number {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 700;
+  font-size: clamp(30px, 7vw, 48px);
+  color: var(--green-bright);
+  text-shadow: var(--glow);
+  line-height: 1.1;
+}
+.tile .label {
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 4px;
+}
+h2 {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--green);
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+h2::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--panel-edge), transparent);
+}
+section { margin-bottom: 34px; }
+/* a lobby: one of the dashboard's blades */
+.lobby {
+  position: relative;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(198, 255, 92, 0.18);
+  padding: 18px 18px 14px 26px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  backdrop-filter: blur(4px);
+}
+.lobby::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  background: linear-gradient(180deg, var(--green-bright), var(--green-dim));
+  box-shadow: var(--glow);
+}
+.lobby.playing::before {
+  background: linear-gradient(180deg, var(--amber), #b77b00);
+  box-shadow: 0 0 14px rgba(255, 197, 61, 0.6);
+}
+.lobby-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.lobby-title {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 700;
+  font-size: clamp(17px, 4vw, 22px);
+  overflow-wrap: anywhere;
+}
+.lobby-host { font-size: 13px; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 14px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(20, 70, 14, 0.8);
+  border: 1px solid rgba(142, 224, 44, 0.3);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.chip b { color: var(--green-bright); font-weight: 600; }
+.chip.live { border-color: rgba(255, 197, 61, 0.55); background: rgba(80, 60, 10, 0.55); }
+.chip.live b { color: var(--amber); }
+.table-wrap { overflow-x: auto; margin: 0 -6px; }
+table { width: 100%; border-collapse: collapse; min-width: 420px; }
+th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 6px;
+  border-bottom: 1px solid rgba(142, 224, 44, 0.25);
+}
+td {
+  padding: 8px 6px;
+  border-bottom: 1px solid rgba(142, 224, 44, 0.1);
+  font-size: 15px;
+}
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.player-name { font-weight: 600; overflow-wrap: anywhere; }
+.host-tag {
+  margin-left: 8px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #041004;
+  background: var(--green);
+  vertical-align: 2px;
+}
+.team { display: inline-flex; align-items: center; gap: 6px; }
+.team i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+/* ping: the signal bars */
+.signal { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; vertical-align: -2px; margin-right: 6px; }
+.signal span { width: 4px; border-radius: 1px; background: rgba(142, 224, 44, 0.18); }
+.signal span:nth-child(1) { height: 4px; }
+.signal span:nth-child(2) { height: 7px; }
+.signal span:nth-child(3) { height: 10px; }
+.signal span:nth-child(4) { height: 14px; }
+.signal.good span.on { background: var(--green-bright); box-shadow: 0 0 6px rgba(198, 255, 92, 0.6); }
+.signal.fair span.on { background: var(--amber); }
+.signal.poor span.on { background: var(--red); }
+.ping-text { font-variant-numeric: tabular-nums; }
+.note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.empty {
+  text-align: center;
+  padding: 34px 18px;
+  border-radius: var(--radius);
+  border: 1px dashed var(--panel-edge);
+  background: rgba(4, 24, 6, 0.6);
+  color: var(--muted);
+}
+.empty strong {
+  display: block;
+  font-family: "Orbitron", sans-serif;
+  color: var(--green);
+  letter-spacing: 0.2em;
+  margin-bottom: 6px;
+}
+/* lifetime */
+.lifetime-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat {
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(8, 40, 10, 0.6);
+  border: 1px solid rgba(142, 224, 44, 0.22);
+}
+.stat .value {
+  font-family: "Orbitron", sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--green-bright);
+  text-shadow: 0 0 8px rgba(142, 224, 44, 0.4);
+}
+.stat .caption { font-size: 12px; color: var(--muted); letter-spacing: 0.08em; }
+.tops { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.top-list {
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: rgba(8, 40, 10, 0.6);
+  border: 1px solid rgba(142, 224, 44, 0.22);
+}
+.top-list h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bar-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin-bottom: 8px; font-size: 14px; }
+.bar-row .bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: rgba(142, 224, 44, 0.12); overflow: hidden; }
+.bar-row .bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--green-dim), var(--green-bright));
+  box-shadow: var(--glow);
+}
+footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 20px; }
+.short { display: none; }
+@media (max-width: 560px) {
+  .tiles { gap: 8px; }
+  .tile { padding: 14px 6px 10px; border-radius: 16px; }
+  .tile .label { font-size: 10px; letter-spacing: 0.12em; }
+  .lobby { padding: 16px 12px 12px 20px; }
+  table { min-width: 0; }
+  th, td { padding: 7px 4px; }
+  td { font-size: 13px; }
+  th { letter-spacing: 0.08em; }
+  .long, .team-name { display: none; }
+  .short { display: inline; }
+  .signal { margin-right: 3px; }
+}
+</style>
+</head>
+<body>
+<div class="core" aria-hidden="true"></div>
+<div class="ring" aria-hidden="true"></div>
+<main>
+  <header>
+    <h1 class="logo">HALO</h1>
+    <p class="tagline">Internet Play &middot; System Link</p>
+    <div class="state" id="state" role="status"><span class="dot"></span><span id="state-text">Connecting to the master server&hellip;</span></div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile"><div class="number" id="lobbies">&ndash;</div><div class="label">Lobbies</div></div>
+    <div class="tile"><div class="number" id="players">&ndash;</div><div class="label">Players online</div></div>
+    <div class="tile"><div class="number" id="browsing">&ndash;</div><div class="label">Browsing</div></div>
+  </div>
+
+  <section aria-labelledby="games-title">
+    <h2 id="games-title">Games</h2>
+    <div id="games"></div>
+  </section>
+
+  <section aria-labelledby="lifetime-title">
+    <h2 id="lifetime-title">Lifetime</h2>
+    <div class="lifetime-grid" id="lifetime"></div>
+    <div class="tops">
+      <div class="top-list"><h3>Most played maps</h3><div id="top-maps"></div></div>
+      <div class="top-list"><h3>Most played game types</h3><div id="top-modes"></div></div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Pings: the master server's round trip to each host, and each player's round trip to the host through internet play's tunnel. Refreshed every few seconds.</p>
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var STALE = 15; // seconds without a fresh status: the server is off
+  // when the status last changed, on this computer's clock (the server's
+  // time is compared only with itself, so a clock set wrong here does not
+  // make the server look down)
+  var lastUpdated = null, lastChange = Date.now() / 1000;
+  var TEAMS = [["Red", "var(--red)"], ["Blue", "var(--blue)"], ["Yellow", "#ffe14d"], ["Green", "#6fe36f"],
+               ["Purple", "#c77dff"], ["Orange", "#ff9f40"], ["Brown", "#b98a5b"], ["Pink", "#ff7ab8"]];
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function duration(seconds) {
+    seconds = Math.max(0, Math.floor(seconds));
+    var d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60);
+    if (d) return d + " d " + h + " h";
+    if (h) return h + " h " + m + " min";
+    if (m) return m + " min";
+    return seconds + " s";
+  }
+
+  function clock(seconds) {
+    seconds = Math.max(0, Math.floor(seconds || 0));
+    var m = Math.floor(seconds / 60), s = seconds % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function day(timestamp) {
+    if (!timestamp) return "";
+    return new Date(timestamp * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+
+  function known(value) {
+    return value !== null && value !== undefined;
+  }
+
+  function signal(ping) {
+    var wrap = el("span");
+    var bars = el("span", "signal");
+    var level = 0, quality = "";
+    if (known(ping)) {
+      level = ping < 60 ? 4 : ping < 120 ? 3 : ping < 200 ? 2 : 1;
+      quality = level >= 3 ? "good" : level === 2 ? "fair" : "poor";
+    }
+    if (quality) bars.classList.add(quality);
+    for (var i = 1; i <= 4; i++) {
+      var bar = el("span");
+      if (i <= level) bar.className = "on";
+      bars.appendChild(bar);
+    }
+    wrap.appendChild(bars);
+    wrap.appendChild(el("span", "ping-text", known(ping) ? ping + " ms" : "–"));
+    return wrap;
+  }
+
+  function chip(label, value, live) {
+    var node = el("span", "chip" + (live ? " live" : ""));
+    node.appendChild(document.createTextNode(label + " "));
+    node.appendChild(el("b", null, value));
+    return node;
+  }
+
+  function team(index) {
+    if (!known(index)) return el("span", null, "–");
+    var info = TEAMS[index] || ["Team " + (index + 1), "var(--green)"];
+    var node = el("span", "team");
+    var swatch = el("i");
+    swatch.style.background = info[1];
+    node.title = info[0];
+    node.appendChild(swatch);
+    node.appendChild(el("span", "team-name", info[0]));
+    return node;
+  }
+
+  function lobbyCard(game) {
+    var card = el("article", "lobby" + (game.in_game ? " playing" : ""));
+    var head = el("div", "lobby-head");
+    head.appendChild(el("div", "lobby-title", game.name || ("Game hosted by " + game.host)));
+    var hostLine = el("div", "lobby-host");
+    hostLine.appendChild(document.createTextNode("Host " + game.host + " · to the server "));
+    hostLine.appendChild(signal(known(game.ping) ? game.ping : game.latency));
+    head.appendChild(hostLine);
+    card.appendChild(head);
+
+    var chips = el("div", "chips");
+    if (game.detailed) {
+      if (game.map_title) chips.appendChild(chip("Map", game.map_title));
+      if (game.mode) {
+        var mode = game.mode + (game.variant && game.variant !== game.mode ? " · " + game.variant : "");
+        chips.appendChild(chip("Mode", mode));
+      }
+      chips.appendChild(chip(game.in_game ? "In game" : "In lobby", game.in_game ? clock(game.game_seconds) : "waiting", game.in_game));
+      chips.appendChild(chip("Players", game.players + (game.max_players ? " / " + game.max_players : "")));
+    } else {
+      chips.appendChild(chip("Players", game.players));
+    }
+    chips.appendChild(chip("Hosting for", duration(Date.now() / 1000 - game.since)));
+    card.appendChild(chips);
+
+    if (game.detailed && game.player_list && game.player_list.length) {
+      var wrap = el("div", "table-wrap");
+      var table = el("table");
+      var thead = el("thead");
+      var header = el("tr");
+      [["Player", "", ""], ["Team", "", ""], ["Score", "num", "Pts"], ["Kills", "num", "K"], ["Deaths", "num", "D"],
+       ["Ping", "", ""]].forEach(function (column) {
+        if (column[0] === "Team" && !game.teams) return;
+        var th = el("th", column[1]);
+        th.scope = "col";
+        if (column[2]) {
+          // a short label on a phone's width
+          th.appendChild(el("span", "long", column[0]));
+          th.appendChild(el("span", "short", column[2]));
+          th.title = column[0];
+        } else {
+          th.textContent = column[0];
+        }
+        header.appendChild(th);
+      });
+      thead.appendChild(header);
+      table.appendChild(thead);
+      var body = el("tbody");
+      game.player_list.slice().sort(function (a, b) {
+        return (b.score - a.score) || (b.kills - a.kills);
+      }).forEach(function (player) {
+        var row = el("tr");
+        var name = el("td");
+        name.appendChild(el("span", "player-name", player.name || "Player"));
+        if (player.host) name.appendChild(el("span", "host-tag", "HOST"));
+        row.appendChild(name);
+        if (game.teams) {
+          var teamCell = el("td");
+          teamCell.appendChild(team(player.team));
+          row.appendChild(teamCell);
+        }
+        row.appendChild(el("td", "num", game.in_game ? player.score : "–"));
+        row.appendChild(el("td", "num", game.in_game ? player.kills : "–"));
+        row.appendChild(el("td", "num", game.in_game ? player.deaths : "–"));
+        var ping = el("td");
+        if (player.host) ping.appendChild(el("span", "ping-text", "host"));
+        else if (!known(player.ping)) ping.appendChild(el("span", "ping-text", "LAN"));
+        else ping.appendChild(signal(player.ping));
+        row.appendChild(ping);
+        body.appendChild(row);
+      });
+      table.appendChild(body);
+      wrap.appendChild(table);
+      card.appendChild(wrap);
+    } else if (!game.detailed) {
+      card.appendChild(el("p", "note", "This host runs an older build: it reports only its player count."));
+    }
+    return card;
+  }
+
+  function stat(value, caption) {
+    var node = el("div", "stat");
+    node.appendChild(el("div", "value", value));
+    node.appendChild(el("div", "caption", caption));
+    return node;
+  }
+
+  function bars(container, entries) {
+    container.textContent = "";
+    if (!entries || !entries.length) {
+      container.appendChild(el("p", "note", "Nothing played yet."));
+      return;
+    }
+    var most = entries[0][1] || 1;
+    entries.forEach(function (entry) {
+      var row = el("div", "bar-row");
+      row.appendChild(el("span", null, entry[0]));
+      row.appendChild(el("span", "ping-text", entry[1]));
+      var bar = el("div", "bar");
+      var fill = el("span");
+      fill.style.width = Math.max(4, Math.round(entry[1] / most * 100)) + "%";
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      container.appendChild(row);
+    });
+  }
+
+  function show(status) {
+    var now = Date.now() / 1000;
+    if (status.updated !== lastUpdated) {
+      lastUpdated = status.updated;
+      lastChange = now;
+    }
+    var stale = now - lastChange > STALE;
+    document.getElementById("lobbies").textContent = status.lobbies;
+    document.getElementById("players").textContent = status.players;
+    document.getElementById("browsing").textContent = status.browsing;
+
+    var games = document.getElementById("games");
+    games.textContent = "";
+    if (!status.games || !status.games.length) {
+      var empty = el("div", "empty");
+      empty.appendChild(el("strong", null, "NO GAMES RIGHT NOW"));
+      empty.appendChild(document.createTextNode("Host one from Multiplayer, System Link: it appears here and on everyone's list."));
+      games.appendChild(empty);
+    } else {
+      status.games.forEach(function (game) { games.appendChild(lobbyCard(game)); });
+    }
+
+    var lifetime = status.lifetime || {};
+    var grid = document.getElementById("lifetime");
+    grid.textContent = "";
+    grid.appendChild(stat(lifetime.unique_players || 0, "players seen"));
+    grid.appendChild(stat(lifetime.player_joins || 0, "players joined games"));
+    grid.appendChild(stat(lifetime.games_hosted || 0, "games hosted"));
+    grid.appendChild(stat(lifetime.matches_started || 0, "matches played"));
+    grid.appendChild(stat(lifetime.hours_played || 0, "hours played"));
+    grid.appendChild(stat(lifetime.peak_players || 0,
+      "most players at once" + (lifetime.peak_players_time ? " (" + day(lifetime.peak_players_time) + ")" : "")));
+    grid.appendChild(stat(lifetime.peak_lobbies || 0, "most lobbies at once"));
+    grid.appendChild(stat(lifetime.machines_seen || 0, "machines seen"));
+    bars(document.getElementById("top-maps"), lifetime.top_maps);
+    bars(document.getElementById("top-modes"), lifetime.top_modes);
+
+    document.getElementById("state").className = "state" + (stale ? " off" : "");
+    document.getElementById("state-text").textContent = stale
+      ? "The master server has not reported for " + duration(now - lastChange) + "; it may be down."
+      : "Master server online for " + duration(status.updated - status.started) +
+        (lifetime.since ? " · counting since " + day(lifetime.since) : "");
+  }
+
+  function refresh() {
+    fetch("status.json", { cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(show)
+      .catch(function () {
+        document.getElementById("state").className = "state off";
+        document.getElementById("state-text").textContent = "The master server's status is not reachable.";
+      });
+  }
+
+  refresh();
+  setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>

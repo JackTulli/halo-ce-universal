@@ -1659,7 +1659,14 @@ void saved_game_files_enumerate_available_to_local_player_index(
 					}
 
 					if (file.type == saved_game_file_type &&
-						((include_default_profiles == TRUE) || !file.read_only))
+						((include_default_profiles == TRUE) || !file.read_only)
+#ifdef HALO_XBOX
+						/* an entry whose save failed validation cannot be
+						selected anyway (error 31, "Unable to load saved game
+						file"); the console build leaves it off the list */
+						&& file.valid
+#endif
+						)
 					{
 						player_profile_indices[number_of_available_profiles] =
 							build_saved_game_file_index(saved_game_file_type, memory_unit_index,

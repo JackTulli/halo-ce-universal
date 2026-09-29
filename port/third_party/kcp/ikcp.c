@@ -678,8 +678,9 @@ static void ikcp_ack_push(ikcpcb *kcp, IUINT32 sn, IUINT32 ts)
 		acklist = (IUINT32*)ikcp_malloc(newblock * sizeof(IUINT32) * 2);
 
 		if (acklist == NULL) {
-			assert(acklist != NULL);
-			abort();
+			/* no memory: the acknowledgement is lost, and the sender
+			sends the segment again (the upstream code aborted) */
+			return;
 		}
 
 		if (kcp->acklist != NULL) {
@@ -861,8 +862,9 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 			}
 			if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) < 0) {
 				ikcp_ack_push(kcp, sn, ts);
-				if (_itimediff(sn, kcp->rcv_nxt) >= 0) {
-					seg = ikcp_segment_new(kcp, len);
+				if (_itimediff(sn, kcp->rcv_nxt) >= 0 &&
+					(seg = ikcp_segment_new(kcp, len)) != NULL) {
+					/* (no memory: as if lost; the sender sends it again) */
 					seg->conv = conv;
 					seg->cmd = cmd;
 					seg->frg = frg;

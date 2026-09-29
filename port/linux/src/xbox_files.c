@@ -124,6 +124,29 @@ const char *platform_data_root(void)
 	return root;
 }
 
+/* performance mode: a performance.txt next to maps/ (the data root) */
+int halo_performance_mode(void)
+{
+	static int checked, mode;
+
+	if (!checked)
+	{
+		char path[1024];
+		FILE *file;
+
+		checked = 1;
+		snprintf(path, sizeof(path), "%s/performance.txt", platform_data_root());
+		file = fopen(path, "rb");
+		if (file)
+		{
+			fclose(file);
+			mode = 1;
+			platform_log("performance mode: %s is present", path);
+		}
+	}
+	return mode;
+}
+
 /* creates every missing directory along path */
 static void make_directories(const char *path)
 {

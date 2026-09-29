@@ -80,9 +80,18 @@ symbols in this file:
 
 enum
 {
+#ifdef HALO_XBOX
+	/* four times January's cache: the emulator's GPU runs frames behind
+	the CPU, and a slot recycled within that lag draws the wrong glyph; a
+	frame's glyphs (the debug console's included) now fit without churn */
+	HARDWARE_CHARACTER_CACHE_BITMAP_WIDTH = 256,
+	HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT = 256,
+	MAXIMUM_HARDWARE_CHARACTERS = 1024,
+#else
 	HARDWARE_CHARACTER_CACHE_BITMAP_WIDTH = 128,
 	HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT = 128,
 	MAXIMUM_HARDWARE_CHARACTERS = 256,
+#endif
 };
 
 enum
@@ -198,6 +207,12 @@ static void rasterizer_draw_character_with_dropshadow(
 	short dy);
 
 /* ---------- globals */
+
+#ifdef HALO_XBOX
+/* the Xbox build's Direct3D device (port/xbox/src/d3d8_nv2a.c): waits for
+the GPU to finish everything queued */
+void halo_xbox_gpu_drain(void);
+#endif
 
 extern struct rasterizer_window_begin_parameters global_window_parameters;
 
@@ -634,6 +649,24 @@ cache_hardware_format_character(
 {
 	match_assert("c:\\halo\\SOURCE\\rasterizer\\rasterizer_text.c", 633, hardware_character_cache.initialized);
 
+#ifdef HALO_XBOX
+	/* the index lives in the tag data, so a map file carries whatever its
+	tool left there; only the assert below stood between a stale value and
+	drawing another character's slot. A slot that does not hold this
+	character means it is not cached. */
+	if (font_character->hardware_character_index != NONE &&
+		(font_character->hardware_character_index < 0 ||
+			font_character->hardware_character_index >= MAXIMUM_HARDWARE_CHARACTERS ||
+			hardware_character_cache.characters[font_character->hardware_character_index].character != font_character))
+	{
+		static int reported;
+
+		if (reported++ < 4)
+			error(_error_silent, "font character %p: stale cache index %d", font_character,
+				(int)font_character->hardware_character_index);
+		font_character->hardware_character_index = NONE;
+	}
+#endif
 	if (font_character->hardware_character_index != NONE)
 	{
 		match_assert("c:\\halo\\SOURCE\\rasterizer\\rasterizer_text.c", 637, font_character->hardware_character_index>=0 && font_character->hardware_character_index<MAXIMUM_HARDWARE_CHARACTERS);
@@ -661,6 +694,11 @@ cache_hardware_format_character(
 
 		if (font_character->bitmap_height + hardware_character_cache.y0 > HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT)
 		{
+#ifdef HALO_XBOX
+			/* the cache starts over from the top: the GPU must be done with
+			the glyphs still queued before their slots are rewritten */
+			halo_xbox_gpu_drain();
+#endif
 			hardware_character_cache.y0 = 0;
 			hardware_character_cache.x0 = 0;
 			hardware_character_cache.maximum_character_height = 0;

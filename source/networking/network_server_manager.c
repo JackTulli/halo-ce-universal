@@ -2209,6 +2209,26 @@ struct network_game_server_client_machine *network_game_server_get_client_machin
 	return &server->client_machines[index];
 }
 
+#ifdef HALO_LINUX
+/* a remote machine's connection, for the lobby's report (its round trip:
+port/linux/game/network_lobby.c) */
+struct network_connection *network_game_server_machine_connection(
+	struct network_game_server *server,
+	long machine_index)
+{
+	long i;
+
+	if (!server)
+		return NULL;
+	for (i = 0; i < MAXIMUM_NETWORK_MACHINE_COUNT; i++)
+	{
+		if (server->client_machines[i].machine_index == machine_index)
+			return server->client_machines[i].connection;
+	}
+	return NULL;
+}
+#endif
+
 struct network_game_server_client_machine *network_game_server_get_client_machine_at_address(
 	struct network_game_server *server,
 	unsigned long ip_address)

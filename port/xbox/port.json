@@ -1,0 +1,17 @@
+{
+  "comment": "Xbox build inputs. The game sources and the multiplayer units are the Linux build's (port/linux/port.json); these Linux platform units are host-independent and are compiled again here (internet play among them: p2p*.c, over the console's sockets and threads). See port/xbox/README.md.",
+  "linux_platform_sources": [
+    "d3d8_resources.c",
+    "xbox_textures.c",
+    "halo_linker_common.c",
+    "xbdm.c",
+    "bink_null.c",
+    "msvc_wide.c",
+    "port_config.c",
+    "xnet.c",
+    "p2p.c",
+    "p2p_master.c",
+    "p2p_crypto.c",
+    "dsound_sdl.c"
+  ]
+}

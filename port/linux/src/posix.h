@@ -112,6 +112,9 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 	int *error, int *error_count, posix_long timeout_seconds, posix_long timeout_microseconds, int infinite);
 /* the first non-loopback IPv4 address (network byte order), or 0 */
 posix_ulong posix_local_ipv4_address(void);
+/* whether the network interface has a link (the console's cable), which
+comes before an address */
+int posix_network_link_up(void);
 /* fills buffer with cryptographically random bytes */
 void posix_random_bytes(void *buffer, posix_ulong size);
 /* the IPv4 address (network byte order) of host, a name or a dotted quad,

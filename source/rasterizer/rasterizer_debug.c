@@ -75,7 +75,12 @@ symbols in this file:
 
 enum
 {
+#ifdef HALO_XBOX
+	/* the console's memory: 1024 debug primitives, a fifth of the memory */
+	MAXIMUM_DEBUG_PRIMITIVES = 1024,
+#else
 	MAXIMUM_DEBUG_PRIMITIVES = 8192,
+#endif
 	MAXIMUM_VERTICES_PER_DEBUG_PRIMITIVE = 3
 };
 

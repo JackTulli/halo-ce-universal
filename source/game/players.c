@@ -1548,11 +1548,19 @@ static void network_player_log_idle_action(
 			nearest_distance = distance;
 		}
 	}
-	error(2, "distributed: player %ld pressed action with nothing to pick up here: unit %lx at %.2f %.2f %.2f, "
-		"nearest item %lx %s at %.2f",
-		absolute_index, player->unit_index, unit->object.position.x, unit->object.position.y, unit->object.position.z,
-		nearest_index, nearest_index != NONE ? tag_get_name(object_get(nearest_index)->definition_index) : "",
-		nearest_distance);
+	{
+		long definition_index = nearest_index != NONE ? object_get(nearest_index)->definition_index : NONE;
+		/* named only when the index is a loaded object tag: a bad one would
+		be read as a tag instance anyway (tag_get_name), and its garbage
+		name pointer took the host down (2026-09-29) */
+		const char *name = definition_index != NONE && tag_index_is_group(definition_index, OBJECT_DEFINITION_TAG) ?
+			tag_get_name(definition_index) : "?";
+
+		error(2, "distributed: player %ld pressed action with nothing to pick up here: unit %lx at %.2f %.2f %.2f, "
+			"nearest item %lx (tag %lx %s) at %.2f",
+			absolute_index, player->unit_index, unit->object.position.x, unit->object.position.y,
+			unit->object.position.z, nearest_index, definition_index, name, nearest_distance);
+	}
 }
 
 /* ... and gives up the one it has (the host's unit for it is another) */

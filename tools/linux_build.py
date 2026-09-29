@@ -314,7 +314,7 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
         pool="console",
     )
 
-    abi = " ".join(LINUX_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
+    abi = " ".join(LINUX_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []) + (["-DHALO_BIG_SESSIONS"] if getattr(sln, "port_big_sessions", False) else []))
     port_include = PORT_DIR / "include"
     sdk_flags = f"-idirafter {XDK_INCLUDE}"
     excluded = set(config.get("exclude_sources", []))

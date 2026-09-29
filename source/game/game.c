@@ -959,6 +959,9 @@ void game_precache_new_map(
 void game_dispose_from_old_map(
 	void)
 {
+#ifdef HALO_LINUX
+	render_interpolation_dispose_from_old_map();
+#endif
 	rasterizer_dispose_from_old_map();
 	game_state_dispose_from_old_map();
 	cheats_dispose_from_old_map();
@@ -1046,7 +1049,16 @@ void remove_quitting_players_from_game(
 
 		if (quit_time != NONE && !player->quit_out_of_game)
 		{
+#ifdef HALO_LINUX
+			/* the quit's time is the host's; with the distributed netcode a
+			client keeps its own clock, which may already be past it: the
+			player quits at once rather than never (and a line a tick) */
+			if (current_time == quit_time ||
+				(current_time > quit_time && game_connection() == _game_connection_network_client &&
+					network_game_distributed()))
+#else
 			if (current_time == quit_time)
+#endif
 			{
 				long unit_index = player->unit_index;
 

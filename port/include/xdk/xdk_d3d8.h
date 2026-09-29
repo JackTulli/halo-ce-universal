@@ -459,23 +459,17 @@ D3DINLINE void __stdcall D3DVertexBuffer_Unlock(D3DVertexBuffer *buffer)
 	(void)buffer;
 }
 
+
 D3DINLINE void __stdcall D3DTexture_UnlockRect(D3DTexture *texture, UINT level)
 {
-	(void)texture;
-	(void)level;
 }
 
 D3DINLINE void __stdcall D3DCubeTexture_UnlockRect(D3DCubeTexture *texture, D3DCUBEMAP_FACES face, UINT level)
 {
-	(void)texture;
-	(void)face;
-	(void)level;
 }
 
 D3DINLINE void __stdcall D3DVolumeTexture_UnlockBox(D3DVolumeTexture *texture, UINT level)
 {
-	(void)texture;
-	(void)level;
 }
 
 D3DINLINE void __stdcall D3DSurface_UnlockRect(D3DSurface *surface)

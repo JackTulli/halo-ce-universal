@@ -461,7 +461,7 @@ struct actor_perception_debug_info_view
 	((struct actor_perception_ai_debug_state_view *)&ai_debug)
 
 #define actor_perception_debug_get(index) \
-	((struct actor_perception_debug_info_view *)&actor_debug_array[(index)])
+	((struct actor_perception_debug_info_view *)&actor_debug_array[AI_DEBUG_ACTOR_SLOT((index))])
 
 #define actor_perception_object_get(index) \
 	((struct object_datum *)object_get_and_verify_type( \
@@ -2629,8 +2629,8 @@ short actor_visibility_at_point(
 perception_factor_ready:
 				{
 					struct actor_debug_info *debug =
-						&actor_debug_array[
-							DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)];
+						&actor_debug_array[AI_DEBUG_ACTOR_SLOT(
+							DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index))];
 
 					if (target_is_player)
 					{
@@ -2811,8 +2811,8 @@ short actor_audibility_at_point(
 
 		{
 			struct actor_debug_info *debug =
-				&actor_debug_array[
-					DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)];
+				&actor_debug_array[AI_DEBUG_ACTOR_SLOT(
+					DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index))];
 
 			debug->field_A8 = maximum_distance;
 			debug->field_A4 = TRUE;

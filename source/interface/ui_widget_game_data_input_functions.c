@@ -3765,6 +3765,13 @@ void player_profile_1wide_list_update(
 	struct ui_widget_definition *definition;
 	long profile_index;
 
+#ifdef HALO_XBOX
+	/* the retail disc's UI tags place this list without the wrapper this
+	build expects (its picture and description); the list itself still
+	works, so it is left alone rather than stopping the console */
+	if (!list_widget->parent)
+		return;
+#endif
 	match_vassert(
 		"c:\\halo\\SOURCE\\interface\\ui_widget_game_data_input_functions.c",
 		0x85E,

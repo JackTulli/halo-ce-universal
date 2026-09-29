@@ -704,6 +704,33 @@ real_argb_color *global_rasterizer_model_ambient_reflection_tint;
 
 /* ---------- public code */
 
+#ifdef HALO_LINUX
+/* performance mode (performance.txt in the game's folder, or on the
+disc): the effects that cost the most frame time go, the look of the game
+stays -- soft shadows, dynamic lights and reflections on the environment,
+grass, bump mapping, the sun's rays, the lens flares' visibility tests
+(which the game waits on) and the second pass of active camouflage */
+static void rasterizer_performance_mode(
+	void)
+{
+	if (!halo_performance_mode())
+		return;
+	rasterizer_debug_options.environment_shadows = FALSE;
+	rasterizer_debug_options.shadows_convolution = FALSE;
+	rasterizer_debug_options.environment_diffuse_lights = FALSE;
+	rasterizer_debug_options.environment_specular_lights = FALSE;
+	rasterizer_debug_options.environment_specular_lightmaps = FALSE;
+	rasterizer_debug_options.environment_reflections = FALSE;
+	rasterizer_debug_options.environment_reflection_mirrors = FALSE;
+	rasterizer_debug_options.detail_objects = FALSE;
+	rasterizer_debug_options.bump_mapping = FALSE;
+	rasterizer_debug_options.ray_of_buddha = FALSE;
+	rasterizer_debug_options.lens_flares_occlusion = FALSE;
+	rasterizer_debug_options.active_camouflage_multipass = FALSE;
+	rasterizer_debug_options.fps_accumulation = FALSE;
+}
+#endif
+
 boolean rasterizer_initialize(
 	void)
 {
@@ -715,6 +742,9 @@ boolean rasterizer_initialize(
 		"c:\\halo\\SOURCE\\rasterizer\\rasterizer.c",
 		289,
 		global_rasterizer_model_ambient_reflection_tint);
+#ifdef HALO_LINUX
+	rasterizer_performance_mode();
+#endif
 	return _rasterizer_initialize();
 }
 

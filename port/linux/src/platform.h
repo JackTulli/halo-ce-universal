@@ -8,6 +8,12 @@ ABI and see the XDK declarations, so every definition is type-checked
 against the SDK prototype it replaces.
 */
 
+#ifdef HALO_XBOX
+/* the Xbox build's platform layer (port/xbox/src/platform.h) stands in for
+this header, so the Linux units it compiles again see it */
+#include "../../xbox/src/platform.h"
+#else
+
 #ifndef __HALO_LINUX_PLATFORM_H
 #define __HALO_LINUX_PLATFORM_H
 
@@ -148,3 +154,5 @@ void platform_unix_time_to_filetime(unsigned long seconds, unsigned long nanosec
 void platform_filetime_to_unix_time(const FILETIME *file_time, unsigned long *seconds, unsigned long *nanoseconds);
 
 #endif
+
+#endif /* HALO_XBOX */

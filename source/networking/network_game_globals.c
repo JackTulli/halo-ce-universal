@@ -427,6 +427,9 @@ void network_game_accept_remote_connections(
 	boolean accept_remote_connections)
 {
 	bss_004566dc.accept_remote_connections = accept_remote_connections;
+#ifdef HALO_LINUX
+	p2p_accept_remote_connections(accept_remote_connections);
+#endif
 
 	return;
 }

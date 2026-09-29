@@ -276,7 +276,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         description="WINDOWS COPY $out",
     )
 
-    abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
+    abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []) + (["-DHALO_BIG_SESSIONS"] if getattr(sln, "port_big_sessions", False) else []))
     sdl_include = SDL_DIR / "include"
     excluded = set(linux_config.get("exclude_sources", []))
     libs = " ".join(

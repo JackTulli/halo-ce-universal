@@ -860,6 +860,11 @@ void update_client_handle_server_update(
 			update_client_relayed_actions[action_index].action = update->actions[action_index];
 			update_client_relayed_actions[action_index].pending_control_flags |= update->actions[action_index].control_flags;
 		}
+		/* its clients tick on their own clock and never read the ring
+		(update_client_dequeue_distributed), whose numbers are the host's:
+		stored there, every update fell outside the window and was
+		reported, three lines a tick */
+		return;
 	}
 #endif
 	if (client_update)

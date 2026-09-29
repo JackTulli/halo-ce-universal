@@ -231,6 +231,57 @@ static const struct sockaddr *peer_outgoing_address(int stream, const struct soc
 
 /* traffic from an internet play peer's stand-in comes from the peer, and
 from the network.address address from 127.0.0.1 */
+/* Games answered from the LAN: a host is also listed on the master server
+whenever it is online, and its answers reach a searcher both ways, carrying
+the same address; the game joins where the answer said, and a host heard
+on the LAN lately is joined there, directly, rather than through the
+internet (the master's signalling, the tunnel), which also needs the
+internet to be up. */
+enum
+{
+	LAN_HOSTS = 16,
+	LAN_HOST_MEMORY = 20000,
+};
+
+static struct
+{
+	unsigned long address;
+	unsigned long heard_time;
+} lan_hosts[LAN_HOSTS];
+
+static void lan_host_heard(unsigned long address)
+{
+	unsigned long now = GetTickCount();
+	int index, oldest = 0;
+
+	for (index = 0; index < LAN_HOSTS; index++)
+	{
+		if (lan_hosts[index].address == address)
+		{
+			lan_hosts[index].heard_time = now;
+			return;
+		}
+		if ((long)(lan_hosts[index].heard_time - lan_hosts[oldest].heard_time) < 0)
+			oldest = index;
+	}
+	lan_hosts[oldest].address = address;
+	lan_hosts[oldest].heard_time = now;
+}
+
+static int lan_host_recent(unsigned long address)
+{
+	unsigned long now = GetTickCount();
+	int index;
+
+	for (index = 0; index < LAN_HOSTS; index++)
+	{
+		if (lan_hosts[index].address == address && address &&
+			(long)(now - lan_hosts[index].heard_time) < LAN_HOST_MEMORY)
+			return 1;
+	}
+	return 0;
+}
+
 static void peer_incoming_address(int stream, struct sockaddr *address, const int *address_length)
 {
 	if (address && address_length && *address_length >= (int)sizeof(struct sockaddr_in) &&
@@ -246,6 +297,9 @@ static void peer_incoming_address(int stream, struct sockaddr *address, const in
 			in->sin_port = port;
 			return;
 		}
+		/* from the LAN itself: a host's server port (5150) answering */
+		if (!stream && ((port & 0xFF) << 8 | port >> 8) == 5150)
+			lan_host_heard(ip);
 	}
 	incoming_address(address, address_length);
 }
@@ -379,12 +433,28 @@ int WSAAPI halo_ws_connect(SOCKET socket, const struct sockaddr *address, int ad
 	return winsock_result(posix_socket_connect((int)socket, address, address_length));
 }
 
+/* a socket bound to a well-known service port (below 1024) */
+static int service_port_socket(int socket)
+{
+	struct sockaddr_in bound;
+	int length = sizeof(bound);
+	unsigned char port[2];
+
+	if (posix_socket_getsockname(socket, &bound, &length) < 0 || bound.sin_family != AF_INET)
+		return 0;
+	memcpy(port, &bound.sin_port, 2);
+	return (port[0] << 8 | port[1]) < 1024;
+}
+
 int WSAAPI halo_ws_listen(SOCKET socket, int backlog)
 {
 	int result = posix_socket_listen((int)socket, backlog);
 
-	/* the game listens for connections while it hosts */
-	if (result == 0)
+	/* the game listens for connections while it hosts, on its own port;
+	its telnet console (telnet_console.c) listens on port 23 from start-up
+	wherever binding that port is allowed (the console, Windows), which is
+	not hosting */
+	if (result == 0 && !service_port_socket((int)socket))
 		p2p_socket_listening((int)socket);
 	return winsock_result(result);
 }
@@ -456,6 +526,10 @@ int WSAAPI halo_ws_sendto(SOCKET socket, const char *buffer, int length, int fla
 			if (result < 0 && sent >= 0)
 				result = sent;
 		}
+		/* and, through the master server, to the internet's games (a
+		search) or searchers (a hosting game's answer) */
+		if (length > 0)
+			p2p_broadcast_sent((int)socket, ((const struct sockaddr_in *)address)->sin_port, buffer, length);
 		return winsock_result(result);
 	}
 	{
@@ -845,8 +919,11 @@ INT WSAAPI XNetXnAddrToInAddr(const XNADDR *address, const XNKID *key_identifier
 	unsigned long peer;
 
 	(void)key_identifier;
-	/* an internet play peer's XNADDR carries its identifier */
-	if (p2p_peer_address(address->abEnet, &peer))
+	/* a host that answered from the LAN lately is joined there; an internet
+	play peer's XNADDR carries its identifier */
+	if (lan_host_recent(address->ina.s_addr))
+		*result = address->ina;
+	else if (p2p_peer_address(address->abEnet, &peer))
 		result->s_addr = peer;
 	else
 		*result = address->ina;
@@ -864,19 +941,38 @@ static unsigned long title_address(void)
 	return posix_local_ipv4_address();
 }
 
+/* the console's transport polls this for up to ten seconds while the
+address is pending: DHCP on the console takes a moment after the link
+comes up, and answering "ethernet, no address" at once left it sending
+from 0.0.0.0 */
 DWORD WSAAPI XNetGetTitleXnAddr(XNADDR *address)
 {
+	static int reported;
 	unsigned long ip = title_address();
 
 	memset(address, 0, sizeof(*address));
 	address->bSizeOfStruct = sizeof(*address);
 	address->ina.s_addr = ip;
 	memcpy(address->abEnet, p2p_identifier(), sizeof(address->abEnet));
-	return ip ? (XNET_GET_XNADDR_ETHERNET | XNET_GET_XNADDR_DHCP) : XNET_GET_XNADDR_ETHERNET;
+	if (!ip)
+	{
+#ifdef HALO_XBOX
+		/* pending while DHCP may still answer (the link is up and the
+		console has just started); after that, as before, initialized
+		without an address: the game halts on a transport that failed */
+		return posix_network_link_up() && GetTickCount() < 15000 ? XNET_GET_XNADDR_PENDING : XNET_GET_XNADDR_ETHERNET;
+#else
+		return XNET_GET_XNADDR_ETHERNET;
+#endif
+	}
+	if (!reported++)
+		platform_log("network address %lu.%lu.%lu.%lu", ip & 0xff, (ip >> 8) & 0xff, (ip >> 16) & 0xff, (ip >> 24) & 0xff);
+	return XNET_GET_XNADDR_ETHERNET | XNET_GET_XNADDR_DHCP;
 }
 
+/* the link, as the cable: up before any address */
 DWORD WSAAPI XNetGetEthernetLinkStatus(void)
 {
-	return title_address() ?
+	return posix_network_link_up() ?
 		(XNET_ETHERNET_LINK_ACTIVE | XNET_ETHERNET_LINK_100MBPS | XNET_ETHERNET_LINK_FULL_DUPLEX) : 0;
 }

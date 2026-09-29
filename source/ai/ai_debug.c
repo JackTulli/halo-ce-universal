@@ -305,8 +305,8 @@ void ai_debug_initialize(
 	ai_debug.last_render_id = 1;
 	ai_debug.render = TRUE;
 
-	actor_debug_array = actor_debug_array==NULL ? (struct actor_debug_info *)debug_malloc(sizeof(*actor_debug_array) * MAXIMUM_NUMBER_OF_ACTORS, FALSE, "c:\\halo\\SOURCE\\ai\\ai_debug.c", 147) : actor_debug_array;
-	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS, FALSE, "c:\\halo\\SOURCE\\ai\\ai_debug.c", 148) : actor_path_debug_array;
+	actor_debug_array = actor_debug_array==NULL ? (struct actor_debug_info *)debug_malloc(sizeof(*actor_debug_array) * AI_DEBUG_ACTOR_COUNT, FALSE, "c:\\halo\\SOURCE\\ai\\ai_debug.c", 147) : actor_debug_array;
+	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * AI_DEBUG_PATH_COUNT, FALSE, "c:\\halo\\SOURCE\\ai\\ai_debug.c", 148) : actor_path_debug_array;
 
 	match_assert("c:\\halo\\SOURCE\\ai\\ai_debug.c", 150, actor_debug_array && actor_path_debug_array);
 
@@ -359,10 +359,10 @@ void ai_debug_clear_storage(
 {
 	match_assert("c:\\halo\\SOURCE\\ai\\ai_debug.c", 208, actor_debug_array);
 
-	memset(actor_debug_array, 0, sizeof(*actor_debug_array) * MAXIMUM_NUMBER_OF_ACTORS);
+	memset(actor_debug_array, 0, sizeof(*actor_debug_array) * AI_DEBUG_ACTOR_COUNT);
 	match_assert("c:\\halo\\SOURCE\\ai\\ai_debug.c", 211, actor_path_debug_array)
 
-	memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS);
+	memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * AI_DEBUG_PATH_COUNT);
 
 	return;
 }
@@ -374,7 +374,7 @@ void ai_debug_actor_deleted(
 
 	for (path_index = 0; path_index<MAXIMUM_NUMBER_OF_ACTOR_PATHS; ++path_index)
 	{
-		struct path_debug_storage *path = &actor_path_debug_array[path_index];
+		struct path_debug_storage *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(path_index)];
 
 		if (path->valid)
 		{
@@ -398,7 +398,7 @@ struct path_debug_storage *ai_debug_get_last_path(
 
 	for (path_index = 0; path_index<MAXIMUM_NUMBER_OF_ACTOR_PATHS; ++path_index)
 	{
-		struct path_debug_storage const *path = &actor_path_debug_array[path_index];
+		struct path_debug_storage const *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(path_index)];
 	
 		if (path->valid && path->actor_index==actor_index && path->path_time>found_path_time)
 		{
@@ -407,7 +407,7 @@ struct path_debug_storage *ai_debug_get_last_path(
 		}
 	}
 
-	return found_path_index==NONE ? NULL : &actor_path_debug_array[found_path_index];
+	return found_path_index==NONE ? NULL : &actor_path_debug_array[AI_DEBUG_PATH_SLOT(found_path_index)];
 }
 
 boolean ai_debug_highlight_cluster(
@@ -779,7 +779,7 @@ static void ai_debug_render_actor(
 	long *history_start_time)
 {
 	struct actor_datum* actor = actor_get(actor_index);
-	struct actor_debug_info *actor_debug_info = &actor_debug_array[DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)];
+	struct actor_debug_info *actor_debug_info = &actor_debug_array[AI_DEBUG_ACTOR_SLOT(DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index))];
 
 	if (actor_debug_info->last_render_id!=ai_debug.last_render_id)
 	{
@@ -4979,9 +4979,20 @@ struct path_debug_storage *ai_debug_get_path_storage(
 	short storage_index = NONE;
 	short index;
 
+#ifdef HALO_XBOX
+	/* the console: the storage (a 115 KB clear and an 82 KB copy for every
+	path search) feeds only the AI debug displays; the path code does
+	without it (every use tests for NULL) */
+	if (!ai_debug.path && !ai_debug.render_paths && !ai_debug.render_paths_failed && !ai_debug.render_all_actors &&
+		ai_debug.selected_actor_index == NONE)
+	{
+		return NULL;
+	}
+#endif
+
 	for (index = 0; index<MAXIMUM_AI_DEBUG_PATH_STORAGE; index++)
 	{
-		struct path_debug_storage *path = &actor_path_debug_array[index];
+		struct path_debug_storage *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(index)];
 
 		if (path->actor_index==actor_index && !path->failure)
 		{
@@ -5002,7 +5013,7 @@ struct path_debug_storage *ai_debug_get_path_storage(
 
 		for (index = 0; index<MAXIMUM_AI_DEBUG_PATH_STORAGE; index++)
 		{
-			struct path_debug_storage *path = &actor_path_debug_array[index];
+			struct path_debug_storage *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(index)];
 
 			match_assert("c:\\halo\\SOURCE\\ai\\ai_debug.c", 291, path->valid);
 
@@ -5018,7 +5029,7 @@ struct path_debug_storage *ai_debug_get_path_storage(
 
 	if (storage_index!=NONE)
 	{
-		struct path_debug_storage *path = &actor_path_debug_array[storage_index];
+		struct path_debug_storage *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(storage_index)];
 
 		csmemset(path, 0, sizeof(struct path_debug_storage));
 
@@ -5623,7 +5634,7 @@ static void ai_debug_render_paths_failed(
 
 	for (index = 0; index<MAXIMUM_AI_DEBUG_PATH_STORAGE; index++)
 	{
-		struct path_debug_storage *path = &actor_path_debug_array[index];
+		struct path_debug_storage *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(index)];
 
 		if (path->valid && path->failure)
 		{
@@ -6116,13 +6127,13 @@ static void ai_debug_path_storage_update(
 
 	for (index = 0; index<MAXIMUM_AI_DEBUG_PATH_STORAGE; index++)
 	{
-		struct path_debug_storage *path = &actor_path_debug_array[index];
+		struct path_debug_storage *path = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(index)];
 
 		if (path->valid && path->failure)
 		{
 			for (other_index = index+1; other_index<MAXIMUM_AI_DEBUG_PATH_STORAGE; other_index++)
 			{
-				struct path_debug_storage *other = &actor_path_debug_array[other_index];
+				struct path_debug_storage *other = &actor_path_debug_array[AI_DEBUG_PATH_SLOT(other_index)];
 
 				if (other->valid && other->failure &&
 					other->actor_index==path->actor_index &&

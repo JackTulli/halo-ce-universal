@@ -118,6 +118,19 @@ static void screen_mode_choose(long *width, float scale[2])
 #endif
 }
 
+/* the desktop shows the frame's shape: the width above gives the display's */
+float halo_pixel_aspect(void)
+{
+	return 1.0f;
+}
+
+/* the desktop draws the frame's targets at the screen's scale, and samples
+them normalised: the game's texel coordinates are in the frame's columns */
+float halo_screen_texture_scale_x(void)
+{
+	return 1.0f;
+}
+
 long halo_screen_width(void)
 {
 	if (!screen_width)

@@ -2502,6 +2502,11 @@ void main_rasterizer_throttle(
 					rasterizer_globals.framerate_throttle = FALSE;
 					break;
 				}
+#ifdef HALO_XBOX
+				/* asleep until the callback, not spinning on the clock */
+				if ((__int64)rasterizer_globals.frame_and_vertical_blank_index < target_index)
+					halo_xbox_wait_vertical_blank(20);
+#endif
 			}
 			profile_idle_end();
 		}
@@ -2525,6 +2530,10 @@ void main_rasterizer_throttle(
 		description = lapsed_frames == 0 ? "SYNCED  " : "LAPSED  ";
 	}
 
+#ifdef HALO_XBOX
+	/* read only by the frame rate and profile displays */
+	if (rasterizer_globals.framerate_throttle_debug || profile_display)
+#endif
 	_snprintf(
 		main_globals.vblank_debug_string + csstrlen(main_globals.vblank_debug_string),
 		sizeof(main_globals.vblank_debug_string) - csstrlen(main_globals.vblank_debug_string),
@@ -3211,6 +3220,8 @@ void main_loop(
 #ifdef HALO_LINUX
 			/* automated system link tests (port/linux/game/network_test.c) */
 			network_test_update(main_globals.main_menu_scenario_loaded, main_globals.seconds_elapsed);
+			/* the hosted lobby, for the master server's status page */
+			network_lobby_update();
 #endif
 			connection = main_globals.connection;
 			if (connection==_game_connection_network_client)

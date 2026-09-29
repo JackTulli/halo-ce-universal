@@ -176,7 +176,24 @@ static void write_to_debug_file(
 		}
 	}
 	fprintf(file, "%s%s", prefix, string);
+#ifdef HALO_XBOX
+	/* the console: a flush is a write to the disk on the game's thread;
+	every line also goes out on the network log and into the crash ring
+	at once, so the file is flushed every sixteen lines or two seconds */
+	{
+		static unsigned long lines, flushed_time;
+		unsigned long now = GetTickCount();
+
+		if (++lines >= 16 || now - flushed_time >= 2000)
+		{
+			fflush(file);
+			lines = 0;
+			flushed_time = now;
+		}
+	}
+#else
 	fflush(file);
+#endif
 }
 
 #endif

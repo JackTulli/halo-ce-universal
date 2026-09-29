@@ -609,6 +609,22 @@ extern struct ai_debug_state ai_debug;
 extern struct actor_debug_info *actor_debug_array;
 extern struct path_debug_storage *actor_path_debug_array;
 
+/* The debug records: one per actor (256 x 25 KB) and one per path
+(32 x 115 KB) on a development kit. A retail console has no room for
+them, so the Xbox build keeps one shared record of each, which every
+actor and path uses in turn; only the AI debug displays read them. */
+#ifdef HALO_XBOX
+#define AI_DEBUG_ACTOR_COUNT 1
+#define AI_DEBUG_PATH_COUNT 1
+#define AI_DEBUG_ACTOR_SLOT(index) ((void)(index), 0)
+#define AI_DEBUG_PATH_SLOT(index) ((void)(index), 0)
+#else
+#define AI_DEBUG_ACTOR_COUNT MAXIMUM_NUMBER_OF_ACTORS
+#define AI_DEBUG_PATH_COUNT MAXIMUM_NUMBER_OF_ACTOR_PATHS
+#define AI_DEBUG_ACTOR_SLOT(index) (index)
+#define AI_DEBUG_PATH_SLOT(index) (index)
+#endif
+
 
 extern real_point3d global_ai_debug_drawstack_next_position;
 extern real_point3d global_ai_debug_drawstack_last_position;

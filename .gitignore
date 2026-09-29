@@ -36,6 +36,8 @@ compile_commands.json
 *.bndb
 xbox/
 !source/**/xbox/
+# the Xbox port (the pattern above is for the SDK's folder)
+!port/xbox/
 
 # Locally extracted proprietary game data (never commit)
 assets/
