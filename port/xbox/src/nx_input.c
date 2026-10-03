@@ -33,7 +33,30 @@ struct pad
 	/* a change the game asked for, sent by the next poll */
 	volatile int rumble_pending;
 	volatile unsigned short want_left, want_right;
+	unsigned long rumble_sent_time;
+	/* a report's transfer failed (a CRC error, a timeout: the controller
+	halts the endpoint): the next poll clears the halt and reads again */
+	volatile int read_failed;
+	EP_INFO_T *failed_endpoint;
 };
+
+/* A rumble report is a control transfer the USB stack waits out on the
+polling thread (1-3 ms on a console's OHCI), and the game changes the
+motors every tick while a rumble fades: a change goes at most every
+RUMBLE_INTERVAL, and one smaller than a sixteenth of the range not at all,
+but stopping always does, at once. */
+#define RUMBLE_INTERVAL 60
+#define RUMBLE_LEVEL(value) ((unsigned)(value) >> 12)
+
+static int rumble_differs(const struct pad *pad)
+{
+	if (!pad->rumble_known)
+		return 1;
+	if ((pad->want_left == 0) != (pad->rumble_left == 0) || (pad->want_right == 0) != (pad->rumble_right == 0))
+		return 1;
+	return RUMBLE_LEVEL(pad->want_left) != RUMBLE_LEVEL(pad->rumble_left) ||
+		RUMBLE_LEVEL(pad->want_right) != RUMBLE_LEVEL(pad->rumble_right);
+}
 
 /* the USB stack's control request (libusbohci's usb.h) */
 extern int usbh_ctrl_xfer(UDEV_T *udev, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
@@ -75,8 +98,22 @@ static void read_callback(UTR_T *transfer)
 	xid_dev_t *xid = (xid_dev_t *)transfer->context;
 	struct pad *pad = xid ? (struct pad *)xid->user_data : NULL;
 
-	if (transfer->status < 0 || !pad)
+	if (!pad)
 		return;
+	if (transfer->status < 0)
+	{
+		/* (a disconnection's abort is the disconnected callback's) */
+		if (transfer->status != USBH_ERR_ABORT && transfer->status != USBH_ERR_DISCONNECTED)
+		{
+			/* nothing held down while the reads stop: before, one failed
+			transfer left the pad's last report, a stick held over, until
+			it was unplugged */
+			memset(&pad->report, 0, sizeof(pad->report));
+			pad->failed_endpoint = transfer->ep;
+			pad->read_failed = 1;
+		}
+		return;
+	}
 	if (transfer->xfer_len >= sizeof(pad->report))
 	{
 		memcpy(&pad->report, transfer->buff, sizeof(pad->report));
@@ -109,6 +146,7 @@ static void connected(xid_dev_t *xid, int status)
 	memset(&pad->report, 0, sizeof(pad->report));
 	pad->device = xid;
 	xid->user_data = pad;
+	pad->read_failed = 0;
 	pad->connected = 1;
 	usbh_xid_read(xid, 0, read_callback);
 	snprintf(text, sizeof(text), "halo-xbox: gamepad on port %d\n", port + 1);
@@ -151,13 +189,35 @@ void nx_input_poll(void)
 	{
 		struct pad *pad = &pads[port];
 
+		if (pad->read_failed && pad->device)
+		{
+			/* the endpoint descriptor's halt bit (OHCI: its third word,
+			bit 0; bit 1, the toggle carry, stays), then a read again */
+			if (pad->failed_endpoint && pad->failed_endpoint->hw_pipe)
+				((volatile uint32_t *)pad->failed_endpoint->hw_pipe)[2] &= ~1UL;
+			pad->read_failed = 0;
+			/* at the completion DPC's level, which also submits reads (the
+			submission does not wait) */
+			{
+				KIRQL irql = KeRaiseIrqlToDpcLevel();
+
+				usbh_xid_read(pad->device, 0, read_callback);
+				KfLowerIrql(irql);
+			}
+		}
+
 		if (pad->rumble_pending)
 		{
+			int stopping = !pad->want_left && !pad->want_right;
+
+			/* too soon after the last report: kept for a later poll */
+			if (!stopping && pad->rumble_known && GetTickCount() - pad->rumble_sent_time < RUMBLE_INTERVAL)
+				continue;
 			pad->rumble_pending = 0;
-			if (pad->connected && pad->device &&
-				!(pad->rumble_known && pad->rumble_left == pad->want_left && pad->rumble_right == pad->want_right))
+			if (pad->connected && pad->device && rumble_differs(pad))
 			{
 				rumble_send(pad, pad->want_left, pad->want_right);
+				pad->rumble_sent_time = GetTickCount();
 			}
 		}
 	}

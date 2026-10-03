@@ -5,7 +5,10 @@
 result is `build/xbox/default.xbe`. The game runs on the console's kernel
 with its own Direct3D device over the NV2A, sound through the console's
 audio hardware and USB controllers, and it plays system link and internet
-games with the desktop builds. So far it has been tested in xemu only.
+games with the desktop builds. It runs in xemu and on a real console (a
+128 MB one so far), where it has played multiplayer games with the Windows
+build ("First test on a real console"). On a 128 MB console with the HDTV
+cable it can run at 720p ("720p").
 
 ## Requirements
 
@@ -26,8 +29,31 @@ You do not need the Xbox SDK.
     CFLAGS="-O2 -fno-omit-frame-pointer $(python3 -c 'from tools.xbox_build import LWIP_OPTIONS; print(" ".join(LWIP_OPTIONS))')"
   ```
 
-  (run from the repository's root). nxdk needs `clang`, `lld`, `lld-link`,
+  (run from the repository's root). Before that, `python3
+  tools/xbox_pbkit_patch.py ~/nxdk` patches pbkit for 720p in 64 MB: the
+  frame buffer count and pbkit's depth buffer chosen before `pb_init`, and
+  `pb_flip_pending` (the default, triple buffered with a depth buffer, is
+  unchanged; the game does not link without the patch; a vertical blank
+  the DPC handles flips too), `python3 tools/xbox_lwip_patch.py ~/nxdk`
+  turns lwIP's single-interface mode off and its loopback interface on
+  (127.0.0.1 without a cable or an address), and `python3
+  tools/xbox_usb_patch.py ~/nxdk` makes the USB stack claim its transfer
+  descriptors atomically. All are idempotent. nxdk's makefiles miss a
+  changed header or source (their dependency files hold `C:/` paths under
+  MSYS2), so after the patches run `make ... clean-net`, delete
+  `lib/nxdk/net.obj`, `lib/libnxdk.lib`, `lib/pbkit/pbkit.obj`,
+  `lib/libpbkit.lib`, `lib/usb/libusbohci/src_core/mem_alloc.obj` and
+  `lib/nxdk_usb.lib`, then build as above. nxdk needs `clang`, `lld`, `lld-link`,
   `llvm-lib` and `llvm-dlltool` under those names in the `PATH`.
+
+On Windows, [MSYS2](https://www.msys2.org)'s MINGW64 shell has all of it:
+`pacman -S make git bison flex mingw-w64-x86_64-clang mingw-w64-x86_64-lld
+mingw-w64-x86_64-llvm mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+mingw-w64-x86_64-ninja mingw-w64-x86_64-python`, then nxdk cloned with its
+submodules (with MSYS2's git, which keeps nxdk's shell scripts' line ends)
+and built as above with `NXDK_DIR` set and `$NXDK_DIR/bin` in the `PATH`.
+nxdk's tools are then `cxbe.exe` and `extract-xiso.exe`, which the scripts
+find.
 
 ## Build the game
 
@@ -58,16 +84,32 @@ Start the image in xemu (Machine, Load Disc) or on a console that starts
 unsigned XBEs. The game runs in the retail console's 64 MB, which is
 xemu's default. This build of the game is the January beta, whose debug
 buffers take 2 MB more than the retail game's, so its texture cache is
-12 MB instead of 22.
+12 MB instead of 22 (22 at 720p, which uses a 128 MB console's top half).
+
+The disc's `config.toml` holds the settings (`--setting name=value` when
+packing sets one): `display.hd_720p`, `display.field_of_view`,
+`display.unlocked_framerate`, `display.fps_counter` (the frame rate in the
+top left during play), and the `[graphics]` switches, each of which
+turns one effect off (shadows, soft_shadows, dynamic_lights, specular,
+reflections, decals, detail_objects, bump_mapping, lens_flares,
+lens_flare_occlusion, sun_rays, fog, particles, weather, screen_flashes,
+screen_effects, active_camouflage_quality). The file lists them all with
+their meanings.
 
 ### The log
 
 The console shows the game's log (`debug.txt`, which goes to the cache
-partition, `Z:`) and the platform layer's messages on a text screen. It
-also sends every line by UDP to port 9999 of the machine beside it (the
-host of xemu's user network, 10.0.2.2). To keep them:
+partition, `Z:`, the one a dashboard's FTP server calls `X:`) and the
+platform layer's messages on a text screen. It also sends every line by UDP
+to port 9999 of the machine beside it: the host of xemu's user network,
+10.0.2.2, or, from a real console on any other network, every machine of
+that network (broadcast). To keep them:
 
     python tools/xbox_log.py --print
+
+When the game exits (a failed start-up ends that way), the screen shows
+the first errors of the run (the game's fatal assertions first, then failed
+calls) and its last lines for 30 seconds before the console restarts.
 
 A watchdog thread reports every five seconds which SDK function the game
 called last. A fault on any of the game's threads, or an assertion inside
@@ -85,7 +127,7 @@ be a silent bugcheck.
 | Game code | All of it, as the other native ports build it (`HALO_LINUX`), at the limits every build shares: 16 players on up to 16 machines, the retail pools (`port/include/halo_session_limits.h`; `include/halo_xbox_limits.h` adds the console's game state). |
 | Kernel, files, threads, memory | nxdk's Win32 subset and the kernel: `src/xbox_kernel.c`, `src/nx_kernel.c`. The game's fixed memory map (the game state at `0x80061000`, the tag cache at `0x803A6000`) comes from the kernel's contiguous memory, as on the console. Asynchronous reads and writes complete from the alertable waits, as the XAPI's did. |
 | Saves, signatures | `src/xbox_xapi.c`: saves on `U:`, the title's folder of the data partition; SHA-1 signatures with a fixed key. |
-| Graphics | `src/d3d8_nv2a.c`: the game's Direct3D 8 device over nxdk's pbkit, driving the NV2A directly (the push buffer is `src/nx_gpu.c`). Resources are real (`port/linux/src/d3d8_resources.c`), frames are paced on the display's vertical blank, and the dashboard's 480p and widescreen settings decide the mode (`src/nx_video.c`). |
+| Graphics | `src/d3d8_nv2a.c`: the game's Direct3D 8 device over nxdk's pbkit, driving the NV2A directly (the push buffer is `src/nx_gpu.c`). Resources are real (`port/linux/src/d3d8_resources.c`), frames are paced on the display's vertical blank, and the dashboard's 480p and widescreen settings decide the mode, with 720p on a 128 MB console when `display.hd_720p` asks (`src/nx_video.c`). |
 | Sound | The Linux build's DirectSound mixer, played through one voice of the MCPX APU (`src/nx_apu.c`, the output xemu plays) or through the AC97 (`src/nx_audio.c`), as the `audio.backend` setting chooses. Refer to "Sound". |
 | Input | USB gamepads through nxdk's USB stack, with rumble (`src/nx_input.c`, `src/xinput_usb.c`). |
 | Networking | The Linux port's Winsock and XNet layer (`port/linux/src/xnet.c`) over nxdk's lwIP stack (`src/nx_net.c`, which translates the socket address layouts and error codes). System link works, and internet play goes through the master server with the desktop builds. Refer to "Internet play". |
@@ -127,20 +169,20 @@ be a silent bugcheck.
 ## Where it stands
 
 The campaign and multiplayer play on the emulated console with graphics,
-sound and controllers. System link and internet play work, also with the
-Linux build. Memory is the constraint: this beta build's debug systems (AI
+sound and controllers, and multiplayer on a real one. System link and
+internet play work, also with the desktop builds. Memory is the
+constraint on a 64 MB console: this beta build's debug systems (AI
 debugging, profiling) take several megabytes the retail build does not,
 so the texture cache is 12 MB instead of 22. The dated sections below
 record each step. "Bug audit" lists what is still open in the netcode.
 
 ## Next
 
-1. Memory: trim the beta's debug systems to give the texture cache its
-   22 MB back. That would also make room for 720p, which needs about 7 MB
-   more and a change to pbkit's frame buffers.
-2. Movies, once Bink or a substitute decoder exists.
-3. The netcode items the bug audit left open.
-4. A test on a real console.
+1. 720p on a real console: untested there (see "720p").
+2. Memory on a 64 MB console: trim the beta's debug systems to give the
+   texture cache its 22 MB back.
+3. Movies, once Bink or a substitute decoder exists.
+4. The netcode items the bug audit left open.
 
 ## Disc, saves and the cache partition (2026-09-28)
 
@@ -221,14 +263,17 @@ record each step. "Bug audit" lists what is still open in the netcode.
   transport that failed to initialise (create_transport_endpoint asserts
   it). The log now shows "xbox ethernet link is connected at 100 Mbps in
   full-duplex mode" and "network address 10.0.2.15" under xemu's NAT.
-- A local game's client connects to its own server at 127.0.0.1, and lwIP
-  here has no loopback interface (LWIP_HAVE_LOOPIF is off), so the address
-  is swapped for the console's own, which lwIP loops back
+- A local game's client connects to its own server at 127.0.0.1. lwIP
+  here first had no loopback interface (LWIP_HAVE_LOOPIF off), so the
+  address was swapped for the console's own, which lwIP loops back
   (LWIP_NETIF_LOOPBACK), and swapped back in what the game reads
   (nx_net.c, to_lwip_address/from_lwip_address). The swap was there but
   keyed on nxdk's `g_pnetif`, NULL from the port's side, so hosting a
   system link game ended in WSAEHOSTUNREACH and "Failed to join the System
-  Link game".
+  Link game". Since 2026-10-01 lwIP has its loopback interface
+  (tools/xbox_lwip_patch.py) and 127.0.0.1 goes to it unchanged: the
+  console's own address needs the cable, 127.0.0.1 does not. What comes
+  from the console's own address still reads as 127.0.0.1.
 - System link on the LAN needs the consoles on one LAN: xemu's default NAT
   backend isolates each instance (no broadcasts leave it), so two copies
   must use xemu's udp backend (each pointed at the other) or the pcap
@@ -530,21 +575,20 @@ In the distributed netcode (`port/linux/game`, `port/linux/NETCODE.md`):
   columns. The frame taken as a texture is addressed in the buffer's
   texels, so the effects that do so squeeze their coordinates by
   halo_screen_texture_scale_x (the screen effects' texture transforms, the
-  sun glow's source copy; active camouflage's screen projection is not
-  yet, so its refraction is a little off on widescreen). The log's "video:"
+  sun glow's source copy, and since 2026-09-30 active camouflage's screen
+  projection and the loading screen's). The log's "video:"
   line says what was found and chosen, and "screen: 854x480 drawn in
   720x480" follows. In xemu the window's shape is its own setting: 16:9 (or
   Auto, where xemu honours the signal).
-- 720p and 1080i are not offered. A 1280x720 frame with its depth buffer
-  needs about 7 MB more than the console has left mid-game with the port's
-  caches, even double-buffered with one shared depth buffer, so it would
-  only run by cutting the texture cache from 12 to about 6 MB.
+- 720p: not on a 64 MB console, whose room it does not have; on a 128 MB
+  one since 2026-09-30 (see "720p"). 1080i is not offered.
 - Performance mode: a `performance.txt` on the disc (`tools/xbox_disc.py
   --performance`; on the desktop, next to maps/) turns off, at the
   rasterizer's start (rasterizer.c, rasterizer_performance_mode), the soft
   shadows and the environment's shadows, dynamic lights, specular
   lightmaps and reflections, grass, bump mapping, the sun's rays, the lens
-  flares' visibility tests (which the game waits on) and active
+  flares' visibility tests (until 2026-10-01: without them every flare drew
+  through the walls as a white glow) and active
   camouflage's second pass, and stops the terminal's lines from being drawn
   every frame (interface.c; the console itself still shows). The device's
   frame statistics stay quiet in it.
@@ -659,6 +703,428 @@ buffer stays as a safety net.
 - The retail UI tags lack the wrapper the January profile list expects
   (`player_profile_1wide_list_update`); the Xbox build returns instead of
   halting.
+
+## First test on a real console (2026-09-30)
+
+The build that runs in xemu exited on a real console (128 MB) within
+seconds of starting, after the game had started the GPU. What the screen
+showed was not the error:
+
+- Once the GPU shows the game, log lines go only to the ring; a crash or
+  exit shows the text screen again and replays the ring's last 1600 bytes.
+  nxdk's `debugPrint` formats into 512 bytes, so the replay showed its
+  first 511 bytes (stack walk addresses) and cut off the rest, which held
+  the assertion. `screen_print` (nx_kernel.c) prints in pieces now, and the
+  exit screen is a summary (see "The log").
+- The last I/O before the failure was the first 2048-byte write of the map
+  cache's set-up (`cached_map_files_initialize`: a blank header, then the
+  file extended to its full size). The six files take 732 MB of E:, which
+  a console with games copied to E: may not have; xemu's image has room.
+  Unconfirmed as the cause, but the files now go where there is room: E:
+  when it has it, otherwise the cache partitions Partition4 and Partition5
+  (750 MB each, mounted as Y: and W:), chosen at start-up from their free
+  space (`place_map_cache`; the log names the places and each partition's
+  free space).
+- The network log also broadcasts on a real network, and I/O reports go
+  through the ring.
+- nxdk's PDCLib has no floating point in its printf: `%f`, `%e`, `%g` print
+  nothing and leave their double on the argument list, so every later
+  argument is read out of step. The host's crash in a game with the Windows
+  build (a player pressed action with nothing to pick up:
+  `network_player_log_idle_action`'s `%.2f` values, then its `%s` took the
+  low half of a double, 0, as its pointer) was this, as was the "garbage
+  name pointer" of 2026-09-29, which a check of the tag index did not
+  cure; the platform log's `cpu:` line printed empty numbers the same way.
+  msvc_crt.c now formats the floating-point conversions itself (musl's
+  method, integer arithmetic only; checked against the Microsoft C
+  runtime's printf on 290,000 values and formats) and passes them to
+  PDCLib as strings, and the platform layer's `snprintf` family goes
+  through the same functions (crt/stdio.h).
+- The real NV2A checks method data that xemu does not; pbkit reports the
+  trap and stops the console (the report now starts on a cleared screen,
+  since nxdk's text screen pages). Found so far on a console, each an
+  "invalid data error": NV097_SET_TEXTURE_FILTER with the convolution
+  kernel field (bits 13-15) 0 (it must be 1 or 2 whatever the filters;
+  values 0x02040000 and 0x01010000), and NV097_SET_SURFACE_FORMAT pairing
+  a 16-bit swizzled target (a texture the game renders into) with the
+  32-bit depth format (0x07070223): a swizzled target now gets a depth
+  format of its own size and no depth buffer of another. Also fixed from a
+  comparison with libs/d3d8: the shadow function went to 0x1D74 (a
+  semaphore method) instead of 0x1E6C; Present re-targeted only the DMA
+  windows when the target was not the back buffer, leaving pbkit's colour
+  and depth offsets of 0 (physical 0, the kernel); clears could pass the
+  720-column surface while the menus are centred; a single-level texture
+  gets a single-level filter.
+- Particles and other dynamic geometry were torn and oversized on a
+  console: the game rewrites its dynamic vertex buffers from their start
+  each frame after a lock that, on the retail runtime, waited for the GPU
+  to finish with them; here it did not wait, and the CPU overwrote
+  vertices the GPU (a frame or two behind on a console) was still
+  drawing. A lock without D3DLOCK_NOOVERWRITE or D3DLOCK_READONLY now
+  waits for the GPU to finish with that resource (at first by draining
+  the GPU; since the performance audit, by fence), and resources are
+  write-combined as the runtime's were (d3d8_resources.c, HALO_XBOX).
+- xemu with its network bridged (pcap) onto the network card of the
+  computer that runs the Windows build cannot reach that computer: the
+  console's joins timed out while the PC could not be reached, and worked
+  at once with xemu's NAT network. Two machines on a network do not have
+  this problem. Seen again 2026-10-01: the console's packets reached the
+  PC (its log, its LAN game answers, its tunnel punches), but nothing the
+  PC sent reached the console (no ping answer, port 5150 silent while it
+  hosted). The tunnel takes one packet heard as connected, so the PC's
+  side said "connected to player" while the console's never heard back;
+  the PC's direct LAN join to the console failed after the game's 1 s
+  connect wait.
+
+## Performance audit for the console (2026-09-30)
+
+What cost the real console time, and what changed. None of it lowers the
+graphics.
+
+- Resource waits by fence (d3d8_nv2a.c). A waiting lock drained the whole
+  GPU. Now the device writes a fence number into the report page at the
+  end of each frame (NV097_BACK_END_WRITE_SEMAPHORE_RELEASE), marks every
+  vertex buffer, texture and palette a draw uses with the next fence, and
+  a lock waits only until that resource's fence has passed (the retail
+  runtime's BlockOnResource). `D3DResource_IsBusy` answers the same way.
+  The map file's vertex and index buffer headers carry junk in their Lock
+  words, which the first build took for a fence far ahead and waited on at
+  every map change (loading never finished): `D3DResource_Register` clears
+  the word, and a value beyond the next fence counts as no use.
+- The CPU's lead: Present waits (asleep) until the GPU has drawn the frame
+  before, so the CPU is at most one frame ahead, as the game expects. With
+  `display.unlocked_framerate` nothing else held it back, pbkit's flip
+  queue let it run three frames ahead, and on a console (the emulator's
+  GPU keeps up) the game rewrote what the GPU had still to draw: heavy
+  artifacts in that mode only. Fence waits sleep after a short spin, a
+  busy answer to the texture cache yields, and Present yields once a
+  frame, so the threads of the game's priority (the network stack's) are
+  not held off while the renderer waits or runs flat out.
+- Visibility tests (lens flare occlusion) by frame parity: the game numbers
+  its tests within a frame and reads them in the same frame. With the CPU a
+  frame ahead, the GPU's reports for the frame before landed in the slots
+  this frame had just marked pending, and the game took another frame's
+  (often another flare's) answer: flares flashed white over the walls with
+  the frame rate unlocked. The report page has a half (127 tests) for
+  each frame parity, and an unanswered test is waited for up to 2 ms a
+  frame before the number's last answer serves.
+- The GPU's vertex cache: the retail runtime emptied it
+  (NV097_INVALIDATE_VERTEX_CACHE_FILE) at every vertex buffer lock without
+  D3DLOCK_NOFLUSH; the port did not, and the game rewrites its dynamic
+  buffers at the same addresses every frame, so a real NV2A can draw a
+  vertex it fetched the frame before. xemu has no such cache.
+- Texture registers: every texture change sent all four stages' address,
+  control and filter registers again before the next draw. The device
+  now remembers what each register holds and sends only changes; the
+  shader stage program likewise.
+- Rumble: the game sets the motors every tick, and each set was a USB
+  transfer with a busy wait. Now at most one every 60 ms unless a motor
+  stops or the level changes noticeably (nx_input.c).
+- The device's CPU timers (two `rdtsc` per call) are built only with
+  `-DNX_DEVICE_TIMERS`.
+- Sound: the AC97 ring is write-combined with a fence before the hardware
+  reads it, and the mixer thread runs above normal priority.
+- `memcpy`/`memset` under 16 bytes skip the string instructions' set-up
+  (nx_string.c); the printf family passes formats without floating point
+  or strings straight to PDCLib (msvc_crt.c).
+- Joining a game asked the host to add the player every frame until it
+  answered; now once a second per controller
+  (ui_widget_game_data_input_functions.c, HALO_LINUX), which spared both
+  machines' logs and CPUs the flood.
+- The asynchronous I/O completion scan checks its 64 slots without the
+  lock first.
+
+Not done: `-O2` for the hot game units (it grows the image, and the
+Pentium III's cache may lose what the compiler gains; worth measuring on
+the console), and caching the vertex array formats.
+
+## 720p (2026-09-30)
+
+`display.hd_720p = true` in the disc's config.toml (`--setting
+display.hd_720p=true`) asks for 1280x720. The game switches when all of
+these hold, and otherwise stays at 480 and logs why ("video: display.hd_720p
+is on, but ..."):
+
+- the HDTV (component) pack, with 720p on in the dashboard, NTSC;
+- a console with 128 MB whose top 64 MB the title can use. Only the 720p
+  disc's XBE loses the kernel's 64 MB limit (`tools/xbox_disc.py` runs
+  `tools/xbox_xbe_flags.py` on it when packing with `display.hd_720p=true`;
+  for a hard disk copy, `default-720p.xbe`), and at start-up the log says
+  whether a page there could be had ("memory: the top 64 MB of a 128 MB
+  console is there").
+
+The first build that left the limit off everywhere failed at start-up on a
+128 MB console: the tag cache's fixed 22 MB at physical 0x3A6000 could not
+be allocated (27,450 of 32,768 pages free; something already sat in the
+range). The build's XBE keeps the limit again, and the game's two fixed
+blocks (the game state at 0x61000, the tag cache at 0x3A6000) are now
+reserved first thing at start-up, before the video mode, the GPU, the
+network or the sound allocate anything, and handed to the game when it
+asks (nx_kernel.c, reserve_fixed_blocks). If one still cannot be had, the
+start-up lists the taken 64 KB spans of its range.
+
+How it works:
+
+- The frame is rendered at 1280x720: the GPU rasterises every pixel into
+  pbkit's 1280x720 buffers with a 1280x720 depth buffer; nothing is drawn
+  at 480 and enlarged. The game's own coordinates stay in its 480-line
+  layout (854x480 at 16:9, as the desktop builds do at any resolution),
+  and the device maps them onto the 1280x720 pixels: viewports, clears,
+  visibility counts and point sizes (d3d8_nv2a.c, scale_x and scale_y).
+  The effects that read the frame as a texture scale their texel
+  coordinates by `halo_screen_texture_scale_x` and `_y` (screen effects,
+  the sun glow copy, active camouflage, the loading screen).
+- pbkit's three 1280x720 buffers and its depth buffer take 14 MB of the
+  low 64 MB (4.7 MB at 640x480). To make room, everything the game
+  allocates "anywhere" goes to the top 64 MB from then on (the texture
+  cache, now the retail 22 MB, the sound cache, every Direct3D resource
+  and the device's depth buffer: nx_physical_alloc), and the GPU's
+  all-memory DMA window reaches the top (its colour, depth, texture and
+  vertex contexts). The mode is chosen at the game's first question about
+  its screen, before the GPU starts and before the game's memory map.
+- 720p is 2.25 times the pixels of 640x480, so heavy scenes run slower;
+  performance mode helps.
+
+On the user's 128 MB console (a retail kernel with a 128 MB BIOS) the
+kernel gives no contiguous memory above 64 MB, even with the limit off:
+it hands the top half out only as ordinary pages. 720p then fits the low
+64 MB instead, if a trial at the mode's choice finds the room
+(nx_video.c, low_memory_fits_hd): pbkit keeps two frame buffers instead
+of three and no depth buffer of its own (the device has its own), Present
+waits for the flip before the next frame draws into the buffer that was on
+the screen, the texture cache is 10 MB, and the sound cache, which only
+the processor reads, is ordinary memory (halo_xbox_sound_cache_alloc).
+With `display.mode_notice` on (off by default), under the frame rate
+counter the game shows "720p", "720p (in 64 MB:
+double buffered, N MB textures)" or why not.
+
+A stock 64 MB console (2026-10-01): nxdk's text screen, which
+`XVideoSetMode` makes at the mode's size (1280x720x4, 3.5 MB) for start-up
+and crash text only, is also the device's depth buffer, the same size
+(nx_gpu_depth_buffer; the crash screen clears it first and waits for the
+GPU), and the texture cache is 9 MB there. Then 720p leaves about as much
+memory free after start-up as 480 does (6.4 MB in the emulator at 64 MB),
+and the trial asks for that room in 1 MB pieces. The frame statistics now
+log `memory: N KB free (lowest M KB)`. The 22 MB tag cache cannot give
+room: every map loads its structure (BSP) at fixed addresses at the cache's
+top, and the campaign's tag data reaches nearly to them (b40 leaves 0.2 MB;
+the multiplayer maps leave 13 to 15 MB in the middle, but the cache is
+allocated once). Untested on a console yet. In xemu: System, Memory 128 MiB, the AV pack set to HDTV,
+720p on in the dashboard.
+
+What 720p taught (2026-09-30 and 2026-10-01):
+
+- nxdk's `XVideoInit` switches the encoder but leaves the mode
+  `XVideoGetMode` reports, which pbkit sizes its frame buffers from: 720p
+  went out of 720x480 buffers (a psychedelic picture). The mode is set
+  through `XVideoSetMode`.
+- A 64 MB console's ordinary memory is the same 64 MB, so the trial counts
+  the sound cache there and the USB driver's pool: in xemu at 64 MB the USB
+  driver found 83 pages left (with nxdk's text screen still apart from the
+  depth buffer).
+- Double buffering: pbkit flags a frame ready only when the GPU reaches its
+  end, so right after `pb_finished` nothing was pending and the next frame
+  drew into the buffer on the screen (tearing at the bottom, in the clear
+  colour). The patch's second version counts frames finished against flips
+  done (`pb_flip_pending`).
+
+## Second audit, the scope, the menus, the debug settings (2026-10-01)
+
+- The scope on a widescreen display: `rasterizer_set_target` sets the
+  viewport from `GetDesc`, the surface's own 720x480, for the frame's copy;
+  the device took that in the game's 854 columns and drew 607 of the
+  buffer's 720, so the scope's second pass read the rest stale. A viewport
+  of a screen target's whole surface now means the whole screen
+  (`D3DDevice_SetViewport`).
+- White geometry and flickering particles at 60 frames a second: the texture
+  cache took a texture the GPU might still draw from as locked; with the CPU
+  a frame ahead that was every texture of the frame before, the cache split
+  into holes too small for the next one, which drew as the default (white)
+  bitmap ("YOU GOT STABBED" in the log). Such a texture can go now:
+  deleting it waits for the GPU (`texture_cache_locked_block_proc`,
+  HALO_XBOX).
+- The menus say "ONLINE PLAY" for "SYSTEM LINK PLAY", and the system link
+  messages say online (`unicode_string_list_get_string`, text_group.c).
+- Settings: `debug.console` (the developer console and its lines on the
+  screen), `debug.log_file` (debug.txt), `debug.network_log` (the console's
+  UDP log). The two logs are off by default (the user's choice, 2026-10-01):
+  turn them on to report a problem.
+- Performance mode no longer turns lens flare occlusion off: every flare
+  then drew through the walls, a white glow on the geometry (the likeliest
+  "geometry going white" at 60 frames a second, which only the performance
+  disc runs).
+
+The audits' fixes (a bug audit and a performance audit, 2026-10-01):
+
+- The `cpu:` line passed the profiler's self times: the frame's was the pass
+  less its ticks, render and idle, the render's left out the windows (the
+  scene), and "5 s" covered a minute. It passes the sections' totals now.
+  The frame statistics line shows in performance mode too, with the time
+  spent waiting for visibility answers.
+- `-O2` for the hot units (math, collision, animation, the scene's render,
+  particles, the device, the push buffer, the mixer: `XBOX_HOT_UNITS` in
+  tools/xbox_build.py); `csmemcpy`/`csmemset` inline on the console (the
+  builtins, no checks); `square_root` as SSE's `sqrtss`.
+- The device sends the vertex array formats and offsets only when they
+  change; a fence wait yields for 3 ms before it sleeps (a sleep wakes on
+  the kernel's 1 ms tick); visibility tests reach the GPU at once.
+- Interpolation works out each node's rotation once a tick, not every frame.
+- The mixer's chunk is 256 frames on the console: the game's sound calls
+  wait a quarter as long behind its lock.
+- A refused render target at Present now means the back buffer: before,
+  nothing was pushed and pbkit's colour offset 0 (the kernel) stood.
+- Local games (split screen) with no cable or no DHCP: lwIP with a single
+  interface routed nothing to 127.0.0.1 then, and a looped-back packet was
+  only taken on an interface with an address; lwIP's loopback interface
+  carries it now (tools/xbox_lwip_patch.py, and nx_net.c no longer swaps
+  127.0.0.1 for the console's address, which needs the cable). AutoIP when
+  DHCP does not answer, a 32-entry ARP table with queueing, and the link as
+  the cable's (`posix_network_link_up`). The console's address is asked
+  again whenever the game wants it (`transport_get_xnaddr`): it was
+  0.0.0.0 until DHCP answered, and a late DHCP answer replaces an AutoIP
+  address the LAN cannot reach; the log shows each change. The network log
+  starts when DHCP is slow too (it waits in the ring for an address).
+- Internet play ignores packets from a peer only listed by the master
+  server (its key is zeros until signalling offers one).
+- A controller whose report transfer fails is read again (the endpoint's
+  halt cleared) instead of freezing with its last report, at the USB
+  DPC's level; the USB stack claims its descriptors atomically
+  (tools/xbox_usb_patch.py), since its DPC and the game thread both submit
+  transfers.
+- pbkit: a vertical blank the DPC handled itself (the ISR had the
+  interrupt masked) counted a flip it never made, and a double-buffered
+  frame was drawn on the screen (tools/xbox_pbkit_patch.py, version 3).
+- Interpolation grows its per-object arrays with fresh blocks: the game's
+  debug realloc unregisters the old block before it tries, so a failed
+  one left a pointer that halted at the next free.
+- `graphics.weather` hides rain and snow (nothing read its flag; weather
+  went with `graphics.particles`).
+- Smaller: `--setting` values are written in the setting's type
+  (`display.hd_720p=True` was a string the game ignored; numbers in
+  spellings TOML reads, and the file is checked before packing), waits take
+  64 handles at most, the I/O lock is made at start-up, the pthread shim's
+  wait sleeps, a failed broadcast keeps its error.
+
+Checked again (2026-10-01, afternoon), and fixed:
+
+- A crash report owns the GPU: the thread that shows the console makes
+  every other thread that pushes park at its next push (the game kept
+  drawing on its own thread, and at 720p in the low 64 MB the report's
+  screen is the depth buffer, which every frame clears); the wait for what
+  was queued is bounded (200 ms) and skipped at a raised IRQL, where the
+  GPU's traps cannot be served (the firmware path shows the report again
+  once it has lowered it). pbkit's pusher error now halts as its GPU error
+  does (patch version 5).
+- The drain and idle waits read the engine's status register instead of
+  calling pbkit's `pb_wait_until_gr_not_busy`, which ran the interrupt
+  handlers from the thread and could count a flip twice.
+- Visibility tests get their report slots in the order they come (by
+  number, flare 127 shared flare 0's, and the transparent counter's 0xfff
+  flare 31's), each number remembers its slot and frame, and an answer the
+  GPU has not given within the wait is "not ready": the lens flare keeps its
+  last visibility (rasterizer_lights.c, HALO_XBOX) instead of taking
+  another flare's old count, a white flash through a wall.
+- The decal buffer waits for the GPU only after a deletion that made room
+  for a new decal, not after expiries (deleted before the frame draws).
+- A map copy takes a 1 MB write buffer instead of 4 when the texture cache
+  is the reduced one (720p in the low 64 MB): its buffers come out of the
+  texture cache, and a copy in the lobby left 1.9 MB of textures.
+
+## Performance round: AI on screen (2026-10-01, evening)
+
+The user saw large drops in single player with AI on screen, which the
+original does not have. An audit (eight areas, each finding checked by two
+skeptics) found the drop to be a cliff, not a slope: Present held the CPU
+until the next frame's buffer had left the screen, and at 720p in the low
+64 MB (double buffered) that is the frame it had just finished, so the
+ticks, the render, the GPU and the vertical blank ran one after another and
+frame times snapped from 16.7 to 33.3 ms once a few more AI were drawn. The
+rest is cost the original did not have, each a little per AI: the software
+mixer (the retail game used the APU), shadow and light passes performance
+mode never draws, x87 rounding calls, interpolation for every object in the
+map, and checked-build accessor calls. Every change keeps the game's
+behaviour and pictures; the mixer and ADPCM decoder were compared bit for
+bit on the host over millions of cases, matrix4x3_multiply and fraction_of
+too.
+
+- Pacing: Present leaves the buffer wait and the re-target to the next
+  frame's beginning (`resolve_pending_present`: the game's frame_begin,
+  any draw, clear or back-buffer question), so the ticks run while the GPU
+  finishes and the display flips; the flip wakes the wait (an event the
+  vertical blank thread sets), not a 1 ms sleep. pbkit no longer re-targets
+  its own DMA objects at each flip (patch version 6: eight GPU interrupts a
+  frame); the device binds its DMA windows once. Double buffered, the GPU
+  is kicked every 8 KB and after the frame's clear.
+- Audio: integer mixer kernels (`dsound_mix_kernels.c`, -O2 without a frame
+  pointer), voice gains worked out only when something changed, ADPCM from
+  tables.
+- Performance mode (or `graphics.shadows`/`dynamic_lights`/`specular` off):
+  the object shadow pass and the dynamic light loops are skipped when
+  nothing of them is drawn.
+- Rounding: float to integer as the retail code's FISTP (`halo_fistp`),
+  not a call to rint with two control word loads.
+- Interpolation: a snapshot's rotations are worked out when a drawn object
+  first blends it, not for every object each tick; the first-person
+  weapon's previous pose once a tick.
+- Accessors: `TAG_BLOCK_GET_ELEMENT` and `datum_get` take a valid element
+  inline (anything the checked function would stop on still goes to it),
+  `tag_get` inlines its instance lookup; `matrix4x3_multiply` in SSE1;
+  `fraction_of` for fmod(x, 1).
+- AI and objects (`HALO_XBOX && !HALO_HEAVY_CHECKS`; `-DHALO_HEAVY_CHECKS`
+  brings every check back): debug-only walks out of the tick (the obstacle
+  heap's, the memory pool's full walk on every allocation, now once a tick,
+  activation checks, AI profile sampling), unit and biped vector checks at
+  the end of each update instead of between steps, path searches clear only
+  what they use, marker lookups without repeated searches.
+- Decals: each decal keeps the fence after its last draw, and a new decal
+  waits only if the GPU has not passed the one it replaces.
+- Memory: functions nothing calls are dropped at link (-ffunction-sections,
+  -opt:ref), libtiff's fax tables and other dead units are left out, pbkit
+  allocates no depth buffer at 480 either (1.3 MB): the image is 216 KB
+  smaller, more than paying for ten more -O2 units.
+- Logs: a `waits:` line every 120 frames (Present's waits: the GPU's
+  previous frame, the yield, the flip queue, the buffer; how far behind the
+  GPU is) and a `ticks:` line every 5 s (AI, units, effects, objects by
+  kind, interpolation, actors and objects), and the audio lines' mixing,
+  voices and decoding time.
+
+Not done, for later: the depth buffer tiled and compressed (the biggest GPU
+win the audit found, but only a console can check it), double buffering at
+30 frames for a bigger texture cache, rumble without the USB stack's busy
+wait, `--release` (no checks) for the console, the lwIP mailbox size.
+
+## Rubberbanding over the internet (2026-10-02)
+
+A remote player on a real console rubberbanded in the user's games (mixed
+discs; the PC players in the lobby were idle). The client's queue for the
+host's unreliable datagrams was the retail 1600 bytes, and the read loop
+stops once less than a datagram's room is left, so one idle took in one or
+two datagrams: fewer than the host sends a tick (object and unit states,
+inventories, statistics). The rest waited in the socket, and a client at 30
+frames or fewer applied the host's states seconds late; the late state of
+its own player is past the local correction tolerance, so the player
+snapped back. Not new with the last builds, but the locked and 720p discs
+run at 30 frames or fewer, which shows it. Fixed:
+
+- The client's unreliable queue is 128 KB, as the host's already was
+  (`network_connection.c`).
+- The game's TCP connections and the tunnel's stream stand-ins set
+  TCP_NODELAY, so small reliable messages are not held back by Nagle's
+  algorithm (`transport_endpoint_winsock.c`, `p2p.c`).
+
+New log lines (the PC's `halo.log`; the console's with `debug.network_log`
+on), every 5 s during a game:
+
+- `net: host|client: N idles, N datagrams (at most N in one), N stopped by a
+  full queue; ...`: the intake. "Stopped by a full queue" should stay 0.
+  The host adds how many of the clients' predictions it took and refused,
+  a client how many corrections it took for its own player and others (the
+  largest distance) and how old the host's states were in ticks.
+- `Internet play: host|player <id>: round trip N ms (least-most), datagrams
+  N in, N out, longest silence N ms; N streams: round trip, timeout, N
+  waiting, N segments sent`: the tunnel to each peer.
+
+Both sides should run discs and a PC build from the same tree.
 
 ## Test rig
 

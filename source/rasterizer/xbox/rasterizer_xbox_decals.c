@@ -321,6 +321,28 @@ static struct lruv_cache *local_vertex_cache = NULL;
 static boolean locked_decal_reported = FALSE;
 static boolean permanent_decal_reported = FALSE;
 static boolean local_filthy_decal_fog_hack_enabled = FALSE;
+#ifdef HALO_XBOX
+/* A decal's vertices deleted to make room (the cache deletes the oldest
+decal, still on a wall and drawn every frame): the next decal written may
+reuse memory the GPU still reads for the frame it is drawing (the CPU runs a
+frame ahead). Each decal keeps the fence after its last draw, the deletion
+raises the fence to wait for to it, and the next lock waits for that fence
+only if the GPU has not passed it (most deleted decals were drawn frames
+ago): not for the whole frame the GPU is drawing. */
+extern unsigned long halo_xbox_gpu_fence_after_draws(void);
+extern void halo_xbox_gpu_push_fence(void);
+extern BOOL halo_xbox_gpu_fence_passed(unsigned long fence);
+extern void halo_xbox_gpu_wait_fence(unsigned long fence);
+static unsigned long decal_drawn_fence[MAXIMUM_DECALS_PER_MAP];
+static unsigned long decal_reuse_fence = 0;
+static boolean decal_layer_drew = FALSE;
+/* decals_update deleting the decals that expired (rasterizer_xbox.c,
+_rasterizer_frame_begin): before this frame's draws, and the decals are
+created in the ticks after Present, which has waited for the frame that last
+drew them; only the deletions that make room for a new decal (in a tick,
+after a frame the GPU may still be drawing) need the wait */
+static boolean decal_vertices_expiring = FALSE;
+#endif
 extern struct rasterizer_decals_debug_options rasterizer_debug_options;
 extern struct rasterizer_window_begin_parameters global_window_parameters;
 extern struct pixel_shader_definition pixel_shader;
@@ -332,6 +354,9 @@ long last_decal_index_queried_by_lruv_cache = NONE;
 void rasterizer_decal_vertices_end_update(
 	void)
 {
+#ifdef HALO_XBOX
+	decal_vertices_expiring = FALSE;
+#endif
 	return;
 }
 
@@ -358,6 +383,16 @@ void *_rasterizer_decal_vertices_lock(
 		local_vertex_cache,
 		cache_index);
 	rasterizer_globals.current_lock_operation = _rasterizer_lock_decal_vertices;
+#ifdef HALO_XBOX
+	/* after a deletion: until the GPU has drawn the deleted decals (the lock
+	below never waits) */
+	if (decal_reuse_fence)
+	{
+		if (!halo_xbox_gpu_fence_passed(decal_reuse_fence))
+			halo_xbox_gpu_wait_fence(decal_reuse_fence);
+		decal_reuse_fence = 0;
+	}
+#endif
 	IDirect3DVertexBuffer8_Lock(
 		local_d3d_vertex_buffer,
 		vertex_data_offset,
@@ -400,6 +435,9 @@ void rasterizer_decal_vertices_begin_update(
 	void)
 {
 	lruv_idle(local_vertex_cache);
+#ifdef HALO_XBOX
+	decal_vertices_expiring = TRUE;
+#endif
 
 	return;
 }
@@ -797,6 +835,11 @@ void _rasterizer_decals_draw(
 			D3DPT_QUADLIST,
 			vertex_data_offset/sizeof(struct decal_vertex),
 			decal->quad_count);
+#ifdef HALO_XBOX
+		decal_drawn_fence[DATUM_INDEX_TO_ABSOLUTE_INDEX(decal_index) % MAXIMUM_DECALS_PER_MAP] =
+			halo_xbox_gpu_fence_after_draws();
+		decal_layer_drew = TRUE;
+#endif
 		if (rasterizer_debug_options.statistics_mode == _rasterizer_statistics_mode_geometry)
 		{
 			rasterizer_frame_statistics.decal_draw_count++;
@@ -815,6 +858,14 @@ void _rasterizer_decals_end(
 {
 	if (local_layer == _decal_layer_alpha_tested)
 		rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT);
+#ifdef HALO_XBOX
+	/* the decals' fence right after them, not at the frame's end */
+	if (decal_layer_drew)
+	{
+		halo_xbox_gpu_push_fence();
+		decal_layer_drew = FALSE;
+	}
+#endif
 
 	{
 		short decal_layer_profiles[NUMBER_OF_DECAL_LAYERS] =
@@ -867,6 +918,15 @@ static void rasterizer_decal_vertices_purge_proc(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_decals.c",
 		32,
 		decal_index!=0);
+#ifdef HALO_XBOX
+	if (!decal_vertices_expiring)
+	{
+		unsigned long fence = decal_drawn_fence[DATUM_INDEX_TO_ABSOLUTE_INDEX(decal_index) % MAXIMUM_DECALS_PER_MAP];
+
+		if (fence && (!decal_reuse_fence || (long)(fence - decal_reuse_fence) > 0))
+			decal_reuse_fence = fence;
+	}
+#endif
 	if (TEST_FLAG(DECAL_GET(decal_index)->flags, _decal_locked_bit) &&
 		!locked_decal_reported)
 	{

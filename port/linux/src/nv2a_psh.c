@@ -220,6 +220,12 @@ static void combiner_stage(struct xgpu_text *text, const DWORD *state, int stage
 		{
 			if (mux_msb)
 				xgpu_text_append(text, "\t\t%s %sSUM = r0.a >= 0.5 ? %sCD : %sAB;\n", type, prefix, prefix, prefix);
+#ifndef HALO_ANDROID
+			/* GLSL 1.10 has no integer operators: the lowest bit in floats */
+			else if (!xgpu_capabilities.modern_shading_language)
+				xgpu_text_append(text, "\t\t%s %sSUM = mod(floor(r0.a * 255.0 + 0.5), 2.0) != 0.0 ? %sCD : %sAB;\n",
+					type, prefix, prefix, prefix);
+#endif
 			else
 				xgpu_text_append(text, "\t\t%s %sSUM = (int(r0.a * 255.0 + 0.5) & 1) != 0 ? %sCD : %sAB;\n",
 					type, prefix, prefix, prefix);
@@ -328,8 +334,49 @@ static void dot_input(struct xgpu_text *text, const DWORD *state, int stage)
 #define SHADER_VERSION "#version 450 core\n"
 #endif
 
+#ifndef HALO_ANDROID
+/* The desktop without OpenGL 4.5 (xgpu_capabilities, xgpu.h): GLSL 1.10's
+lookup functions, one per kind of sampler; the LOD bias as the lookup's
+last argument where samplers have none of their own; and for a copy of the
+window's back buffer, whose rows run from the bottom, the offset that turns
+it over (texture_scale's y is then negative, d3d8_gl.c). */
+static void sample_desktop(struct xgpu_text *text, const struct nv2a_pixel_shader_key *key, int stage,
+	const char *coordinates)
+{
+	BOOL modern = xgpu_capabilities.modern_shading_language;
+	char bias[32] = "";
+
+	if (!xgpu_capabilities.sampler_objects)
+		snprintf(bias, sizeof(bias), ", texture_lod_bias[%d]", stage);
+	switch (key->sampler_type[stage])
+	{
+	case _xgpu_sampler_3d:
+		xgpu_text_append(text, "%s(tex%d, (%s).xyz%s)", modern ? "texture" : "texture3D", stage, coordinates, bias);
+		break;
+	case _xgpu_sampler_cube:
+		xgpu_text_append(text, "%s(tex%d, (%s).xyz%s)", modern ? "texture" : "textureCube", stage, coordinates, bias);
+		break;
+	default:
+		xgpu_text_append(text, "%s(tex%d, (%s).xy * texture_scale[%d].xy", modern ? "texture" : "texture2D", stage,
+			coordinates, stage);
+		if (xgpu_capabilities.window_back_buffer)
+			xgpu_text_append(text, " + texture_offset[%d].xy", stage);
+		xgpu_text_append(text, "%s)", bias);
+		break;
+	}
+}
+#endif
+
 static void sample(struct xgpu_text *text, const struct nv2a_pixel_shader_key *key, int stage, const char *coordinates)
 {
+#ifndef HALO_ANDROID
+	if (!xgpu_capabilities.modern_shading_language || !xgpu_capabilities.sampler_objects ||
+		xgpu_capabilities.window_back_buffer)
+	{
+		sample_desktop(text, key, stage, coordinates);
+		return;
+	}
+#endif
 	switch (key->sampler_type[stage])
 	{
 	case _xgpu_sampler_3d:
@@ -436,6 +483,18 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_pixel_shader
 		xgpu_text_append(text, "\tdot%d = dot(xT%d.xyz, ", stage, stage);
 		dot_input(text, state, stage);
 		xgpu_text_append(text, ");\n\tt%d = vec4(0.0);\n", stage);
+#ifndef HALO_ANDROID
+		/* The pixel's depth becomes the stage before's dot product (z) over
+		this one's (w), in the depth buffer's own units, which depth_scale
+		takes to GL's 0..1; with no w the depth is the farthest. Halo's
+		sprites with depth use it (rasterizer_xbox_transparent_geometry.c).
+		The OpenGL 4.5 renderer has always left the depth alone. */
+		if (xgpu_capabilities.depth_replace && stage > 0)
+		{
+			xgpu_text_append(text, "\tgl_FragDepth = dot%d != 0.0 ? clamp(dot%d / dot%d * depth_scale, 0.0, 1.0) : 1.0;\n",
+				stage, stage - 1, stage);
+		}
+#endif
 		break;
 	case _mode_dot_reflect_diffuse:
 		/* the normal takes its third component from stage 3's dot product */
@@ -541,6 +600,25 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 			"layout(binding = 0, offset = 0) uniform atomic_uint visible_samples;\n");
 	}
 #endif
+#ifndef HALO_ANDROID
+	/* GLSL 1.10: varying for in, and the result goes to gl_FragColor */
+	if (!xgpu_capabilities.modern_shading_language)
+	{
+		xgpu_text_append(&text,
+			"#version 110\n"
+			"varying vec4 xD0;\n"
+			"varying vec4 xD1;\n"
+			"varying vec4 xB0;\n"
+			"varying vec4 xB1;\n"
+			"varying vec4 xT0;\n"
+			"varying vec4 xT1;\n"
+			"varying vec4 xT2;\n"
+			"varying vec4 xT3;\n"
+			"varying float xFog;\n"
+			XGPU_PIXEL_UNIFORMS);
+	}
+	else
+#endif
 	xgpu_text_append(&text,
 		SHADER_VERSION
 		"in vec4 xD0;\n"
@@ -554,6 +632,24 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 		"in float xFog;\n"
 		"layout(location = 0) out vec4 fragment_color;\n"
 		XGPU_PIXEL_UNIFORMS);
+#ifndef HALO_ANDROID
+	/* the uniforms of what the context lacks (sample_desktop, texture_stage) */
+	if (!xgpu_capabilities.sampler_objects)
+		xgpu_text_append(&text, XGPU_PIXEL_UNIFORM_LOD_BIAS);
+	if (xgpu_capabilities.window_back_buffer)
+		xgpu_text_append(&text, XGPU_PIXEL_UNIFORM_TEXTURE_OFFSET);
+	if (xgpu_capabilities.depth_replace)
+	{
+		for (stage = 1; stage < 4; stage++)
+		{
+			if (stage_mode(key, stage) == _mode_dot_zw)
+			{
+				xgpu_text_append(&text, XGPU_PIXEL_UNIFORM_DEPTH_SCALE);
+				break;
+			}
+		}
+	}
+#endif
 	for (stage = 0; stage < 4; stage++)
 		xgpu_text_append(&text, "uniform %s tex%d;\n", sampler_declaration(key->sampler_type[stage]), stage);
 	xgpu_text_append(&text,
@@ -656,6 +752,11 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 #ifdef HALO_ANDROID
 	if (key->count_samples)
 		xgpu_text_append(&text, "\tatomicCounterIncrement(visible_samples);\n");
+#endif
+#ifndef HALO_ANDROID
+	if (!xgpu_capabilities.modern_shading_language)
+		xgpu_text_append(&text, "\tgl_FragColor = clamp(result, 0.0, 1.0);\n}\n");
+	else
 #endif
 	xgpu_text_append(&text, "\tfragment_color = clamp(result, 0.0, 1.0);\n}\n");
 	return text.buffer;

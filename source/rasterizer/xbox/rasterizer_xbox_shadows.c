@@ -270,6 +270,21 @@ void _rasterizer_environment_shadows_begin(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* whether this window draws object shadows at all: the test every shadow
+callback here makes. Performance mode and graphics.shadows=false clear
+draw_environment_shadows, and render_object_shadows (render_objects.c) asks
+first instead of running the whole pass -- per object a model walk, a BSP
+query and a dynamic triangle buffer -- for callbacks that draw nothing */
+boolean rasterizer_environment_shadows_drawn(
+	void)
+{
+	return global_window_parameters.rasterizer_target ==
+			_rasterizer_target_render_primary &&
+		rasterizer_debug_options.draw_environment_shadows;
+}
+#endif
+
 boolean _rasterizer_environment_shadow_begin(
 	long object_index,
 	real_matrix4x3 const *shadow_matrix,
@@ -277,7 +292,14 @@ boolean _rasterizer_environment_shadow_begin(
 	real object_bounding_radius,
 	real *shadow_volume_bounding_radius)
 {
+#ifdef HALO_LINUX
+	/* TRUE only for a shadow that is drawn: otherwise the caller went on to
+	the object's model and the structure query with a volume radius that only
+	the drawn path below writes (render_object_shadow_end reads it) */
+	boolean success = FALSE;
+#else
 	boolean success = TRUE;
+#endif
 	real inverse_radius;
 	real vsh_constants__screenproj[20];
 
@@ -393,6 +415,9 @@ boolean _rasterizer_environment_shadow_begin(
 		{
 			rasterizer_frame_statistics.shadow_count++;
 		}
+#ifdef HALO_LINUX
+		success = TRUE;
+#endif
 	}
 
 	return success;

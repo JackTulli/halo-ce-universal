@@ -14,6 +14,8 @@ of date. `port/xbox/README.md` describes the current state.
 @docs/claude-memory/halo-ce-universal-study.md
 @docs/claude-memory/never-touch-the-live-display.md
 @docs/claude-memory/isolate-wine-test-prefixes.md
+@docs/claude-memory/halo-xbox-windows-build.md
+@docs/claude-memory/downloads-allowed.md
 
 ## The user's rules
 

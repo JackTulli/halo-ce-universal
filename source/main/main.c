@@ -1125,11 +1125,21 @@ void set_window_camera_values(
 		window->rasterizer_camera.position = observer->position;
 		window->rasterizer_camera.forward = observer->forward;
 		window->rasterizer_camera.up = observer->up;
+#ifdef HALO_LINUX
+		/* the native ports' field of view setting, past the observer's
+		checks (which stop at 90 degrees) */
+		window->rasterizer_camera.vertical_field_of_view =
+			2.0f * arctangent(
+				0.75f * render_camera_get_adjusted_field_of_view_tangent(
+					observer->field_of_view) * halo_field_of_view_tangent_scale(),
+				1.0f);
+#else
 		window->rasterizer_camera.vertical_field_of_view =
 			2.0f * arctangent(
 				0.75f * render_camera_get_adjusted_field_of_view_tangent(
 					observer->field_of_view),
 				1.0f);
+#endif
 
 		if (window->local_player_index != NONE &&
 			!console_is_active() &&
@@ -2710,7 +2720,12 @@ static void screenshot_render(
 void main_framerate_render(
 	void)
 {
+#ifdef HALO_LINUX
+	/* display.fps_counter in config.toml shows it too, in the top left */
+	if (display_framerate || halo_fps_counter_enabled())
+#else
 	if (display_framerate)
+#endif
 	{
 		long font_tag_index;
 
@@ -2771,13 +2786,37 @@ void main_framerate_render(
 				"%d",
 				(short)frame_rate);
 			frame_rate_string[NUMBEROF(frame_rate_string) - 1] = 0;
+#ifdef HALO_LINUX
+			/* the top left, inside the part of the picture a television
+			shows */
+			bounds.x0 = (short)(bounds.x0 + 24);
+			bounds.y0 = (short)(bounds.y0 + 16);
+			bounds.x1 = (short)(bounds.x0 + 60);
+			bounds.y1 = (short)(bounds.y0 + 30);
+#else
 			bounds.x0 = (short)(bounds.x1 - 50);
 			bounds.y0 = (short)(bounds.y1 - 50);
+#endif
 			draw_string_set_format(NONE, _text_justification_left, 0);
 			draw_string_set_color(
 				(short)frame_rate >= 30 ? global_real_argb_green : global_real_argb_red);
 			draw_string_set_font(font_tag_index);
 			rasterizer_draw_string(&bounds, NULL, NULL, 0, frame_rate_string);
+#ifdef HALO_LINUX
+			/* the console's display mode under it, when 720p was asked for:
+			"720p", or why not */
+			if (halo_display_notice())
+			{
+				rectangle2d notice_bounds = render.camera.window_bounds;
+
+				notice_bounds.x0 = bounds.x0;
+				notice_bounds.y0 = (short)(bounds.y0 + 22);
+				notice_bounds.x1 = (short)(notice_bounds.x1 - 24);
+				notice_bounds.y1 = (short)(notice_bounds.y0 + 60);
+				draw_string_set_color(global_real_argb_white);
+				rasterizer_draw_string(&notice_bounds, NULL, NULL, 0, halo_display_notice());
+			}
+#endif
 		}
 	}
 
@@ -2971,7 +3010,12 @@ void halt_and_catch_fire(
 	}
 
 	exit(0);
+#ifdef HALO_XBOX
+	/* declared noreturn (cseries.h); nxdk's exit is not, under gnu89 */
+	__builtin_unreachable();
+#else
 	return;
+#endif
 }
 
 void main_loop_of_death(

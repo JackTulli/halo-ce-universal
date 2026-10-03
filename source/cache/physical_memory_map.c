@@ -51,13 +51,21 @@ symbols in this file:
 #define GAME_STATE_SIZE 0x345000
 #define GAME_STATE_VERIFY_SIZE 0x305000
 #endif
+#ifdef HALO_LINUX
+/* where the build's memory window has it (halo_memory_window.h): the
+console's 0x803A6000 unless the window moves */
+#define TAG_CACHE_BASE_ADDRESS HALO_TAG_CACHE_ADDRESS
+#else
 #define TAG_CACHE_BASE_ADDRESS 0x803A6000
+#endif
 #define TAG_CACHE_SIZE 0x1600000
 #ifdef HALO_XBOX
 /* the Xbox build's texture cache is 12 MB (xbox_texture_cache.c agrees):
 this build of the game, the January beta with its debug buffers, does not
-fit the retail console's 64 MB with the retail 22 MB (port/xbox/README.md) */
-#define TEXTURE_CACHE_SIZE 0xC00000
+fit the retail console's 64 MB with the retail 22 MB (port/xbox/README.md);
+at 720p, in the top 64 MB of a 128 MB console, it has the retail 22 MB
+(halo_xbox_texture_cache_size) */
+#define TEXTURE_CACHE_SIZE halo_xbox_texture_cache_size()
 #else
 #define TEXTURE_CACHE_SIZE 0x1600000
 #endif
@@ -86,11 +94,21 @@ static struct physical_memory_map_globals physical_memory_map_globals;
 void physical_memory_allocate(
 	void)
 {
+#ifdef HALO_LINUX
+	/* (the physical address within the build's memory window, wherever it
+	is: halo_memory_window.h) */
+	physical_memory_map_globals.game_state_base_address = XPhysicalAlloc(GAME_STATE_SIZE, HALO_WINDOW_PHYSICAL(GAME_STATE_BASE_ADDRESS), 0, PAGE_READWRITE);
+#else
 	physical_memory_map_globals.game_state_base_address = XPhysicalAlloc(GAME_STATE_SIZE, GAME_STATE_BASE_ADDRESS & 0x7FFFFFFF, 0, PAGE_READWRITE);
+#endif
 #line 46 "c:\\halo\\SOURCE\\cache\\physical_memory_map.c"
 	match_assert(__FILE__, __LINE__, (unsigned long)physical_memory_map_globals.game_state_base_address==GAME_STATE_BASE_ADDRESS);
 
+#ifdef HALO_LINUX
+	physical_memory_map_globals.tag_cache_base_address = XPhysicalAlloc(TAG_CACHE_SIZE, HALO_WINDOW_PHYSICAL(TAG_CACHE_BASE_ADDRESS), 0, PAGE_READWRITE);
+#else
 	physical_memory_map_globals.tag_cache_base_address = XPhysicalAlloc(TAG_CACHE_SIZE, TAG_CACHE_BASE_ADDRESS & 0x7FFFFFFF, 0, PAGE_READWRITE);
+#endif
 #line 50 "c:\\halo\\SOURCE\\cache\\physical_memory_map.c"
 	match_assert(__FILE__, __LINE__, (unsigned long)physical_memory_map_globals.tag_cache_base_address==TAG_CACHE_BASE_ADDRESS);
 
@@ -98,7 +116,13 @@ void physical_memory_allocate(
 #line 55 "c:\\halo\\SOURCE\\cache\\physical_memory_map.c"
 	match_assert(__FILE__, __LINE__, physical_memory_map_globals.texture_cache_base_address);
 
+#ifdef HALO_XBOX
+	/* (only the processor reads it here: at 720p in a 64 MB console's
+	room it is ordinary memory, out of the GPU's) */
+	physical_memory_map_globals.sound_cache_base_address = halo_xbox_sound_cache_alloc(SOUND_CACHE_SIZE);
+#else
 	physical_memory_map_globals.sound_cache_base_address = XPhysicalAlloc(SOUND_CACHE_SIZE, -1, 0, PAGE_READWRITE);
+#endif
 #line 58 "c:\\halo\\SOURCE\\cache\\physical_memory_map.c"
 	match_assert(__FILE__, __LINE__, physical_memory_map_globals.sound_cache_base_address);
 
@@ -142,7 +166,11 @@ void physical_memory_free(
 	if (physical_memory_map_globals.texture_cache_base_address)
 		XPhysicalFree(physical_memory_map_globals.texture_cache_base_address);
 	if (physical_memory_map_globals.sound_cache_base_address)
+#ifdef HALO_XBOX
+		halo_xbox_sound_cache_free(physical_memory_map_globals.sound_cache_base_address);
+#else
 		XPhysicalFree(physical_memory_map_globals.sound_cache_base_address);
+#endif
 
 	return;
 }

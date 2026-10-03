@@ -190,6 +190,10 @@ static void structure_render_pass(
 		real_vector3d const *offset,
 		void const *lighting,
 		unsigned long geometry_flags));
+#ifdef HALO_LIGHT_PIPELINE
+boolean rasterizer_environment_diffuse_textures_drawn(
+	void);
+#endif
 
 /* ---------- globals */
 
@@ -670,6 +674,11 @@ void structure_render_diffuse_texture(
 	{
 		rasterizer_environment_diffuse_textures_begin();
 
+#ifdef HALO_LIGHT_PIPELINE
+		/* (the light pipeline draws the base maps in its lightmap pass:
+		no walk over the surfaces for a callback that draws nothing) */
+		if (rasterizer_environment_diffuse_textures_drawn())
+#endif
 		structure_render_pass(
 			render.environment_surface_indices,
 			render.environment_surface_count,
@@ -690,6 +699,11 @@ void structure_render_diffuse_texture(
 void structure_render_specular_lightmaps(
 	void)
 {
+#ifdef HALO_LIGHT_PIPELINE
+	/* (a pass the light pipeline never draws: no walk over the surfaces) */
+	if (rasterizer_light_pipeline())
+		return;
+#endif
 	if (structure_render_globals.environment_geometry_valid)
 	{
 		short saved_lightmap_mode = rasterizer_globals.lightmap_mode;
@@ -722,6 +736,10 @@ void structure_render_specular_lightmaps(
 void structure_render_reflection_lightmap_masks(
 	void)
 {
+#ifdef HALO_LIGHT_PIPELINE
+	if (rasterizer_light_pipeline())
+		return;
+#endif
 	if (structure_render_globals.environment_geometry_valid)
 	{
 		rasterizer_environment_reflection_lightmap_masks_begin();
@@ -744,6 +762,10 @@ void structure_render_reflection_lightmap_masks(
 void structure_render_reflection_mirrors(
 	void)
 {
+#ifdef HALO_LIGHT_PIPELINE
+	if (rasterizer_light_pipeline())
+		return;
+#endif
 	if (structure_render_globals.environment_geometry_valid)
 	{
 		rasterizer_environment_reflection_mirrors_begin();
@@ -766,6 +788,10 @@ void structure_render_reflection_mirrors(
 void structure_render_reflections(
 	void)
 {
+#ifdef HALO_LIGHT_PIPELINE
+	if (rasterizer_light_pipeline())
+		return;
+#endif
 	profile_enter(render_structure_reflections_section);
 
 	if (structure_render_globals.environment_geometry_valid)

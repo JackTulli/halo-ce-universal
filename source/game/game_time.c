@@ -137,6 +137,11 @@ extern void network_game_server_update_ticks(struct network_game_server *server,
 
 static struct game_time_statistics game_time_statistics;
 static struct game_time_globals_struct *game_time_globals;
+#ifdef HALO_XBOX
+/* the console's tick split (game.c's halo_xbox_tick_profile): the frames'
+interpolation snapshot after each tick */
+unsigned __int64 halo_xbox_interpolation_cycles;
+#endif
 
 /* ---------- public code */
 
@@ -627,7 +632,14 @@ void game_time_update(
 					for (update_index = 0; update_index < server_updates; update_index++)
 					{
 						game_tick();
-#ifdef HALO_LINUX
+#ifdef HALO_XBOX
+						{
+							unsigned __int64 start = __builtin_ia32_rdtsc();
+
+							render_interpolation_tick();
+							halo_xbox_interpolation_cycles += __builtin_ia32_rdtsc()-start;
+						}
+#elif defined(HALO_LINUX)
 						render_interpolation_tick();
 #endif
 						game_time_globals->server_time++;

@@ -1513,13 +1513,17 @@ void profile_frame_end(
 	{
 		real ticks = 0.0f;
 
+		/* each section's whole time (.total): .frame_total is what is left
+		after its children, so the frame's was the pass less its ticks,
+		render and idle, and the render's left out the windows (the scene),
+		and the line's "5 s" was a minute of play */
 		for (game_tick_index = 0; game_tick_index<profile_globals.current_frame.game_tick_count; game_tick_index++)
 		{
-			ticks += profile_globals.current_frame.game_ticks[game_tick_index].frame_total;
+			ticks += profile_globals.current_frame.game_ticks[game_tick_index].total;
 		}
-		halo_frame_profile(profile_globals.current_frame.frame.frame_total, ticks,
-			profile_globals.current_frame.game_tick_count, profile_globals.current_frame.render.frame_total,
-			profile_globals.current_frame.idle.frame_total, profile_globals.current_frame.texture.frame_total);
+		halo_frame_profile(profile_globals.current_frame.frame.total, ticks,
+			profile_globals.current_frame.game_tick_count, profile_globals.current_frame.render.total,
+			profile_globals.current_frame.idle.total, profile_globals.current_frame.texture.total);
 	}
 #endif
 

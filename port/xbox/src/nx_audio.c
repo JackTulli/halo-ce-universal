@@ -39,8 +39,8 @@ enum
 	/* the ring; queued to the hardware ahead: three, about 64 ms at 48 kHz */
 	BUFFERS = 4,
 	QUEUE_DEPTH = 3,
-	/* the mixer thread's pace */
-	FILL_INTERVAL_MS = 4,
+	/* the mixer thread's pace: the queue holds about 64 ms */
+	FILL_INTERVAL_MS = 8,
 };
 
 /* the AC97 bus master's PCM out registers (nxdk's audio.c): the current
@@ -67,11 +67,41 @@ static void consumed_callback(void *device, void *data)
 /* the mixer's counters (dsound_sdl.c, the console's part) */
 void dsound_statistics(unsigned long *streams_count, unsigned long *packets_count, unsigned long *voiced_frames,
 	unsigned long *peak);
+void dsound_work_statistics(unsigned long *frames, unsigned long *voice_frames, unsigned long *voices_peak,
+	unsigned long long *decode_cycles);
+
+static unsigned long long cycle_count(void)
+{
+	return __builtin_ia32_rdtsc();
+}
+
+/* the five-second lines' account of the mixer's work since the last one,
+for either path (nx_apu.c too): the output thread's mixing and the game
+thread's decoding as shares of the window, all in the processor's cycles
+(so whatever rate the emulator's clock runs at cancels out), and the
+voices mixed: on average over the window's frames, and the most in one
+chunk */
+void nx_audio_work_text(char *text, size_t size, unsigned long long mix_cycles, unsigned long long window_cycles)
+{
+	unsigned long frames, voice_frames, voices_peak, voices_tenths, mixing, decoding_tenths;
+	unsigned long long decode_cycles;
+
+	dsound_work_statistics(&frames, &voice_frames, &voices_peak, &decode_cycles);
+	if (!window_cycles)
+		window_cycles = 1;
+	voices_tenths = frames ? (unsigned long)((unsigned long long)voice_frames * 10 / frames) : 0;
+	mixing = (unsigned long)(mix_cycles * 1000 / window_cycles);
+	decoding_tenths = (unsigned long)(decode_cycles * 10000 / window_cycles);
+	snprintf(text, size, "mixing %lu ms a second, voices %lu.%lu on average and %lu at most, decoding %lu.%lu ms a second",
+		mixing, voices_tenths / 10, voices_tenths % 10, voices_peak, decoding_tenths / 10, decoding_tenths % 10);
+}
 
 static unsigned long __stdcall fill_thread(void *parameter)
 {
 	int started = 0;
 	unsigned long passes = 0;
+	/* the mixer's time, and the window it is a share of */
+	unsigned long long mix_cycles = 0, window_start = cycle_count();
 
 	(void)parameter;
 	for (;;)
@@ -96,7 +126,13 @@ static unsigned long __stdcall fill_thread(void *parameter)
 		}
 		while (queued < QUEUE_DEPTH)
 		{
+			unsigned long long start = cycle_count();
+
 			fill_buffer(buffers + fill_index * BUFFER_FRAMES * CHANNELS, BUFFER_FRAMES);
+			mix_cycles += cycle_count() - start;
+			/* the ring is write-combined: out to memory before the
+			hardware reads it */
+			__asm__ __volatile__("sfence" ::: "memory");
 			XAudioProvideSamples((unsigned char *)(buffers + fill_index * BUFFER_FRAMES * CHANNELS), BUFFER_BYTES, 0);
 			fill_index = (fill_index + 1) % BUFFERS;
 			queued++;
@@ -110,15 +146,19 @@ static unsigned long __stdcall fill_thread(void *parameter)
 		if (++passes % (5000 / FILL_INTERVAL_MS) == 0)
 		{
 			/* every five seconds: what the hardware and the mixer did */
-			char text[160];
+			char text[288], work[128];
 			unsigned long streams, packets, voiced, peak;
+			unsigned long long now = cycle_count();
 
 			dsound_statistics(&streams, &packets, &voiced, &peak);
+			nx_audio_work_text(work, sizeof(work), mix_cycles, now - window_start);
+			mix_cycles = 0;
+			window_start = now;
 			snprintf(text, sizeof(text),
-				"halo-xbox: audio: played %lu, late %lu, civ %u lvi %u sr %04x cr %02x; streams %lu, packets %lu, voiced frames %lu, peak %lu\n",
+				"halo-xbox: audio: played %lu, late %lu, civ %u lvi %u sr %04x cr %02x; streams %lu, packets %lu, voiced frames %lu, peak %lu; %s\n",
 				consumed, underruns, AC97_PCM_OUT_CIV, *(volatile unsigned char *)(AC97_MMIO + 0x115),
 				*(volatile unsigned short *)(AC97_MMIO + 0x116), *(volatile unsigned char *)(AC97_MMIO + 0x11B),
-				streams, packets, voiced, peak);
+				streams, packets, voiced, peak, work);
 			nx_print(text);
 		}
 		Sleep(FILL_INTERVAL_MS);
@@ -132,8 +172,10 @@ static int ac97_start(void (*fill)(short *samples, unsigned long frames))
 
 	if (buffers)
 		return 1;
-	/* the hardware reads them by physical address: contiguous */
-	buffers = MmAllocateContiguousMemoryEx(BUFFER_BYTES * BUFFERS, 0, 0x03FFFFFF, 64, PAGE_READWRITE | PAGE_NOCACHE);
+	/* the hardware reads them by physical address: contiguous; and
+	write-combined, since the mixer only writes them, in order (uncached, each
+	16-bit store was a bus cycle of its own: about 96,000 a second) */
+	buffers = MmAllocateContiguousMemoryEx(BUFFER_BYTES * BUFFERS, 0, 0x03FFFFFF, 64, PAGE_READWRITE | PAGE_WRITECOMBINE);
 	if (!buffers)
 	{
 		nx_print("halo-xbox: audio: no memory for the output buffers\n");
@@ -147,7 +189,13 @@ static int ac97_start(void (*fill)(short *samples, unsigned long frames))
 	first 128 bytes of the controller's window) */
 	*(volatile unsigned short *)(AC97_MMIO + 0x02) = 0x0000;
 	*(volatile unsigned short *)(AC97_MMIO + 0x18) = 0x0808;
-	if (!nx_create_thread(64 * 1024, fill_thread, NULL, 0, NULL))
+	HANDLE mixer_thread = nx_create_thread(64 * 1024, fill_thread, NULL, 0, NULL);
+
+	/* above the game's, as the audio processor's path (nx_apu.c): a late mix
+	is heard */
+	if (mixer_thread)
+		SetThreadPriority(mixer_thread, THREAD_PRIORITY_ABOVE_NORMAL);
+	if (!mixer_thread)
 	{
 		nx_print("halo-xbox: audio: cannot start the mixer thread\n");
 		return 0;

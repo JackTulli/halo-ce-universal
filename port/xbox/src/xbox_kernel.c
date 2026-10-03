@@ -165,12 +165,18 @@ const char *platform_redirect_path(const char *path, char *buffer)
 	/* the game's copies of the disc's compressed maps (z:\cacheNNN.map:
 	up to six, each up to 300 MB) outgrow the 750 MB utility partition and
 	leave no room for the saves next to them; they go to the data
-	partition instead (E:\halo, made at start-up) */
+	partition instead (E:\halo, made at start-up), or where there is room
+	for each when E: is short of it (nx_kernel.c, place_map_cache) */
 	if ((path[0] == 'z' || path[0] == 'Z') && path[1] == ':' && (path[2] == '\\' || path[2] == '/') &&
 		!_strnicmp(path + 3, "cache", 5) && strlen(path) >= 12 && !_stricmp(path + strlen(path) - 4, ".map") &&
 		!strchr(path + 3, '\\') && !strchr(path + 3, '/'))
 	{
-		snprintf(buffer, MAX_PATH, "E:\\halo\\%s", path + 3);
+		unsigned long file = ~0UL;
+
+		if (path[8] >= '0' && path[8] <= '9' && path[9] >= '0' && path[9] <= '9' && path[10] >= '0' &&
+			path[10] <= '9')
+			file = (path[8] - '0') * 100 + (path[9] - '0') * 10 + (path[10] - '0');
+		snprintf(buffer, MAX_PATH, "%s%s", nx_map_cache_directory(file), path + 3);
 		return buffer;
 	}
 	if ((path[0] != 'd' && path[0] != 'D') || path[1] != ':' || (path[2] != '\\' && path[2] != '/'))
@@ -395,15 +401,16 @@ DWORD WINAPI WaitForSingleObjectEx(HANDLE handle, DWORD milliseconds, BOOL alert
 
 /* ---------- asynchronous file I/O */
 
-/* A buffer the console cannot have: above its 64 MB physical window and
-below the kernel's own regions. The kernel's drivers touch a request's buffer
-at dispatch level, where a bad one is a bugcheck with no report, so such a
-request fails here instead, with its callers. */
+/* A buffer the console cannot have: above its physical window (64 MB, or
+128) and below the kernel's own regions. The kernel's drivers touch a
+request's buffer at dispatch level, where a bad one is a bugcheck with no
+report, so such a request fails here instead, with its callers. */
 static BOOL buffer_is_impossible(const char *what, const void *buffer, DWORD count)
 {
 	unsigned long start = (unsigned long)buffer, end = start + count;
+	unsigned long window_end = PLATFORM_CONTIGUOUS_BASE + nx_physical_top();
 
-	if ((start >= 0x84000000UL && start < 0xD0000000UL) || (end > 0x84000000UL && end <= 0xD0000000UL) ||
+	if ((start >= window_end && start < 0xD0000000UL) || (end > window_end && end <= 0xD0000000UL) ||
 		end < start)
 	{
 		platform_log("%s: impossible buffer %p (%lu bytes) from %p %p %p", what, buffer, count,

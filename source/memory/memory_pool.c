@@ -95,6 +95,13 @@ static void code_0010dc50(
 static struct memory_pool_block *code_0010ddc0(
 	struct memory_pool *pool,
 	void **reference);
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+static void memory_pool_verify_header(
+	struct memory_pool *pool);
+static void memory_pool_verify_block(
+	struct memory_pool *pool,
+	struct memory_pool_block *block);
+#endif
 
 /* ---------- globals */
 
@@ -158,7 +165,14 @@ boolean memory_pool_block_allocate(
 	actual_size = size+sizeof(*block);
 	if (actual_size&3)
 		actual_size = (actual_size|3)+1;
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+	/* the block the new one goes after (see memory_pool_verify) */
+	memory_pool_verify_header(pool);
+	if (pool->last_block)
+		memory_pool_verify_block(pool, pool->last_block);
+#else
 	code_0010dc50(pool);
+#endif
 	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 124, size>=0);
 
 	block = pool->last_block
@@ -309,6 +323,22 @@ long memory_pool_get_contiguous_free_size(
 	return pool->size - memory_pool_get_used_size(pool);
 }
 
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+/* The console walks a pool's whole block list here, once a tick for the
+objects' pool (objects_garbage_collection), when it compacts and when it is
+deleted, rather than on every allocation, resize and free: each walk visits
+every object's block, and a projectile fired took five of them. The blocks
+those operations touch are still checked in full (memory_pool_verify_block):
+place, signatures and both links, which for an intact list prove the block
+is on it, as the walk did. */
+void memory_pool_verify(
+	struct memory_pool *pool)
+{
+	code_0010dc50(pool);
+	return;
+}
+#endif
+
 /* ---------- private code */
 
 static long code_0010dc10(
@@ -369,6 +399,18 @@ static struct memory_pool_block *code_0010ddc0(
 	struct memory_pool_block *other_block;
 
 	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 372, reference && (*reference));
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+	/* this block alone (see memory_pool_verify): its links stand in for the
+	search of the list */
+	memory_pool_verify_header(pool);
+	block = (struct memory_pool_block *)((byte *)*reference-sizeof(*block));
+	memory_pool_verify_block(pool, block);
+	match_vassert(
+		"c:\\halo\\SOURCE\\memory\\memory_pool.c",
+		379,
+		block->reference==reference,
+		csprintf(temporary, "expected reference %08x but got %08x", block->reference, reference));
+#else
 	code_0010dc50(pool);
 	block = (struct memory_pool_block *)((byte *)*reference-sizeof(*block));
 	match_vassert(
@@ -381,5 +423,44 @@ static struct memory_pool_block *code_0010ddc0(
 	{
 	}
 	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 388, other_block);
+#endif
 	return block;
 }
+
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+/* the pool's own checks from code_0010dc50 */
+static void memory_pool_verify_header(
+	struct memory_pool *pool)
+{
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 340, pool->signature==POOL_SIGNATURE);
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 341, pool->size>0);
+	return;
+}
+
+/* code_0010dc50's checks of one block, with its links tested from both
+ends where the walk followed them */
+static void memory_pool_verify_block(
+	struct memory_pool *pool,
+	struct memory_pool_block *block)
+{
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 358, (byte *)block>=(byte *)pool->base_address);
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 355, block->header_signature==BLOCK_HEADER_SIGNATURE);
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 356, block->trailer_signature==BLOCK_TRAILER_SIGNATURE);
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 359, (byte *)block+block->size<=(byte *)pool->base_address+pool->size);
+	/* (a link is in the pool before it is followed: a wild one stops on
+	these lines, as the walk's did, not on a page fault) */
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 352,
+		block->previous_block ?
+			((byte *)block->previous_block>=(byte *)pool->base_address &&
+			(byte *)block->previous_block<(byte *)pool->base_address+pool->size &&
+			block->previous_block->next_block==block) :
+			pool->first_block==block);
+	match_assert("c:\\halo\\SOURCE\\memory\\memory_pool.c", 353,
+		block->next_block ?
+			((byte *)block->next_block>=(byte *)pool->base_address &&
+			(byte *)block->next_block<(byte *)pool->base_address+pool->size &&
+			block->next_block->previous_block==block) :
+			pool->last_block==block);
+	return;
+}
+#endif

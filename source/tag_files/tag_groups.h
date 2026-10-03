@@ -35,7 +35,15 @@ enum tag_field_type
 
 /* ---------- macros */
 
+#ifdef HALO_XBOX
+/* (HALO_XBOX) a valid element without the call (tag_block_get_element_fast,
+below): every tag walk of the ticks and the render goes through this, some
+1300 places, and the checked function's call and asserts cost more than the
+element's address. Anything its asserts would stop on still goes to it. */
+#define TAG_BLOCK_GET_ELEMENT(block_address, index, type) ((type *)tag_block_get_element_fast((block_address), (index), sizeof(type)))
+#else
 #define TAG_BLOCK_GET_ELEMENT(block_address, index, type) ((type *)tag_block_get_element_with_size((block_address), (index), sizeof(type)))
+#endif
 
 /* ---------- structures */
 
@@ -122,6 +130,17 @@ struct tag_data
 long verify_tag_reference(struct tag_reference const *reference);
 void *tag_data_get_pointer(struct tag_data const *data, long offset, long size);
 void *tag_block_get_element_with_size(struct tag_block const *block, long index, long element_size);
+
+#ifdef HALO_XBOX
+static __inline__ __attribute__((always_inline)) void *tag_block_get_element_fast(struct tag_block const *block, long index, long element_size)
+{
+	/* exactly the cases tag_block_get_element_with_size passes without a
+	word (a cache file's blocks have no definition) */
+	if (block && block->count >= 0 && index >= 0 && index < block->count && block->address && !block->definition)
+		return (void *)((char *)block->address + index * element_size);
+	return tag_block_get_element_with_size(block, index, element_size);
+}
+#endif
 
 /* ---------- prototypes/CACHE_FILES.C */
 

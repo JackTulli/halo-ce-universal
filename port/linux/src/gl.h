@@ -26,6 +26,19 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 #include <GLES3/gl32.h>
 #include <GLES2/gl2ext.h>
 #define GLAPIENTRY GL_APIENTRY
+#elif defined(HALO_WIN9X)
+/* Windows 98/ME has no SDL: OpenGL 1.1 (with its fixed-function names) and
+Khronos' extension header, from port/third_party/khronos, whose directory
+must be on the include path for glext.h's <KHR/khrplatform.h>. WINGDIAPI
+and APIENTRY defined keep gl.h from including the host's windows.h */
+#pragma push_macro("WINGDIAPI")
+#ifndef WINGDIAPI
+#define WINGDIAPI
+#endif
+#include "../../third_party/khronos/GL/gl.h"
+#include "../../third_party/khronos/GL/glext.h"
+#pragma pop_macro("WINGDIAPI")
+#define GLAPIENTRY APIENTRY
 #else
 #include <SDL3/SDL_opengl.h>
 #endif
@@ -137,12 +150,14 @@ this list to generate the guest's entry points */
 	X(glGetQueryObjectuiv)
 /* ANDROID_GL_FUNCTIONS_END */
 #else
-#define GL_FUNCTIONS(X) \
+/* The desktop's entry points, in three lists (gl_functions.c).
+
+OpenGL 1.1's, which every renderer uses and opengl32.dll itself exports on
+Windows: */
+#define GL_FUNCTIONS_BASE(X) \
 	X(glGetString) \
 	X(glGetIntegerv) \
 	X(glGetTexImage) \
-	X(glCopyImageSubData) \
-	X(glGenerateMipmap) \
 	X(glGetError) \
 	X(glEnable) \
 	X(glDisable) \
@@ -160,8 +175,6 @@ this list to generate the guest's entry points */
 	X(glStencilOp) \
 	X(glStencilMask) \
 	X(glBlendFunc) \
-	X(glBlendEquation) \
-	X(glBlendColor) \
 	X(glCullFace) \
 	X(glFrontFace) \
 	X(glPolygonMode) \
@@ -171,51 +184,40 @@ this list to generate the guest's entry points */
 	X(glReadPixels) \
 	X(glFinish) \
 	X(glFlush) \
-	X(glClipControl) \
 	X(glGenTextures) \
 	X(glDeleteTextures) \
 	X(glBindTexture) \
-	X(glActiveTexture) \
 	X(glTexImage2D) \
-	X(glTexImage3D) \
 	X(glTexSubImage2D) \
-	X(glCompressedTexImage2D) \
-	X(glCompressedTexImage3D) \
+	X(glCopyTexSubImage2D) \
 	X(glTexParameteri) \
 	X(glTexParameteriv) \
 	X(glTexParameterf) \
 	X(glTexParameterfv) \
-	X(glGenSamplers) \
-	X(glBindSampler) \
-	X(glSamplerParameteri) \
-	X(glSamplerParameterf) \
-	X(glSamplerParameterfv) \
-	X(glGenFramebuffers) \
-	X(glDeleteFramebuffers) \
-	X(glBindFramebuffer) \
-	X(glFramebufferTexture2D) \
-	X(glCheckFramebufferStatus) \
-	X(glBlitFramebuffer) \
+	X(glDrawBuffer) \
+	X(glReadBuffer) \
+	X(glDrawArrays) \
+	X(glDrawElements)
+
+/* OpenGL 1.2 to 2.0's, which the renderers with shaders use (gl4 and gl2,
+xgpu.h); a driver without them leaves the fixed-function renderer: */
+#define GL_FUNCTIONS_SHADERS(X) \
+	X(glBlendEquation) \
+	X(glBlendColor) \
+	X(glActiveTexture) \
+	X(glTexImage3D) \
+	X(glCompressedTexImage2D) \
+	X(glCompressedTexImage3D) \
 	X(glDrawBuffers) \
 	X(glGenBuffers) \
 	X(glDeleteBuffers) \
 	X(glBindBuffer) \
 	X(glBufferData) \
 	X(glBufferSubData) \
-	X(glBufferStorage) \
-	X(glMapBufferRange) \
-	X(glBindBufferBase) \
-	X(glGenVertexArrays) \
-	X(glBindVertexArray) \
 	X(glEnableVertexAttribArray) \
 	X(glDisableVertexAttribArray) \
 	X(glVertexAttribPointer) \
-	X(glVertexAttribIPointer) \
 	X(glVertexAttrib4fv) \
-	X(glVertexAttribI4ui) \
-	X(glDrawArrays) \
-	X(glDrawElements) \
-	X(glDrawElementsBaseVertex) \
 	X(glCreateShader) \
 	X(glShaderSource) \
 	X(glCompileShader) \
@@ -225,10 +227,10 @@ this list to generate the guest's entry points */
 	X(glCreateProgram) \
 	X(glAttachShader) \
 	X(glBindAttribLocation) \
-	X(glBindFragDataLocation) \
 	X(glLinkProgram) \
 	X(glGetProgramiv) \
 	X(glGetProgramInfoLog) \
+	X(glDeleteProgram) \
 	X(glUseProgram) \
 	X(glGetUniformLocation) \
 	X(glUniform1i) \
@@ -239,12 +241,56 @@ this list to generate the guest's entry points */
 	X(glGenQueries) \
 	X(glBeginQuery) \
 	X(glEndQuery) \
-	X(glGetQueryObjectuiv) \
-	X(glDebugMessageCallback)
+	X(glGetQueryObjectuiv)
+
+/* And what came after OpenGL 2.0: all of it there for gl4, each of it done
+without by gl2 (xgpu_capabilities, xgpu.h). The second name is the entry
+point of the extension that came before the core function, with the same
+arguments, or 0: EXT_framebuffer_object and EXT_framebuffer_blit. A pointer
+that is not null does not mean the context has the function (GLX answers
+for every name): the version and the extension list decide. */
+#define GL_FUNCTIONS_OPTIONAL(X) \
+	X(glCopyImageSubData, 0) \
+	X(glGenerateMipmap, "glGenerateMipmapEXT") \
+	X(glClipControl, 0) \
+	X(glGenSamplers, 0) \
+	X(glBindSampler, 0) \
+	X(glSamplerParameteri, 0) \
+	X(glSamplerParameterf, 0) \
+	X(glSamplerParameterfv, 0) \
+	X(glGenFramebuffers, "glGenFramebuffersEXT") \
+	X(glDeleteFramebuffers, "glDeleteFramebuffersEXT") \
+	X(glBindFramebuffer, "glBindFramebufferEXT") \
+	X(glFramebufferTexture2D, "glFramebufferTexture2DEXT") \
+	X(glCheckFramebufferStatus, "glCheckFramebufferStatusEXT") \
+	X(glGenRenderbuffers, "glGenRenderbuffersEXT") \
+	X(glDeleteRenderbuffers, "glDeleteRenderbuffersEXT") \
+	X(glBindRenderbuffer, "glBindRenderbufferEXT") \
+	X(glRenderbufferStorage, "glRenderbufferStorageEXT") \
+	X(glFramebufferRenderbuffer, "glFramebufferRenderbufferEXT") \
+	X(glBlitFramebuffer, "glBlitFramebufferEXT") \
+	X(glBufferStorage, 0) \
+	X(glMapBufferRange, 0) \
+	X(glBindBufferBase, 0) \
+	X(glGenVertexArrays, 0) \
+	X(glBindVertexArray, 0) \
+	X(glVertexAttribIPointer, 0) \
+	X(glVertexAttribI4ui, 0) \
+	X(glDrawElementsBaseVertex, 0) \
+	X(glBindFragDataLocation, 0) \
+	X(glDebugMessageCallback, 0)
 #endif
 
 #define GL_DECLARE_FUNCTION(name) extern __typeof__(&name) halo_##name;
+#ifdef HALO_ANDROID
 GL_FUNCTIONS(GL_DECLARE_FUNCTION)
+#else
+#define GL_DECLARE_OPTIONAL_FUNCTION(name, older) extern __typeof__(&name) halo_##name;
+GL_FUNCTIONS_BASE(GL_DECLARE_FUNCTION)
+GL_FUNCTIONS_SHADERS(GL_DECLARE_FUNCTION)
+GL_FUNCTIONS_OPTIONAL(GL_DECLARE_OPTIONAL_FUNCTION)
+#undef GL_DECLARE_OPTIONAL_FUNCTION
+#endif
 #undef GL_DECLARE_FUNCTION
 
 /* call sites use the ordinary names; gl_functions.c, which defines the
@@ -454,12 +500,34 @@ pointers, sees the declarations without these aliases */
 #define glEndQuery halo_glEndQuery
 #define glGetQueryObjectuiv halo_glGetQueryObjectuiv
 #define glDebugMessageCallback halo_glDebugMessageCallback
+#define glCopyTexSubImage2D halo_glCopyTexSubImage2D
+#define glDrawBuffer halo_glDrawBuffer
+#define glReadBuffer halo_glReadBuffer
+#define glDeleteProgram halo_glDeleteProgram
+#define glGenRenderbuffers halo_glGenRenderbuffers
+#define glDeleteRenderbuffers halo_glDeleteRenderbuffers
+#define glBindRenderbuffer halo_glBindRenderbuffer
+#define glRenderbufferStorage halo_glRenderbufferStorage
+#define glFramebufferRenderbuffer halo_glFramebufferRenderbuffer
 
 #endif
 #endif
 
+#ifdef HALO_ANDROID
 /* returns FALSE (and logs) if a required function is missing */
 int gl_functions_load(void);
+#else
+/* resolves the lists above. FALSE (and logs) if one of OpenGL 1.1's is
+missing; the others are left null where the driver has none */
+int gl_functions_load(void);
+/* whether every one of OpenGL 2.0's (GL_FUNCTIONS_SHADERS) was found; if
+not, *missing is the first that was not */
+int gl_functions_shaders(const char **missing);
+/* takes the extensions' entry points (the second names of
+GL_FUNCTIONS_OPTIONAL) in place of the core ones, where the driver has
+them: for a context that lists the extension and not the core feature */
+void gl_functions_use_extension_names(void);
+#endif
 
 #endif /* HALO_XBOX */
 

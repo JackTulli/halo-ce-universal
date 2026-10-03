@@ -135,6 +135,20 @@ symbols in this file:
 
 /* ---------- constants */
 
+#if defined(HALO_LINUX) && !defined(HALO_WINDOW_BASE)
+#error halo_memory_window.h was not included
+#endif
+#if defined(HALO_LINUX) && HALO_WINDOW_BASE != HALO_XBOX_WINDOW_BASE
+/* The maps are linked to the console's memory window and this build's is
+elsewhere (halo_memory_window.h): every address in a map's tag data and
+structure BSPs moves by the difference as it is read. */
+#define CACHE_FILE_MOVES_ADDRESSES
+#define CACHE_FILE_ADDRESS_DELTA ((long)(HALO_WINDOW_BASE - HALO_XBOX_WINDOW_BASE))
+/* where the tag data was linked: the console's tag cache */
+#define CACHE_FILE_LINKED_TAG_CACHE_ADDRESS (HALO_XBOX_WINDOW_BASE + 0x003A6000UL)
+#include "../../port/linux/src/xbox_map_rebase.h"
+#endif
+
 /* ---------- macros */
 
 #define STRUCTURE_BSP_TAG 'sbsp'
@@ -407,7 +421,12 @@ long tag_loaded(
 void cache_files_enable_writes(
 	void)
 {
+#ifdef HALO_LINUX
+	/* (the tag cache in the build's memory window, physical_memory_map.c) */
+	XPhysicalProtect((void *)HALO_TAG_CACHE_ADDRESS, 0x01600000, PAGE_READWRITE);
+#else
 	XPhysicalProtect((void *)0x803A6000, 0x01600000, PAGE_READWRITE);
+#endif
 
 	return;
 }
@@ -415,7 +434,11 @@ void cache_files_enable_writes(
 void cache_files_disable_writes(
 	void)
 {
+#ifdef HALO_LINUX
+	XPhysicalProtect((void *)HALO_TAG_CACHE_ADDRESS, 0x01600000, PAGE_READONLY);
+#else
 	XPhysicalProtect((void *)0x803A6000, 0x01600000, PAGE_READONLY);
+#endif
 	XPhysicalProtect(
 		cache_file_globals.tag_header->vertex_buffers,
 		cache_file_globals.tag_header->vertex_buffer_count * 12,
@@ -585,6 +608,28 @@ boolean cache_file_header_verify(
 		return FALSE;
 	}
 
+#ifdef CACHE_FILE_MOVES_ADDRESSES
+	/* the fields that hold an address are known for the maps of one build
+	only; an address left where it was would point outside this build's
+	memory window */
+	if (csstrcmp(header->build, xbox_map_rebase_build()))
+	{
+		if (fatal)
+		{
+			error(
+				_error_immediate,
+				"the cache file '%s' is of build %s; this build of the game can only load the maps of build %s",
+				header->name,
+				header->build,
+				xbox_map_rebase_build());
+			/* (error returns when another error is being reported) */
+			system_exit(-4998);
+		}
+
+		return FALSE;
+	}
+#endif
+
 #ifndef HALO_LINUX
 	/* (the native builds try a cache file whatever build made it, NTSC's
 	01.10.12.2276 included) */
@@ -694,6 +739,31 @@ long scenario_tags_load(
 					'a',
 					'g',
 					's'));
+#ifdef CACHE_FILE_MOVES_ADDRESSES
+			/* only the tag data: the read rounds up to whole sectors, and
+			what follows it is the rest of the file */
+			{
+				char rebase_error[256];
+
+				if (!xbox_map_rebase_tag_data(
+					tag_cache_base_address,
+					cache_file_globals.header.tag_data_size,
+					CACHE_FILE_LINKED_TAG_CACHE_ADDRESS,
+					CACHE_FILE_ADDRESS_DELTA,
+					rebase_error,
+					sizeof(rebase_error)))
+				{
+					error(
+						_error_immediate,
+						"cannot move the addresses of the map '%s' to this build's memory window: %s",
+						stripped_scenario_name,
+						rebase_error);
+					/* the tag data is partly moved: never go on (error
+					returns when another error is being reported) */
+					system_exit(-4998);
+				}
+			}
+#endif
 			global_tag_instances = cache_file_globals.tag_header->tag_instances;
 			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
 			cache_file_globals.tags_loaded = TRUE;
@@ -740,6 +810,30 @@ boolean scenario_structure_bsp_load(
 		"c:\\halo\\SOURCE\\cache\\cache_files.c",
 		0xE0,
 		cache_file_globals.structure_bsp_header->signature==CACHE_FILE_STRUCTURE_BSP_HEADER_SIGNATURE);
+#ifdef CACHE_FILE_MOVES_ADDRESSES
+	/* the structure BSP's addresses move as the tag data's did; the
+	reference, which is tag data, already has its load address moved */
+	{
+		char rebase_error[256];
+
+		if (!xbox_map_rebase_structure_bsp(
+			reference->base_address,
+			reference->file_size,
+			(unsigned long)reference->base_address - CACHE_FILE_ADDRESS_DELTA,
+			CACHE_FILE_ADDRESS_DELTA,
+			rebase_error,
+			sizeof(rebase_error)))
+		{
+			error(
+				_error_immediate,
+				"cannot move the addresses of the structure BSP '%s' of the map '%s' to this build's memory window: %s",
+				tag_get_name(reference->structure_bsp.index),
+				cache_file_globals.header.name,
+				rebase_error);
+			system_exit(-4998);
+		}
+	}
+#endif
 	structure_bsp_header_register_vertex_buffers(cache_file_globals.structure_bsp_header);
 	tag_instance = cache_get_tag_instance(reference->structure_bsp.index);
 	match_assert(
@@ -776,6 +870,12 @@ void scenario_structure_bsp_unload(
 	return;
 }
 
+#ifdef HALO_XBOX
+/* the console: tag_get, the accessor behind every *_definition_get, takes
+cache_get_tag_instance inline (flatten: its only callee in this unit), one
+call instead of two; the other callers keep the call */
+__attribute__((flatten))
+#endif
 void *tag_get(
 	long group_tag,
 	long tag_index)

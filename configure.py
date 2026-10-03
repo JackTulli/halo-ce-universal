@@ -32,6 +32,19 @@ from tools.project_x86 import (
 import os
 import subprocess
 import sys
+
+
+def window_base(text: str) -> int:
+    """a memory window base: hexadecimal, a nonzero multiple of 128 MB below 4 GB"""
+    try:
+        value = int(text, 16)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a hexadecimal address")
+    if not value or value % 0x08000000 or value + 0x08000000 > 0x100000000:
+        raise argparse.ArgumentTypeError(f"{text} is not a nonzero multiple of 0x08000000 up to 0xF8000000")
+    return value
+
+
 # arguments
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -89,6 +102,14 @@ parser.add_argument(
     "16 players on 16 machines with the retail pools, plays with the Xbox build",
 )
 parser.add_argument(
+    "--window-base",
+    metavar="HEX",
+    type=window_base,
+    help="native ports (Windows, Linux): where the Xbox memory window goes, a multiple of 0x08000000 such as "
+    "0x40000000 (port/include/halo_memory_window.h); the retail maps' addresses are then moved to it as they "
+    "are read. The default is the console's own, 0x80000000; Android and the Xbox always use that",
+)
+parser.add_argument(
     "--lto",
     choices=["full", "thin", "off"],
     default="full",
@@ -143,6 +164,28 @@ parser.add_argument(
     "--xbox-linker",
     metavar="BINARY",
     help="linker for the Xbox build (default: lld-link)",
+)
+parser.add_argument(
+    "--win9x-sdk",
+    metavar="DIR",
+    type=Path,
+    help="the Windows SDK's include folder of one version (with um/windows.h), for `ninja win9x` "
+    "(default: the vcvarsall environment's, or the newest installed)",
+)
+parser.add_argument(
+    "--win9x-cc",
+    metavar="BINARY",
+    help="compiler for the Windows 98 build, `ninja win9x` (default: clang)",
+)
+parser.add_argument(
+    "--win9x-linker",
+    metavar="BINARY",
+    help="linker for the Windows 98 build (default: lld-link)",
+)
+parser.add_argument(
+    "--win9x-console",
+    action="store_true",
+    help="link the Windows 98 build as a console program (its log on the console), for debugging",
 )
 if not is_windows():
     parser.add_argument(
@@ -205,6 +248,7 @@ sln.linux_cc = args.linux_cc
 sln.compiler_launcher = args.compiler_launcher
 sln.port_release = args.release
 sln.port_big_sessions = args.big_sessions
+sln.port_window_base = args.window_base
 sln.port_lto = args.lto
 sln.port_portable = args.portable
 sln.port_pgo = args.pgo
@@ -214,6 +258,10 @@ sln.android_guest_cc = args.android_guest_cc
 sln.nxdk = args.nxdk
 sln.xbox_cc = args.xbox_cc
 sln.xbox_linker = args.xbox_linker
+sln.win9x_sdk = args.win9x_sdk
+sln.win9x_cc = args.win9x_cc
+sln.win9x_linker = args.win9x_linker
+sln.win9x_console = args.win9x_console
 if not is_windows():
     sln.wrapper = args.wrapper
 

@@ -5,6 +5,9 @@ The process and desktop half of port/linux/src/posix.h for Windows, which
 internet play uses (p2p.c; the Linux versions are in posix_net.c): the
 command line, the registry entry that makes this executable open halo://
 links, and Discord's local pipe.
+
+Windows 98/ME (HALO_WIN9X) has no per-user classes: the halo:// entry goes
+to HKEY_CLASSES_ROOT there, which every user shares.
 */
 
 #include <windows.h>
@@ -12,6 +15,15 @@ links, and Discord's local pipe.
 #include <string.h>
 
 #include "posix.h"
+
+/* where Windows looks links' schemes up */
+#ifdef HALO_WIN9X
+#define URL_SCHEME_ROOT HKEY_CLASSES_ROOT
+#define URL_SCHEME_CLASSES ""
+#else
+#define URL_SCHEME_ROOT HKEY_CURRENT_USER
+#define URL_SCHEME_CLASSES "Software\\Classes\\"
+#endif
 
 /* ---------- the process */
 
@@ -57,23 +69,24 @@ posix_ulong posix_process_id(void)
 
 int posix_register_url_scheme(const char *scheme, const char *description)
 {
-	/* HKEY_CURRENT_USER\Software\Classes\<scheme>, as Windows looks links up */
+	/* HKEY_CURRENT_USER\Software\Classes\<scheme>, as Windows looks links up
+	(HKEY_CLASSES_ROOT\<scheme> on 98/ME) */
 	char executable[MAX_PATH], key_name[256], command[MAX_PATH + 16], label[256];
 	HKEY key;
 	BOOL ok = TRUE;
 
 	if (!GetModuleFileNameA(NULL, executable, sizeof(executable)))
 		return 0;
-	snprintf(key_name, sizeof(key_name), "Software\\Classes\\%s", scheme);
+	snprintf(key_name, sizeof(key_name), URL_SCHEME_CLASSES "%s", scheme);
 	snprintf(label, sizeof(label), "URL:%s", description);
-	if (RegCreateKeyExA(HKEY_CURRENT_USER, key_name, 0, NULL, 0, KEY_WRITE, NULL, &key, NULL) != ERROR_SUCCESS)
+	if (RegCreateKeyExA(URL_SCHEME_ROOT, key_name, 0, NULL, 0, KEY_WRITE, NULL, &key, NULL) != ERROR_SUCCESS)
 		return 0;
 	ok &= RegSetValueExA(key, NULL, 0, REG_SZ, (const BYTE *)label, (DWORD)strlen(label) + 1) == ERROR_SUCCESS;
 	ok &= RegSetValueExA(key, "URL Protocol", 0, REG_SZ, (const BYTE *)"", 1) == ERROR_SUCCESS;
 	RegCloseKey(key);
-	snprintf(key_name, sizeof(key_name), "Software\\Classes\\%s\\shell\\open\\command", scheme);
+	snprintf(key_name, sizeof(key_name), URL_SCHEME_CLASSES "%s\\shell\\open\\command", scheme);
 	snprintf(command, sizeof(command), "\"%s\" \"%%1\"", executable);
-	if (RegCreateKeyExA(HKEY_CURRENT_USER, key_name, 0, NULL, 0, KEY_WRITE, NULL, &key, NULL) != ERROR_SUCCESS)
+	if (RegCreateKeyExA(URL_SCHEME_ROOT, key_name, 0, NULL, 0, KEY_WRITE, NULL, &key, NULL) != ERROR_SUCCESS)
 		return 0;
 	ok &= RegSetValueExA(key, NULL, 0, REG_SZ, (const BYTE *)command, (DWORD)strlen(command) + 1) == ERROR_SUCCESS;
 	RegCloseKey(key);

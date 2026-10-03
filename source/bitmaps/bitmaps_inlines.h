@@ -68,10 +68,10 @@ __inline pixel32 real_argb_color_to_pixel32(
 
 #ifdef HALO_LINUX
 		result = (pixel32)(
-			(long)__builtin_rint((double)color->blue * scale) |
-			((long)__builtin_rint((double)color->green * scale) << 8) |
-			((long)__builtin_rint((double)color->red * scale) << 16) |
-			((long)__builtin_rint((double)color->alpha * scale) << 24));
+			halo_fistp((double)color->blue * scale) |
+			(halo_fistp((double)color->green * scale) << 8) |
+			(halo_fistp((double)color->red * scale) << 16) |
+			(halo_fistp((double)color->alpha * scale) << 24));
 #else
 		__asm
 		{
@@ -109,10 +109,10 @@ __inline pixel32 real_argb_color_to_pixel32(
 
 #ifdef HALO_LINUX
 		verify = (pixel32)(
-			((long)__builtin_rint((double)color->blue * scale) & 0xff) |
-			(((long)__builtin_rint((double)color->green * scale) & 0xff) << 8) |
-			(((long)__builtin_rint((double)color->red * scale) & 0xff) << 16) |
-			((long)__builtin_rint((double)color->alpha * scale) << 24));
+			(halo_fistp((double)color->blue * scale) & 0xff) |
+			((halo_fistp((double)color->green * scale) & 0xff) << 8) |
+			((halo_fistp((double)color->red * scale) & 0xff) << 16) |
+			(halo_fistp((double)color->alpha * scale) << 24));
 #else
 		__asm
 		{
@@ -163,9 +163,9 @@ __inline pixel32 real_rgb_color_to_pixel32(
 
 #ifdef HALO_LINUX
 	result = (pixel32)(
-		((long)__builtin_rint((double)color->blue * scale) & 0xff) |
-		(((long)__builtin_rint((double)color->green * scale) & 0xff) << 8) |
-		(((long)__builtin_rint((double)color->red * scale) & 0xff) << 16));
+		(halo_fistp((double)color->blue * scale) & 0xff) |
+		((halo_fistp((double)color->green * scale) & 0xff) << 8) |
+		((halo_fistp((double)color->red * scale) & 0xff) << 16));
 #else
 	__asm
 	{
@@ -211,7 +211,7 @@ __inline pixel32 real_alpha_to_pixel32(
 		alpha>=0.0f && alpha<=1.0f);
 
 #ifdef HALO_LINUX
-	result = (pixel32)((long)__builtin_rint((double)alpha * scale) << 24);
+	result = (pixel32)(halo_fistp((double)alpha * scale) << 24);
 #else
 	__asm
 	{

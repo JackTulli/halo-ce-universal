@@ -30,13 +30,24 @@ opens it) always reaches the keystroke queue, everything else only while
 the console is open, since the game also polls a few keys directly (escape
 returns to the main menu). While the console is open the keyboard does not
 drive the controller.
+
+Windows 98/ME (HALO_WIN9X) has no SDL: its gamepads are DirectInput's or
+winmm's, already mapped to the Xbox controller by the platform layer
+(port/win9x/platform/w9x_input.c), and its clock is timeGetTime's.
 */
 
 #include "platform.h"
 #include "sdl_platform.h"
 #include "port_config.h"
 
+#ifdef HALO_WIN9X
+#include <math.h>
+/* SDL's names for what the 9x platform layer has */
+typedef unsigned long long Uint64;
+#define SDL_GetTicks() w9x_ticks_ms()
+#else
 #include <SDL3/SDL.h>
+#endif
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -280,6 +291,99 @@ static void wheel_update(void)
 
 /* ---------- SDL gamepads */
 
+#ifdef HALO_WIN9X
+/* Windows 98/ME: the platform layer's pads, in the order DirectInput lists
+them, already mapped to the Xbox controller; a "gamepad" here is the pad's
+index */
+typedef struct w9x_gamepad
+{
+	int index;
+} SDL_Gamepad;
+
+static int sdl_gamepads(SDL_Gamepad *gamepads[PORT_COUNT])
+{
+	static SDL_Gamepad pads[PORT_COUNT] = { { 0 }, { 1 }, { 2 }, { 3 } };
+	int count = w9x_pad_count();
+	int index;
+
+	if (count > PORT_COUNT)
+		count = PORT_COUNT;
+	for (index = 0; index < PORT_COUNT; index++)
+		gamepads[index] = index < count ? &pads[index] : NULL;
+	return count;
+}
+
+static void merge_button(XINPUT_GAMEPAD *pad, int analog_index, BOOL down)
+{
+	if (down)
+		pad->bAnalogButtons[analog_index] = 0xff;
+}
+
+static SHORT stick(short value, BOOL flip)
+{
+	int result = flip ? -(int)value - 1 : value;
+
+	if (result < -32768) result = -32768;
+	if (result > 32767) result = 32767;
+	return (SHORT)result;
+}
+
+static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
+{
+	static const struct
+	{
+		unsigned long button;
+		WORD mask;
+	} digital[] =
+	{
+		{ W9X_PAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_UP },
+		{ W9X_PAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_DOWN },
+		{ W9X_PAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_LEFT },
+		{ W9X_PAD_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT },
+		{ W9X_PAD_START, XINPUT_GAMEPAD_START },
+		{ W9X_PAD_BACK, XINPUT_GAMEPAD_BACK },
+		{ W9X_PAD_LEFT_THUMB, XINPUT_GAMEPAD_LEFT_THUMB },
+		{ W9X_PAD_RIGHT_THUMB, XINPUT_GAMEPAD_RIGHT_THUMB },
+	};
+	struct w9x_pad_state state;
+	int index;
+	SHORT value;
+
+	if (!w9x_pad_read(gamepad->index, &state))
+		return;
+	for (index = 0; index < (int)(sizeof(digital) / sizeof(digital[0])); index++)
+	{
+		if (state.buttons & digital[index].button)
+			pad->wButtons |= digital[index].mask;
+	}
+	merge_button(pad, XINPUT_GAMEPAD_A, (state.buttons & W9X_PAD_A) != 0);
+	merge_button(pad, XINPUT_GAMEPAD_B, (state.buttons & W9X_PAD_B) != 0);
+	merge_button(pad, XINPUT_GAMEPAD_X, (state.buttons & W9X_PAD_X) != 0);
+	merge_button(pad, XINPUT_GAMEPAD_Y, (state.buttons & W9X_PAD_Y) != 0);
+	merge_button(pad, XINPUT_GAMEPAD_WHITE, (state.buttons & W9X_PAD_WHITE) != 0);
+	merge_button(pad, XINPUT_GAMEPAD_BLACK, (state.buttons & W9X_PAD_BLACK) != 0);
+	if (state.left_trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER])
+		pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = state.left_trigger;
+	if (state.right_trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER])
+		pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = state.right_trigger;
+
+	/* a stick only overrides the keyboard when it is pushed further */
+	value = stick(state.left_x, FALSE);
+	if (abs(value) > abs(pad->sThumbLX)) pad->sThumbLX = value;
+	value = stick(state.left_y, TRUE);
+	if (abs(value) > abs(pad->sThumbLY)) pad->sThumbLY = value;
+	value = stick(state.right_x, FALSE);
+	if (abs(value) > abs(pad->sThumbRX)) pad->sThumbRX = value;
+	value = stick(state.right_y, TRUE);
+	if (abs(value) > abs(pad->sThumbRY)) pad->sThumbRY = value;
+}
+
+/* (the duration: the platform layer keeps the motors going until told
+otherwise) */
+#define SDL_RumbleGamepad(gamepad, left, right, duration) \
+	w9x_pad_rumble((gamepad)->index, (left), (right))
+
+#else
 /* the SDL gamepads in connection order, at most one per port */
 static int sdl_gamepads(SDL_Gamepad *gamepads[PORT_COUNT])
 {
@@ -394,6 +498,7 @@ static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 	if (abs(value) > abs(pad->sThumbRY)) pad->sThumbRY = value;
 }
 
+#endif
 /* ---------- XAPI */
 
 VOID WINAPI XInitDevices(DWORD preallocation_type_count, PXDEVICE_PREALLOC_TYPE preallocation_types)

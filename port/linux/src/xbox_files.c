@@ -11,11 +11,19 @@ Every other drive letter X:\ is the subdirectory X/ of the save root (z:\ holds 
 u:\ user data, t:\ title data): paths.saves, else
 $XDG_DATA_HOME/halo-linux or ~/.local/share/halo-linux. Path components are
 matched case-insensitively, like the Xbox's FATX volumes.
+
+On Windows 98/ME the save root is saves\ next to the executable, which also
+takes the 730 MB map cache: the player chose that disk for the game's 2 GB
+of maps. Where that folder cannot be made (a read-only medium), the
+per-user application data folder, then the data root.
 */
 
 #include "platform.h"
 #include "posix.h"
 #include "port_config.h"
+#ifdef HALO_WIN9X
+#include "../../win9x/platform/w9x_backend.h"
+#endif
 
 #include <ctype.h>
 #include <errno.h>
@@ -168,6 +176,39 @@ static void make_directories(const char *path)
 		posix_make_directory(partial);
 }
 
+#ifdef HALO_WIN9X
+/* saves\ next to the executable if it can be made there, else the
+application data folder's halo\ */
+static BOOL save_root_win9x(char *root, int size)
+{
+	char directory[MAX_PATH];
+	char *separator;
+
+	if (w9x_executable_directory(directory, (int)sizeof(directory) - 8))
+	{
+		/* (the platform layer's paths are separated by /, as the data
+		root's) */
+		while ((separator = strchr(directory, '\\')) != NULL)
+			*separator = '/';
+		snprintf(root, (size_t)size, "%s/saves", directory);
+		make_directories(root);
+		if (directory_exists(root))
+			return TRUE;
+	}
+	if (w9x_application_data_directory(directory, (int)sizeof(directory) - 8))
+	{
+		while ((separator = strchr(directory, '\\')) != NULL)
+			*separator = '/';
+		snprintf(root, (size_t)size, "%s/halo", directory);
+		make_directories(root);
+		if (directory_exists(root))
+			return TRUE;
+	}
+	root[0] = '\0';
+	return FALSE;
+}
+
+#endif
 const char *platform_save_root(void)
 {
 	static char root[MAX_PATH];
@@ -180,6 +221,11 @@ const char *platform_save_root(void)
 
 		if (*environment)
 			snprintf(root, sizeof(root), "%s", environment);
+#ifdef HALO_WIN9X
+		/* Windows 98/ME sets no APPDATA: next to the executable */
+		else if (save_root_win9x(root, sizeof(root)))
+			;
+#endif
 #ifdef _WIN32
 		/* the Windows build (port/windows) keeps saves in the roaming
 		application data folder */

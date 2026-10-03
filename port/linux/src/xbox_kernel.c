@@ -6,6 +6,9 @@ threads, asynchronous procedure calls, time, memory and debug output.
 */
 
 #include "platform.h"
+#ifdef HALO_WIN9X
+#include "../../win9x/platform/w9x_backend.h"
+#endif
 
 #include <errno.h>
 #include <sched.h>
@@ -28,6 +31,58 @@ void platform_log(const char *format, ...)
 
 	fputs("halo-linux: ", stderr);
 	va_start(arguments, format);
+#ifdef _WIN32
+	/* the Windows build: its console window goes when the game does, so
+	the log also goes to halo.log in the working folder (the executable's,
+	started from Explorer), rewritten each run */
+	{
+		static FILE *volatile file;
+		static volatile long opened;
+		va_list copy;
+
+		if (!opened && !__sync_lock_test_and_set(&opened, 1))
+		{
+#ifdef HALO_WIN9X
+			/* Windows 98/ME: next to the executable, which a shortcut need
+			not start the game in */
+			char path[MAX_PATH];
+
+			if (w9x_executable_directory(path, (int)sizeof(path) - 10))
+				strcat(path, "\\halo.log");
+			else
+				strcpy(path, "halo.log");
+			file = fopen(path, "w");
+#else
+			file = fopen("halo.log", "w");
+#endif
+		}
+		if (file)
+		{
+			time_t now = time(NULL);
+			struct tm *local = localtime(&now);
+
+			if (local)
+				fprintf(file, "%02d:%02d:%02d ", local->tm_hour, local->tm_min, local->tm_sec);
+			va_copy(copy, arguments);
+			vfprintf(file, format, copy);
+			va_end(copy);
+			fputc('\n', file);
+			fflush(file);
+		}
+#ifdef HALO_WIN9X
+		{
+			/* the last lines, for the crash report's message box (a program
+			with a window has no console to see them in) */
+			char line[160];
+
+			va_copy(copy, arguments);
+			vsnprintf(line, sizeof(line), format, copy);
+			va_end(copy);
+			w9x_log_remember(line);
+		}
+#endif
+	}
+#endif
 	vfprintf(stderr, format, arguments);
 	va_end(arguments);
 	fputc('\n', stderr);

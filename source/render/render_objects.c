@@ -288,6 +288,10 @@ void rasterizer_environment_shadows_begin(
 	void);
 void rasterizer_environment_shadows_end(
 	void);
+#ifdef HALO_LINUX
+boolean rasterizer_environment_shadows_drawn(
+	void);
+#endif
 boolean rasterizer_environment_shadow_begin(
 	long object_index,
 	real_matrix4x3 const *shadow_matrix,
@@ -426,10 +430,25 @@ void render_object_shadows(
 	{
 		struct object_render_data data;
 
+#ifdef HALO_LINUX
+		/* zeroed: the shadow volume radius was read uninitialised
+		whenever the rasterizer drew no shadow */
+		csmemset(&data, 0, sizeof(data));
+#endif
 		rasterizer_environment_shadows_begin();
 
 		data.shadow = TRUE;
+#ifdef HALO_LINUX
+		/* the pass only when its shadows are drawn (performance mode and
+		graphics.shadows=false turn them off, mirror windows never draw
+		them): every rasterizer call in it would return at that test */
+		if (rasterizer_environment_shadows_drawn())
+		{
+			process_rendered_objects(&data);
+		}
+#else
 		process_rendered_objects(&data);
+#endif
 
 		rasterizer_environment_shadows_end();
 	}

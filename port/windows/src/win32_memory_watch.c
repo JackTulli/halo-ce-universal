@@ -9,15 +9,28 @@ writable again.
 
 This file also reports crashes, which the game's own __try handler cannot
 (port/windows/include/halo_windows_prefix.h).
+
+Windows 98/ME (HALO_WIN9X) has no vectored handlers: the unhandled
+exception filter takes the watched pages' first writes as well (the game's
+__try is compiled out, so nothing stands between them). A crash there also
+puts the desktop's display mode back and shows what happened in a message
+box, with the log's last lines (port/win9x/platform/w9x_shell.c): a program
+with a window has no console to see them in.
 */
 
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
 
-/* the Xbox memory window (port/linux/src/platform.h) */
-#define PLATFORM_CONTIGUOUS_BASE 0x80000000UL
-#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL
+#include "../../include/halo_memory_window.h"
+#ifdef HALO_WIN9X
+#include "../../win9x/platform/w9x_backend.h"
+#endif
+
+/* the Xbox memory window (port/linux/src/platform.h, which this file, built
+with the Windows SDK, cannot include) */
+#define PLATFORM_CONTIGUOUS_BASE HALO_WINDOW_BASE
+#define PLATFORM_CONTIGUOUS_SIZE HALO_WINDOW_SIZE
 
 #define WATCH_PAGE_SIZE 0x1000UL
 #define WATCH_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / WATCH_PAGE_SIZE)
@@ -71,8 +84,13 @@ void memory_watch_initialize(void)
 {
 	if (watch_active)
 		return;
+#ifdef HALO_WIN9X
+	/* (crash_filter calls watch_handler first) */
+	watch_active = TRUE;
+#else
 	if (AddVectoredExceptionHandler(1, watch_handler))
 		watch_active = TRUE;
+#endif
 }
 
 void memory_watch_protect(unsigned long address, unsigned long size)
@@ -169,6 +187,10 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *exception)
 	CONTEXT *context = exception->ContextRecord;
 	const DWORD *stack = (const DWORD *)context->Esp;
 
+#ifdef HALO_WIN9X
+	if (watch_active && watch_handler(exception) == EXCEPTION_CONTINUE_EXECUTION)
+		return EXCEPTION_CONTINUE_EXECUTION;
+#endif
 	platform_log("crash: exception %08lx at %p (accessing %p), eip %08lx ebp %08lx esp %08lx",
 		record->ExceptionCode, record->ExceptionAddress,
 		record->NumberParameters >= 2 ? (void *)record->ExceptionInformation[1] : NULL,
@@ -192,7 +214,20 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *exception)
 		}
 	}
 	fflush(stderr);
+#ifdef HALO_WIN9X
+	{
+		char what[160];
+
+		snprintf(what, sizeof(what), "exception %08lx at %08lx (accessing %08lx).",
+			(unsigned long)record->ExceptionCode, (unsigned long)context->Eip,
+			record->NumberParameters >= 2 ? (unsigned long)record->ExceptionInformation[1] : 0UL);
+		w9x_crash_report(what);
+		/* (9x's own "illegal operation" box would follow otherwise) */
+		return EXCEPTION_EXECUTE_HANDLER;
+	}
+#else
 	return EXCEPTION_CONTINUE_SEARCH;
+#endif
 }
 
 __attribute__((constructor))

@@ -182,6 +182,10 @@ struct game_options;
 #include "structures/structures.h"
 #include "units/units.h"
 #include "units/vehicles.h"
+#ifdef HALO_XBOX
+#include "ai/actors.h"
+#include "ai/ai_profile.h"
+#endif
 
 /* ---------- constants */
 
@@ -375,6 +379,54 @@ char const *global_game_difficulty_level_names[NUMBER_OF_GAME_DIFFICULTY_LEVELS]
 
 static struct profile_section game_update_section = {"game_update", NONE, TRUE};
 
+#ifdef HALO_XBOX
+/* The console's tick split: time stamp counter cycles of each tick's parts,
+summed from tick to tick until the platform's five-second 'cpu:' line takes
+them (halo_xbox_tick_profile): ai_update, units_update, effects_update,
+objects_update and the whole tick here, objects_update's updates of whole
+objects by type (objects.c) and the unit_update and biped_update parts of
+those (units.c, bipeds.c), and the interpolation snapshot after each tick
+(game_time.c). The profiler's own sections stay off: profile_global_enable
+would time every section there is. */
+enum
+{
+	_tick_part_ai,
+	_tick_part_units,
+	_tick_part_effects,
+	_tick_part_objects,
+	_tick_part_whole,
+	NUMBER_OF_TICK_PARTS
+};
+
+static struct
+{
+	long ticks;
+	unsigned __int64 part_start;
+	unsigned __int64 cycles[NUMBER_OF_TICK_PARTS];
+	long actors;
+	long actors_awake;
+	long objects;
+} tick_profile;
+
+extern unsigned __int64 halo_xbox_object_update_cycles[NUMBER_OF_OBJECT_TYPES];
+extern long halo_xbox_object_update_count[NUMBER_OF_OBJECT_TYPES];
+extern unsigned __int64 halo_xbox_unit_update_cycles;
+extern unsigned __int64 halo_xbox_biped_update_cycles;
+extern unsigned __int64 halo_xbox_interpolation_cycles;
+
+/* ends the part that began at part_start, and begins the next */
+static void tick_profile_part(
+	short part)
+{
+	unsigned __int64 now = __builtin_ia32_rdtsc();
+
+	tick_profile.cycles[part] += now-tick_profile.part_start;
+	tick_profile.part_start = now;
+
+	return;
+}
+#endif
+
 /* ---------- public code */
 
 void game_initialize(
@@ -434,6 +486,9 @@ void game_tick(
 	void)
 {
 	real seconds_per_tick;
+#ifdef HALO_XBOX
+	unsigned __int64 tick_start = __builtin_ia32_rdtsc();
+#endif
 
 	profile_tick_start();
 	collision_log_begin_period(0);
@@ -447,14 +502,30 @@ void game_tick(
 
 	remove_quitting_players_from_game();
 	game_allegiance_update();
+#ifdef HALO_XBOX
+	tick_profile.part_start = __builtin_ia32_rdtsc();
+	units_update();
+	tick_profile_part(_tick_part_units);
+	ai_update();
+	tick_profile_part(_tick_part_ai);
+	/* the actors actors_update found awake this tick */
+	tick_profile.actors_awake += ai_profile.meters[_ai_meter_actors_active].accumulator;
+#else
 	units_update();
 	ai_update();
+#endif
 	players_update_before_game();
 
 	seconds_per_tick = game_globals->players_are_double_speed
 		? 1.0f / (2 * TICKS_PER_SECOND)
 		: 1.0f / TICKS_PER_SECOND;
+#ifdef HALO_XBOX
+	tick_profile.part_start = __builtin_ia32_rdtsc();
 	effects_update(seconds_per_tick);
+	tick_profile_part(_tick_part_effects);
+#else
+	effects_update(seconds_per_tick);
+#endif
 	lock_global_random_seed();
 	rumble_update();
 	first_person_weapons_update();
@@ -463,7 +534,13 @@ void game_tick(
 	editor_update();
 	hs_update();
 	recorded_animations_update();
+#ifdef HALO_XBOX
+	tick_profile.part_start = __builtin_ia32_rdtsc();
 	objects_update();
+	tick_profile_part(_tick_part_objects);
+#else
+	objects_update();
+#endif
 	players_update_after_game();
 	hud_update();
 	player_effect_update();
@@ -471,9 +548,99 @@ void game_tick(
 	profile_exit(game_update_section);
 	collision_log_end_period();
 	profile_tick_end();
+#ifdef HALO_XBOX
+	tick_profile.cycles[_tick_part_whole] += __builtin_ia32_rdtsc()-tick_start;
+	tick_profile.actors += actor_data ? actor_data->actual_count : 0;
+	tick_profile.objects += object_header_data ? object_header_data->actual_count : 0;
+	tick_profile.ticks++;
+#endif
 
 	return;
 }
+
+#ifdef HALO_XBOX
+/* For the platform's 'cpu:' line (port/xbox/src): the tick split since the
+last call as milliseconds a tick, at the platform's milliseconds per time
+stamp counter cycle (under an emulator the counter does not run at 733 MHz),
+written into text; the sums then start again. Returns the ticks the text
+covers (0: none, and the text is empty). The parts of "objects" are whole
+objects with whatever they carry (a biped's weapon counts as the biped's),
+and how many were updated a tick; "the rest" is everything else in
+objects_update (weapons and items on the ground, scenery, devices, and the
+activation and deletion passes); unit_update and biped_update are those
+parts of every unit's and biped's update; "other" is the rest of the tick
+(players, scripts, the HUD and the like). */
+long halo_xbox_tick_profile(
+	char *text,
+	long size,
+	double milliseconds_per_cycle)
+{
+	long ticks = tick_profile.ticks;
+
+	if (size>0)
+	{
+		text[0] = 0;
+	}
+	if (ticks>0 && size>0)
+	{
+		double scale = milliseconds_per_cycle/(double)ticks;
+		unsigned __int64 parts = 0;
+		unsigned __int64 timed_objects = halo_xbox_object_update_cycles[_object_type_biped]+
+			halo_xbox_object_update_cycles[_object_type_vehicle]+
+			halo_xbox_object_update_cycles[_object_type_projectile];
+		long rest_count = 0;
+		short part;
+		short type;
+
+		for (part = 0; part<_tick_part_whole; part++)
+		{
+			parts += tick_profile.cycles[part];
+		}
+		for (type = 0; type<NUMBER_OF_OBJECT_TYPES; type++)
+		{
+			if (type!=_object_type_biped && type!=_object_type_vehicle && type!=_object_type_projectile)
+			{
+				rest_count += halo_xbox_object_update_count[type];
+			}
+		}
+
+#define TICK_PROFILE_MS(cycles) ((double)(__int64)(cycles)*scale)
+		_snprintf(text, size,
+			"ai %.2f, units %.2f, effects %.2f, objects %.2f (bipeds %.2f for %ld, vehicles %.2f for %ld, "
+			"projectiles %.2f for %ld, the rest %.2f for %ld; unit_update %.2f, biped_update %.2f), "
+			"other %.2f, interpolation %.2f ms a tick; actors %ld (%ld awake), objects %ld",
+			TICK_PROFILE_MS(tick_profile.cycles[_tick_part_ai]),
+			TICK_PROFILE_MS(tick_profile.cycles[_tick_part_units]),
+			TICK_PROFILE_MS(tick_profile.cycles[_tick_part_effects]),
+			TICK_PROFILE_MS(tick_profile.cycles[_tick_part_objects]),
+			TICK_PROFILE_MS(halo_xbox_object_update_cycles[_object_type_biped]),
+			halo_xbox_object_update_count[_object_type_biped]/ticks,
+			TICK_PROFILE_MS(halo_xbox_object_update_cycles[_object_type_vehicle]),
+			halo_xbox_object_update_count[_object_type_vehicle]/ticks,
+			TICK_PROFILE_MS(halo_xbox_object_update_cycles[_object_type_projectile]),
+			halo_xbox_object_update_count[_object_type_projectile]/ticks,
+			TICK_PROFILE_MS(tick_profile.cycles[_tick_part_objects]>timed_objects ? tick_profile.cycles[_tick_part_objects]-timed_objects : 0),
+			rest_count/ticks,
+			TICK_PROFILE_MS(halo_xbox_unit_update_cycles),
+			TICK_PROFILE_MS(halo_xbox_biped_update_cycles),
+			TICK_PROFILE_MS(tick_profile.cycles[_tick_part_whole]>parts ? tick_profile.cycles[_tick_part_whole]-parts : 0),
+			TICK_PROFILE_MS(halo_xbox_interpolation_cycles),
+			tick_profile.actors/ticks,
+			tick_profile.actors_awake/ticks,
+			tick_profile.objects/ticks);
+#undef TICK_PROFILE_MS
+	}
+
+	csmemset(&tick_profile, 0, sizeof(tick_profile));
+	csmemset(halo_xbox_object_update_cycles, 0, sizeof(halo_xbox_object_update_cycles));
+	csmemset(halo_xbox_object_update_count, 0, sizeof(halo_xbox_object_update_count));
+	halo_xbox_unit_update_cycles = 0;
+	halo_xbox_biped_update_cycles = 0;
+	halo_xbox_interpolation_cycles = 0;
+
+	return ticks;
+}
+#endif
 
 void game_options_new(
 	struct game_options *options)

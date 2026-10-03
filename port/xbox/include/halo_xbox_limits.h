@@ -12,6 +12,11 @@ HALO_LINUX, which the Xbox build defines too (it is the clang build).
 #ifndef __HALO_XBOX_LIMITS_H
 #define __HALO_XBOX_LIMITS_H
 
+/* the memory window: the console's own, at 0x80000000 (the names the shared
+game sources use for it, tag cache and saved games) */
+#include "../../include/halo_memory_window.h"
+typedef char halo_xbox_window_is_the_consoles[HALO_WINDOW_BASE == HALO_XBOX_WINDOW_BASE ? 1 : -1];
+
 /* a host polls its listening socket and one socket per machine */
 #define HALO_PORT_FD_SETSIZE 64
 

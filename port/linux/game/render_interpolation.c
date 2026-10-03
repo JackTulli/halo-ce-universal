@@ -75,11 +75,19 @@ struct interpolated_object
 	short node_capacity;
 	boolean has_previous;
 	byte latest; /* which snapshot is the latest */
+	/* whether each snapshot's rotations are worked out: when a frame first
+	blends it (only objects drawn are), not for every object of the map */
+	unsigned char rotations_valid[2];
 	long blended_frame;
 	/* where it is drawn from where it is: a correction fading */
 	real_vector3d correction;
 	/* [0] and [1]: the two snapshots, [2]: the blend drawn this frame */
 	real_matrix4x3 *nodes;
+	/* each snapshot node's rotation as a quaternion, and whether its basis
+	is one ([0] and [1], as nodes): worked out once a tick at most, not every
+	frame, and only for a drawn object */
+	struct interpolation_quaternion *rotations;
+	unsigned char *is_rotation;
 };
 
 struct interpolated_camera
@@ -99,6 +107,9 @@ struct interpolated_first_person
 	boolean has_previous;
 	real_matrix4x3 previous[MAXIMUM_INTERPOLATED_NODES];
 	real_matrix4x3 latest[MAXIMUM_INTERPOLATED_NODES];
+	/* the previous pose's rotations: it is fixed for the tick */
+	struct interpolation_quaternion previous_rotations[MAXIMUM_INTERPOLATED_NODES];
+	unsigned char previous_is_rotation[MAXIMUM_INTERPOLATED_NODES];
 };
 
 /* ---------- globals */
@@ -127,7 +138,8 @@ static void point_lerp(real_point3d const *a, real_point3d const *b, real t, rea
 
 static real vector_length(real_vector3d const *v)
 {
-	return (real)sqrt(v->i * v->i + v->j * v->j + v->k * v->k);
+	/* (sqrtf: the single root, as the double one rounded to single) */
+	return sqrtf(v->i * v->i + v->j * v->j + v->k * v->k);
 }
 
 static void vector_nlerp(real_vector3d const *a, real_vector3d const *b, real t, real_vector3d *result)
@@ -180,7 +192,7 @@ static void quaternion_from_basis(real_matrix4x3 const *matrix, struct interpola
 
 	if (trace > 0.0f)
 	{
-		s = 0.5f / (real)sqrt(trace + 1.0f);
+		s = 0.5f / sqrtf(trace + 1.0f);
 		q->w = 0.25f / s;
 		q->i = (m21 - m12) * s;
 		q->j = (m02 - m20) * s;
@@ -188,7 +200,7 @@ static void quaternion_from_basis(real_matrix4x3 const *matrix, struct interpola
 	}
 	else if (m00 > m11 && m00 > m22)
 	{
-		s = 2.0f * (real)sqrt(1.0f + m00 - m11 - m22);
+		s = 2.0f * sqrtf(1.0f + m00 - m11 - m22);
 		q->w = (m21 - m12) / s;
 		q->i = 0.25f * s;
 		q->j = (m01 + m10) / s;
@@ -196,7 +208,7 @@ static void quaternion_from_basis(real_matrix4x3 const *matrix, struct interpola
 	}
 	else if (m11 > m22)
 	{
-		s = 2.0f * (real)sqrt(1.0f + m11 - m00 - m22);
+		s = 2.0f * sqrtf(1.0f + m11 - m00 - m22);
 		q->w = (m02 - m20) / s;
 		q->i = (m01 + m10) / s;
 		q->j = 0.25f * s;
@@ -204,7 +216,7 @@ static void quaternion_from_basis(real_matrix4x3 const *matrix, struct interpola
 	}
 	else
 	{
-		s = 2.0f * (real)sqrt(1.0f + m22 - m00 - m11);
+		s = 2.0f * sqrtf(1.0f + m22 - m00 - m11);
 		q->w = (m10 - m01) / s;
 		q->i = (m02 + m20) / s;
 		q->j = (m12 + m21) / s;
@@ -253,7 +265,7 @@ static void matrix_blend(real_matrix4x3 const *a, real_matrix4x3 const *b, real 
 		q.j = lerp(qa.j, qb.j, t);
 		q.k = lerp(qa.k, qb.k, t);
 		q.w = lerp(qa.w, qb.w, t);
-		length = (real)sqrt(q.i * q.i + q.j * q.j + q.k * q.k + q.w * q.w);
+		length = sqrtf(q.i * q.i + q.j * q.j + q.k * q.k + q.w * q.w);
 		if (length > 1e-6f)
 		{
 			q.i /= length;
@@ -274,6 +286,48 @@ static void matrix_blend(real_matrix4x3 const *a, real_matrix4x3 const *b, real 
 	result->up.i = lerp(a->up.i, b->up.i, t);
 	result->up.j = lerp(a->up.j, b->up.j, t);
 	result->up.k = lerp(a->up.k, b->up.k, t);
+}
+
+/* a snapshot node's rotation, worked out once a tick: valid is zero for a
+basis a quaternion cannot hold */
+static void snapshot_rotation(real_matrix4x3 const *matrix, struct interpolation_quaternion *q, unsigned char *valid)
+{
+	*valid = (unsigned char)basis_is_rotation(matrix);
+	if (*valid)
+		quaternion_from_basis(matrix, q);
+}
+
+/* matrix_blend with both ends' rotations already worked out */
+static void matrix_blend_snapshots(real_matrix4x3 const *a, real_matrix4x3 const *b,
+	struct interpolation_quaternion const *qa, struct interpolation_quaternion const *qb,
+	boolean rotations, real t, real_matrix4x3 *result)
+{
+	if (rotations)
+	{
+		struct interpolation_quaternion q;
+		real sign = qa->i * qb->i + qa->j * qb->j + qa->k * qb->k + qa->w * qb->w < 0.0f ? -1.0f : 1.0f;
+		real length;
+
+		/* q and -q are the same rotation: the shorter way round */
+		q.i = lerp(qa->i, sign * qb->i, t);
+		q.j = lerp(qa->j, sign * qb->j, t);
+		q.k = lerp(qa->k, sign * qb->k, t);
+		q.w = lerp(qa->w, sign * qb->w, t);
+		length = sqrtf(q.i * q.i + q.j * q.j + q.k * q.k + q.w * q.w);
+		if (length > 1e-6f)
+		{
+			q.i /= length;
+			q.j /= length;
+			q.k /= length;
+			q.w /= length;
+			result->scale = lerp(a->scale, b->scale, t);
+			point_lerp(&a->position, &b->position, t, &result->position);
+			basis_from_quaternion(&q, result);
+			return;
+		}
+	}
+	/* (as matrix_blend, which then blends the basis as it is) */
+	matrix_blend(a, b, t, result);
 }
 
 static real distance_squared(real_point3d const *a, real_point3d const *b)
@@ -301,6 +355,10 @@ void render_interpolation_dispose_from_old_map(void)
 		/* (the game's free takes no NULL: its debug memory halts on one) */
 		if (record->nodes)
 			free(record->nodes);
+		if (record->rotations)
+			free(record->rotations);
+		if (record->is_rotation)
+			free(record->is_rotation);
 		memset(record, 0, sizeof(*record));
 		record->object_index = NONE;
 	}
@@ -348,18 +406,43 @@ void render_interpolation_tick(void)
 			/* in powers of two: few sizes, so the freed blocks fit again */
 			short capacity = 4;
 			real_matrix4x3 *nodes;
+			struct interpolation_quaternion *rotations;
+			unsigned char *is_rotation;
 
 			while (capacity < node_count)
 				capacity *= 2;
-			nodes = realloc(record->nodes, 3 * capacity * sizeof(real_matrix4x3));
-			if (!nodes)
+			/* the old snapshots are dropped anyway: freed first, then new
+			blocks (not realloc: the game's debug realloc unregisters the old
+			block before it tries, so one that failed left a pointer its next
+			free or realloc halted on). The game's free takes no NULL. */
+			if (record->nodes)
+				free(record->nodes);
+			if (record->rotations)
+				free(record->rotations);
+			if (record->is_rotation)
+				free(record->is_rotation);
+			record->nodes = NULL;
+			record->rotations = NULL;
+			record->is_rotation = NULL;
+			record->node_capacity = 0;
+			record->object_index = NONE;
+			nodes = malloc(3 * capacity * sizeof(real_matrix4x3));
+			rotations = malloc(2 * capacity * sizeof(struct interpolation_quaternion));
+			is_rotation = malloc(2 * capacity);
+			if (!nodes || !rotations || !is_rotation)
 			{
-				record->object_index = NONE;
+				if (nodes)
+					free(nodes);
+				if (rotations)
+					free(rotations);
+				if (is_rotation)
+					free(is_rotation);
 				continue;
 			}
 			record->nodes = nodes;
+			record->rotations = rotations;
+			record->is_rotation = is_rotation;
 			record->node_capacity = capacity;
-			record->object_index = NONE; /* the old snapshots moved */
 		}
 		continuing = record->object_index == iterator.index &&
 			record->node_count == node_count &&
@@ -381,6 +464,10 @@ void render_interpolation_tick(void)
 			record->nodes + record->latest * record->node_capacity,
 			object_get_node_matrices(iterator.index),
 			node_count * sizeof(real_matrix4x3));
+		/* (its rotations when a frame first blends it) */
+		record->rotations_valid[record->latest] = 0;
+		if (!continuing)
+			record->rotations_valid[record->latest ^ 1] = 0;
 		record->object_index = iterator.index;
 		record->node_count = node_count;
 		record->tick = interpolation_tick;
@@ -435,8 +522,31 @@ real_matrix4x3 *render_interpolation_object_node_matrices(long object_index)
 		}
 		else
 		{
+			long previous_first = (record->latest ^ 1) * record->node_capacity;
+			long latest_first = record->latest * record->node_capacity;
+			int slot;
+
+			/* each snapshot's rotations, once */
+			for (slot = 0; slot < 2; slot++)
+			{
+				long first = slot * record->node_capacity;
+
+				if (record->rotations_valid[slot])
+					continue;
+				for (node_index = 0; node_index < record->node_count; node_index++)
+				{
+					snapshot_rotation(&record->nodes[first + node_index], &record->rotations[first + node_index],
+						&record->is_rotation[first + node_index]);
+				}
+				record->rotations_valid[slot] = 1;
+			}
 			for (node_index = 0; node_index < record->node_count; node_index++)
-				matrix_blend(&previous[node_index], &latest[node_index], interpolation_fraction, &blended[node_index]);
+			{
+				matrix_blend_snapshots(&previous[node_index], &latest[node_index],
+					&record->rotations[previous_first + node_index], &record->rotations[latest_first + node_index],
+					record->is_rotation[previous_first + node_index] && record->is_rotation[latest_first + node_index],
+					interpolation_fraction, &blended[node_index]);
+			}
 		}
 		/* (a correction fading through the tick as it does tick to tick) */
 		if (record->correction.i != 0.0f || record->correction.j != 0.0f || record->correction.k != 0.0f)
@@ -595,9 +705,15 @@ void render_interpolation_first_person(
 	matrix4x3_inverse(&camera_matrix, &inverse_camera);
 	if (first_person->tick != interpolation_tick)
 	{
-		/* the pose drawn last, at the end of the previous tick */
+		/* the pose drawn last, at the end of the previous tick, and its
+		rotations: fixed for the tick */
 		first_person->has_previous = first_person->node_count == node_count;
 		memcpy(first_person->previous, first_person->latest, sizeof(first_person->previous));
+		for (node_index = 0; node_index < first_person->node_count && node_index < MAXIMUM_INTERPOLATED_NODES; node_index++)
+		{
+			snapshot_rotation(&first_person->previous[node_index], &first_person->previous_rotations[node_index],
+				&first_person->previous_is_rotation[node_index]);
+		}
 		first_person->tick = interpolation_tick;
 	}
 	for (node_index = 0; node_index < node_count; node_index++)
@@ -608,10 +724,16 @@ void render_interpolation_first_person(
 	for (node_index = 0; node_index < node_count; node_index++)
 	{
 		real_matrix4x3 blended;
+		struct interpolation_quaternion latest_rotation;
+		unsigned char latest_is_rotation;
 
-		matrix_blend(
+		snapshot_rotation(&first_person->latest[node_index], &latest_rotation, &latest_is_rotation);
+		matrix_blend_snapshots(
 			&first_person->previous[node_index],
 			&first_person->latest[node_index],
+			&first_person->previous_rotations[node_index],
+			&latest_rotation,
+			first_person->previous_is_rotation[node_index] && latest_is_rotation,
 			interpolation_fraction,
 			&blended);
 		matrix4x3_multiply(&camera_matrix, &blended, &node_matrices[node_index]);

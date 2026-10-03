@@ -480,8 +480,8 @@ void interface_draw_fullscreen_overlays(
 	hud_render_timer();
 #ifdef HALO_LINUX
 	/* performance mode: the terminal's lines cost a draw per glyph every
-	frame; only the console itself still shows */
-	if (!halo_performance_mode() || console_is_active())
+	frame; only the console itself still shows. debug.console off: none */
+	if ((!halo_performance_mode() && halo_debug_console_enabled()) || console_is_active())
 #endif
 	terminal_draw();
 	main_framerate_render();

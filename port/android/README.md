@@ -185,7 +185,8 @@ and supplies the thread pointer and TLS.
 
 - Reserves the address space of the guest below 4 GB: the Xbox memory at
   `0x80000000`, the image, and pools for the memory of the guest
-  (`host/host_memory.c`).
+  (`host/host_memory.c`). The Android build always puts the Xbox memory at
+  `0x80000000`; it ignores `configure.py --window-base`.
 - Loads the image and fills its import table (`host/host_loader.c`).
 - Starts the `main` of the game and each guest thread on a stack in guest
   memory, because ILP32 code keeps stack addresses in 32-bit registers

@@ -651,6 +651,18 @@ void game_state_initialize(
 	void)
 {
 	crc_new(&game_state_globals.allocation_size_checksum);
+#if defined(HALO_LINUX) && HALO_WINDOW_BASE != HALO_XBOX_WINDOW_BASE
+	/* A saved game holds absolute addresses in the memory window, and this
+	build's is not the console's (halo_memory_window.h): its base goes into
+	the checksum the saves are checked against, so that no build loads a save
+	made with another window. Builds with the console's window leave the
+	checksum as it was, and the saves made so far stay good. */
+	{
+		unsigned long window_base = HALO_WINDOW_BASE;
+
+		crc_checksum_buffer((unsigned long *)&game_state_globals.allocation_size_checksum, &window_base, sizeof(window_base));
+	}
+#endif
 #ifdef HALO_LINUX
 	/* the native builds place their larger game state above the tag cache
 	(halo_port_capacity.h, cache/physical_memory_map.c) */

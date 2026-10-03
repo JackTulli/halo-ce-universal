@@ -693,11 +693,21 @@ void rasterizer_water_draw(
 				!TEST_FLAG(water->flags, _shader_transparent_water_draw_before_fog_bit);
 			if (water_needs_update_flag)
 			{
+#ifdef HALO_LIGHT_PIPELINE
+				/* (the ripples, a render target, bend only the reflection,
+				which the light pipeline does not draw) */
+				if (!rasterizer_light_pipeline())
+#endif
 				rasterizer_water_build_bumpmap(group->shader);
 				water_needs_update_flag = FALSE;
 			}
 
-			if (TEST_FLAG(water->flags, _shader_transparent_water_base_map_alpha_modulates_reflection_bit))
+			if (TEST_FLAG(water->flags, _shader_transparent_water_base_map_alpha_modulates_reflection_bit)
+#ifdef HALO_LIGHT_PIPELINE
+				/* (alpha for the reflection's blend alone) */
+				&& !rasterizer_light_pipeline()
+#endif
+				)
 			{
 				rasterizer_set_texture(
 					0,
@@ -877,6 +887,80 @@ void rasterizer_water_draw(
 				rasterizer_transparent_geometry_group_draw__internal(group, FALSE);
 			}
 
+#ifdef HALO_LIGHT_PIPELINE
+			if (rasterizer_light_pipeline())
+			{
+				/* in place of the reflection (the ripples' render target and
+				a bumped cube map): its tint as one flat color, added as the
+				reflection is, at half strength for a cube map that is not
+				there, and by the tint's alpha where the base map's alpha
+				scaled the reflection. It writes the water's depth as the
+				reflection did */
+				real reflection_alpha = 1.0f;
+
+				tint_color.red = tint_color.green = tint_color.blue = 1.0f;
+				if (magnitude3d(&group->plane.n) > 0.0f)
+				{
+					struct render_camera const *camera = &global_window_parameters.camera;
+
+					reflection_amount = PIN(
+						-dot_product3d(&camera->forward, &group->plane.n),
+						0.0f,
+						1.0f);
+					tint_color.red = (1.0f - reflection_amount) * water->view_parallel_tint_color.red +
+						reflection_amount * water->view_perpendicular_tint_color.red;
+					tint_color.green = (1.0f - reflection_amount) * water->view_parallel_tint_color.green +
+						reflection_amount * water->view_perpendicular_tint_color.green;
+					tint_color.blue = (1.0f - reflection_amount) * water->view_parallel_tint_color.blue +
+						reflection_amount * water->view_perpendicular_tint_color.blue;
+					if (TEST_FLAG(water->flags, _shader_transparent_water_base_map_alpha_modulates_reflection_bit))
+					{
+						reflection_alpha = (1.0f - reflection_amount) * water->view_parallel_tint_color.alpha +
+							reflection_amount * water->view_perpendicular_tint_color.alpha;
+					}
+				}
+				reflection_alpha *= 0.5f;
+				tint_color.red *= reflection_alpha;
+				tint_color.green *= reflection_alpha;
+				tint_color.blue *= reflection_alpha;
+
+				IDirect3DDevice8_SetRenderState(
+					global_d3d_device,
+					D3DRS_CULLMODE,
+					D3DCULL_NONE);
+				SetRenderStateSmart(
+					D3DRS_COLORWRITEENABLE,
+					D3DCOLORWRITEENABLE_RED |
+					D3DCOLORWRITEENABLE_GREEN |
+					D3DCOLORWRITEENABLE_BLUE);
+				SetRenderStateSmart(
+					D3DRS_ALPHABLENDENABLE,
+					!TEST_FLAG(group->geometry_flags, _rasterizer_geometry_sky_bit));
+				SetRenderStateSmart(D3DRS_SRCBLEND, D3DBLEND_ONE);
+				SetRenderStateSmart(D3DRS_DESTBLEND, D3DBLEND_ONE);
+				SetRenderStateSmart(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+				SetRenderStateSmart(D3DRS_ALPHATESTENABLE, FALSE);
+				SetRenderStateSmart(D3DRS_ZENABLE, TRUE);
+				SetRenderStateSmart(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+				SetRenderStateSmart(D3DRS_ZWRITEENABLE, write_depth);
+				rasterizer_set_vertex_shader_permutation(
+					_vertex_shader_transparent_water_opacity,
+					vertex_type,
+					permutation_index);
+				csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+				pixel_shader.combiner_count = 1;
+				pixel_shader.final_combiner_constant_0 = real_rgb_color_to_pixel32(&tint_color);
+				/* (fogged water: times one minus the fog's density, as the
+				reflection fades into the fog) */
+				pixel_shader.final_combiner_inputs_abcd =
+					TEST_FLAG(water->flags, _shader_transparent_water_atmospheric_fog_bit)
+						? 0x33010000
+						: 0x00000001;
+				rasterizer_set_pixel_shader(&pixel_shader);
+				rasterizer_transparent_geometry_group_draw__internal(group, FALSE);
+				return;
+			}
+#endif
 			rasterizer_set_target_as_texture(
 				0,
 				_rasterizer_target_water_bumpmap,

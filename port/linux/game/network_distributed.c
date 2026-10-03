@@ -191,6 +191,24 @@ static struct
 	long corrections;
 } distributed_statistics;
 
+/* for the 'net:' log line (network_connection.c, every five seconds): a
+client's corrections of its own players and of others, the largest, and
+how old the host's unit states were when applied, in ticks */
+static struct
+{
+	long own_corrections;
+	long other_corrections;
+	real largest_correction;
+	long states;
+	long age_total;
+	long age_least;
+	long age_most;
+	/* the host: its clients' predictions of their players, taken and refused
+	(too far from the host's) */
+	long predictions_taken;
+	long predictions_refused;
+} distributed_log;
+
 /* ---------- shared (network_distributed.h) */
 
 void network_distributed_statistics(
@@ -201,6 +219,35 @@ void network_distributed_statistics(
 	*sent = distributed_statistics.sent;
 	*received = distributed_statistics.received;
 	*corrections = distributed_statistics.corrections;
+}
+
+/* the 'net:' line's netcode part since the last call, which clears it */
+void network_distributed_statistics_text(
+	char *text,
+	long size)
+{
+	if (distributed_log.predictions_taken || distributed_log.predictions_refused)
+	{
+		_snprintf(text, size, "clients' predictions %ld taken, %ld refused (too far)",
+			distributed_log.predictions_taken, distributed_log.predictions_refused);
+	}
+	else if (distributed_log.states)
+	{
+		_snprintf(text, size, "corrections %ld own, %ld others (largest %.1f); host states %ld, %ld-%ld ticks old (%ld on average)",
+			distributed_log.own_corrections, distributed_log.other_corrections, (double)distributed_log.largest_correction,
+			distributed_log.states, distributed_log.age_least, distributed_log.age_most,
+			distributed_log.age_total / distributed_log.states);
+	}
+	else
+	{
+		_snprintf(text, size, "corrections %ld own, %ld others (largest %.1f); no host states",
+			distributed_log.own_corrections, distributed_log.other_corrections, (double)distributed_log.largest_correction);
+	}
+	if (size > 0)
+	{
+		text[size - 1] = 0;
+	}
+	csmemset(&distributed_log, 0, sizeof(distributed_log));
 }
 
 void distributed_count_sent(
@@ -385,17 +432,31 @@ static void distributed_state_from_player(
 static void distributed_apply_state(
 	long unit_index,
 	struct distributed_unit_state const *state,
-	real tolerance)
+	real tolerance,
+	boolean local)
 {
 	struct object_datum *object = object_get(unit_index);
 	real_vector3d error;
+	real distance_squared;
 
 	error.i = state->position.x - object->object.position.x;
 	error.j = state->position.y - object->object.position.y;
 	error.k = state->position.z - object->object.position.z;
-	if (error.i * error.i + error.j * error.j + error.k * error.k <= tolerance * tolerance)
+	distance_squared = error.i * error.i + error.j * error.j + error.k * error.k;
+	if (distance_squared <= tolerance * tolerance)
 		return;
 	distributed_statistics.corrections++;
+	/* (a client's corrections; the host takes its clients' predictions with
+	no tolerance, counted where it does) */
+	if (tolerance > 0.0f)
+	{
+		if (local)
+			distributed_log.own_corrections++;
+		else
+			distributed_log.other_corrections++;
+		if (distance_squared > distributed_log.largest_correction * distributed_log.largest_correction)
+			distributed_log.largest_correction = (real)sqrt(distance_squared);
+	}
 	network_objects_correct(unit_index, &state->position, &state->forward, &state->up, &state->velocity, NULL);
 }
 
@@ -506,7 +567,15 @@ static void distributed_handle_predictions(
 			real dz = state->position.z - object->object.position.z;
 
 			if (dx * dx + dy * dy + dz * dz <= HOST_ACCEPT_TOLERANCE * HOST_ACCEPT_TOLERANCE)
-				distributed_apply_state(unit_index, state, 0.0f);
+			{
+				distributed_apply_state(unit_index, state, 0.0f, FALSE);
+				distributed_log.predictions_taken++;
+			}
+			else
+			{
+				/* (a client far from where the host has it: the 'net:' line) */
+				distributed_log.predictions_refused++;
+			}
 		}
 	}
 }
@@ -618,7 +687,7 @@ static void distributed_handle_unit_states(
 		if (TEST_FLAG(state->flags, _distributed_unit_placed_bit) &&
 			object_get(unit_index)->object.parent_object_index == NONE)
 		{
-			distributed_apply_state(unit_index, state, local ? LOCAL_CORRECTION_TOLERANCE : REMOTE_CORRECTION_TOLERANCE);
+			distributed_apply_state(unit_index, state, local ? LOCAL_CORRECTION_TOLERANCE : REMOTE_CORRECTION_TOLERANCE, local);
 		}
 	}
 }
@@ -933,6 +1002,18 @@ void network_distributed_handle_message(
 		if (game_connection() != _game_connection_network_client)
 			return;
 		break;
+	}
+	/* (how old the host's unit states are when they apply: the 'net:' line) */
+	if (header.type == _distributed_message_unit_states)
+	{
+		long age = game_time_get() - header.game_time;
+
+		if (!distributed_log.states || age < distributed_log.age_least)
+			distributed_log.age_least = age;
+		if (!distributed_log.states || age > distributed_log.age_most)
+			distributed_log.age_most = age;
+		distributed_log.age_total += age;
+		distributed_log.states++;
 	}
 
 	switch (header.type)

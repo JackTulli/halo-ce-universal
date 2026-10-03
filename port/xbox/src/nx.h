@@ -17,6 +17,10 @@ void nx_startup(void);
 void nx_print(const char *text);
 /* the name of the last Win32 call the platform layer traced (xbox_kernel.c) */
 const char *platform_last_call(void);
+/* the directory (with its backslash) of the game's map cache file number
+file, z:\cacheNNN.map: E:\halo, or a cache partition when E: is short of
+room (chosen at start-up) */
+const char *nx_map_cache_directory(unsigned long file);
 
 /* ---------- memory (MmAllocateContiguousMemoryEx and friends) */
 
@@ -24,12 +28,30 @@ const char *platform_last_call(void);
 void *nx_physical_alloc(unsigned long size, unsigned long physical_address, unsigned long alignment,
 	unsigned long protect);
 void nx_physical_free(void *address);
+/* whether the title may use the top 64 MB of a 128 MB console (the XBE
+leaves its 64 MB limit off: tools/xbox_build.py), tried once with a page */
+int nx_high_memory_available(void);
+/* the end of the physical memory the title may use: 64 or 128 MB */
+unsigned long nx_physical_top(void);
+/* on (720p): nx_physical_alloc places blocks that may go anywhere in the
+top 64 MB first, keeping the low 64 MB for pbkit's larger frame buffers */
+void nx_high_memory_placement(int on);
+int nx_high_memory_placed(void);
+/* whether the low 64 MB still has these contiguous blocks (tried, freed) */
+int nx_low_memory_room(const unsigned long *sizes, int count);
+/* the physical address of a byte of mapped memory */
+unsigned long nx_physical_address(const void *address);
+/* ordinary (virtual) memory, for what only the processor reads */
+void *nx_cpu_alloc(unsigned long size);
+void nx_cpu_free(void *memory);
 unsigned long nx_query_protect(const void *address);
 void nx_set_protect(void *address, unsigned long size, unsigned long protect);
 int nx_virtual_protect(void *address, unsigned long size, unsigned long protect, unsigned long *old_protect);
 void nx_memory_status(unsigned long *total_bytes, unsigned long *available_bytes);
 /* prints the free pages to the console */
 void nx_report_memory(const char *when);
+/* debug.network_log: whether the log goes out over the network */
+void nx_log_network(int on);
 
 /* ---------- asynchronous reads and writes
 
@@ -77,7 +99,10 @@ surface too. */
 int nx_gpu_start(unsigned long push_buffer_size);
 int nx_gpu_started(void);
 /* the visibility reports' page (NX_GPU_REPORT_BYTES, uncached), which the
-report DMA context spans: a report's offset is its offset in the page */
+report DMA context spans: a report's offset is its offset in the page.
+One page: the console's GPU refuses a larger DMA object as the fences'
+semaphore context (a protection error on NV097_SET_CONTEXT_DMA_SEMAPHORE
+with 16 KB; the emulator does not check) */
 #define NX_GPU_REPORT_BYTES 4096
 void *nx_gpu_reports(void);
 /* the text console back on the display, for a report after a failure */
@@ -122,10 +147,32 @@ the GPU starts */
 void nx_video_apply_widescreen(void);
 /* whether the display is widescreen */
 int nx_video_widescreen(void);
-/* the buffer's columns (640, or 720 on a widescreen display) and the
-columns the game draws (640, or 854 squeezed into the 720) */
+/* switches to 720p if wanted (display.hd_720p) and the console can (the
+HDTV pack with 720p on in the dashboard, NTSC, 128 MB); once, before the
+GPU starts. Returns whether the mode is 720p */
+int nx_video_upgrade_hd(int wanted);
+/* "720p", or why not, when display.hd_720p asked for it; empty otherwise */
+const char *nx_video_notice(void);
+/* the buffer's columns (640, 720 on a widescreen display, 1280 at 720p)
+and the columns the game draws (640, or 854 scaled into the buffer); the
+buffer's lines (480, or 720) for the game's 480 */
 unsigned long nx_video_physical_width(void);
 unsigned long nx_video_logical_width(void);
+unsigned long nx_video_physical_height(void);
+/* 720p in the low 64 MB (the kernel gives no contiguous memory above):
+double buffered, without pbkit's depth buffer, a 10 MB texture cache and
+the sound cache in ordinary memory */
+int nx_video_low_memory_hd(void);
+/* the texture cache at 720p in the low 64 MB */
+unsigned long nx_video_hd_texture_cache_bytes(void);
+/* more for the screen's line under the frame rate */
+void nx_video_append_notice(const char *text);
+/* the GPU (nx_gpu.c): a finished frame still waits for the vertical blank */
+int nx_gpu_flip_pending(void);
+/* the next frame's buffer is still on the screen or waiting to be */
+int nx_gpu_back_buffer_in_use(void);
+/* finished frames not on the screen yet */
+int nx_gpu_frames_pending(void);
 /* the push buffer: begin returns where to write, end submits what was
 written; room is what is left before a reset is needed, and reset jumps
 back to the head (waiting for the GPU to arrive there) */

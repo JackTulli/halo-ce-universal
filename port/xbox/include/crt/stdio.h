@@ -27,15 +27,29 @@ terminating is strictly safer for callers written against it. */
 FILE *fdopen(int handle, const char *mode);
 #define _fdopen fdopen
 
-#ifndef HALO_LINUX_PLATFORM_LAYER
 /* The game's formats carry MSVC's length modifiers (%I64d, %I32x), which
-PDCLib does not read (and, misreading, takes the following arguments out of
-step); the game's printf family translates them (msvc_crt.c). printf goes
-to the screen and the log. */
+PDCLib does not read, and PDCLib neither formats floating point (%f, %e, %g)
+nor takes it from the argument list: either takes the following arguments
+out of step (a %s after a %f read half a double as its pointer). The printf
+family here (msvc_crt.c) translates the one and formats the other, for the
+game and the platform layer alike. printf goes to the screen and the log. */
 int halo_xbox_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments);
 int halo_xbox_snprintf(char *buffer, size_t count, const char *format, ...);
 int halo_xbox_vsprintf(char *buffer, const char *format, va_list arguments);
 int halo_xbox_sprintf(char *buffer, const char *format, ...);
+
+#if defined(HALO_LINUX_PLATFORM_LAYER) && !defined(HALO_XBOX_PRINTF_IMPLEMENTATION)
+#undef _snprintf
+#undef _vsnprintf
+#define snprintf halo_xbox_snprintf
+#define vsnprintf halo_xbox_vsnprintf
+#define _snprintf halo_xbox_snprintf
+#define _vsnprintf halo_xbox_vsnprintf
+#define sprintf halo_xbox_sprintf
+#define vsprintf halo_xbox_vsprintf
+#endif
+
+#ifndef HALO_LINUX_PLATFORM_LAYER
 int halo_xbox_vprintf(const char *format, va_list arguments);
 int halo_xbox_printf(const char *format, ...);
 FILE *halo_xbox_fopen(const char *path, const char *mode);

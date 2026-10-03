@@ -636,6 +636,15 @@ static boolean local_environment_fog_screen_flag = FALSE;
 static boolean local_do_not_change_z_stencil_states = FALSE;
 static boolean local_reported_too_many_transparent_geometry_groups = FALSE;
 static boolean local_pixel_shader_dirty_flag = TRUE;
+#ifdef HALO_XBOX
+/* the console: the model's fog constants (_rasterizer_model_draw), worked
+out for its first opaque part and reused for the rest. They depend only on
+the window's camera and fog and the model's centroid and flags */
+static boolean local_fog_pixels_valid = FALSE;
+static pixel32 local_cc0_pixel = 0;
+static pixel32 local_cc0_error_pixel = 0;
+static pixel32 local_cc1_pixel = 0;
+#endif
 extern boolean rasterizer_model_cortana_hack;
 extern struct rasterizer_window_begin_parameters global_window_parameters;
 extern struct rasterizer_models_frame_statistics rasterizer_frame_statistics;
@@ -753,6 +762,9 @@ void _rasterizer_model_begin(
 
 		local_parameters = parameters;
 		local_parameters_queued_flag = FALSE;
+#ifdef HALO_XBOX
+		local_fog_pixels_valid = FALSE;
+#endif
 		local_do_not_change_z_stencil_states =
 			do_not_change_z_stencil_states;
 
@@ -2271,6 +2283,18 @@ void _rasterizer_model_draw(
 						2);
 				}
 
+#ifdef HALO_XBOX
+				/* the fog constants (and their checks) once per model: the
+				same inputs give the same pixels for every part */
+				if (local_fog_pixels_valid)
+				{
+					cc0_pixel = local_cc0_pixel;
+					cc0_error_pixel = local_cc0_error_pixel;
+					cc1_pixel = local_cc1_pixel;
+				}
+				else
+				{
+#endif
 				match_assert(
 					"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_models.c",
 					1074,
@@ -2408,6 +2432,13 @@ void _rasterizer_model_draw(
 					cc0_error_pixel = 0xFF000000;
 					cc0_pixel = 0xFF000000;
 				}
+#ifdef HALO_XBOX
+				local_cc0_pixel = cc0_pixel;
+				local_cc0_error_pixel = cc0_error_pixel;
+				local_cc1_pixel = cc1_pixel;
+				local_fog_pixels_valid = TRUE;
+				}
+#endif
 
 				set_environment_shader_pixel_shader(
 					real_rgb_color_to_pixel32(&self_illumination_color),
@@ -2424,10 +2455,14 @@ void _rasterizer_model_draw(
 						shader_model->model.flags,
 						_shader_model_true_atmospheric_fog_bit));
 
+				/* the console leaves out this second CCW: it repeats the
+				culling set above, which nothing in between changes */
+#ifndef HALO_XBOX
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_CULLMODE,
 					D3DCULL_CCW);
+#endif
 
 				rasterizer_draw(
 					triangle_buffer,

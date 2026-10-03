@@ -350,7 +350,16 @@ void path_state_new(
 	struct path_state *state,
 	struct path_debug_storage *debug)
 {
+#ifdef HALO_XBOX
+	/* the console clears the header and leaves the 80 KB of nodes, heap and
+	hash table to path_state_find's reset: a node's fields the search reads
+	are written as it is allocated, and nothing reads past node_count or
+	heap_count. A state the debug displays will copy is cleared whole, as
+	before (they also show two fields only they read). */
+	csmemset(state, 0, debug ? sizeof(*state) : offsetof(struct path_state, node_list));
+#else
 	csmemset(state, 0, sizeof(*state));
+#endif
 	state->structure = global_structure_bsp_get();
 	state->input = *input;
 	state->debug = debug;

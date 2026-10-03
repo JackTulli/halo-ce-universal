@@ -749,10 +749,21 @@ static void weather_particle_system_render(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* (render.c: graphics.weather, and off with the rest in cinematics) */
+extern boolean render_weather_particle_systems_enabled;
+#endif
+
 void weather_particle_systems_render(
 	void)
 {
+#ifdef HALO_LINUX
+	/* its own switch (graphics.weather), which nothing read: rain and snow
+	went with graphics.particles instead */
+	if (render_weather_particle_systems_enabled && weather)
+#else
 	if (render_particle_systems_enabled && weather)
+#endif
 	{
 		if (render.local_player_index!=NONE)
 		{

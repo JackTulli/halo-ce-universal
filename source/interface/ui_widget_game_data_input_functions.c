@@ -2012,6 +2012,21 @@ void netgame_prejoin_players(
 
 		for (state_or_index.index = 0; (short)state_or_index.index < 4; state_or_index.index++)
 		{
+#ifdef HALO_LINUX
+			/* one request a second a controller while the host answers:
+			one every frame flooded both machines' logs (the host's with
+			"server failed to add a network player" each) and their CPUs */
+			static unsigned long request_times[4];
+			unsigned long now = system_milliseconds();
+
+			if (local_player_wants_to_join[(short)state_or_index.index] &&
+				now - request_times[(short)state_or_index.index] < 1000)
+			{
+				continue;
+			}
+			if (local_player_wants_to_join[(short)state_or_index.index])
+				request_times[(short)state_or_index.index] = now;
+#endif
 			if (local_player_wants_to_join[(short)state_or_index.index] &&
 				!network_game_client_add_player(client, (short)state_or_index.index))
 			{

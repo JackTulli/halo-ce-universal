@@ -85,6 +85,11 @@ XBOX_ABI_FLAGS = [
     # maps them to the builtins): nothing reads errno after them, and with
     # the game's 53-bit precision the result is the C library's to the bit
     "-fno-math-errno",
+    # each function in a section of its own, so the link drops the ones
+    # nothing calls (-opt:ref; some 200 KB of the game's code: libtiff's,
+    # zlib's deflate, tool and editor code). Not the data: the decompiled
+    # game's globals keep their order
+    "-ffunction-sections",
     # for size: the console's 64 MB hold the game, its data caches and the
     # image together, and a smaller image is a faster one on its cache too
     "-Os",
@@ -93,6 +98,72 @@ XBOX_ABI_FLAGS = [
     "-U__STDC_NO_THREADS__",
     "-DNXDK",
 ]
+
+# The units the console's frame spends its time in, built with -O2 instead
+# of -Os (2026-10-01 audit: about 280 KB of code, some 100 KB more at -O2,
+# for the math, collision and animation of every tick and the scene's
+# render). nx_string.c stays -Os: its memcpy must not become a call to
+# itself.
+XBOX_HOT_UNITS = {
+    "source/math/real_math.c",
+    "source/math/matrix_math.c",
+    "source/math/geometry.c",
+    "source/physics/collision_bsp.c",
+    "source/physics/bsp3d.c",
+    "source/physics/collisions.c",
+    "source/physics/collision_features.c",
+    "source/models/model_animations.c",
+    "source/memory/data.c",
+    "source/memory/lruv_cache.c",
+    "source/render/render_objects.c",
+    "source/structures/structure_visibility.c",
+    "source/rasterizer/xbox/rasterizer_xbox_environment.c",
+    "source/rasterizer/xbox/rasterizer_xbox_models.c",
+    "source/rasterizer/xbox/rasterizer_xbox_transparent_geometry.c",
+    "source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c",
+    "source/objects/object_lights.c",
+    "source/effects/particle_systems.c",
+    "source/effects/particles.c",
+    "source/effects/decals.c",
+    # (2026-10-01 performance audit: the units that change usefully at -O2
+    # for the few kilobytes they grow, about 20 KB in all)
+    "source/structures/structure_render.c",
+    "source/cache/cache_files.c",
+    "source/rasterizer/xbox/rasterizer_xbox.c",
+    "source/rasterizer/rasterizer.c",
+    "source/render/render_sprite.c",
+    "source/render/render_cameras.c",
+    "source/models/models.c",
+    "source/objects/objects.c",
+    "source/items/weapons.c",
+    "port/linux/game/render_interpolation.c",
+    "port/xbox/src/d3d8_nv2a.c",
+    "port/xbox/src/nx_gpu.c",
+    "port/linux/src/dsound_sdl.c",
+    "port/linux/src/dsound_mix_kernels.c",
+}
+
+# Units without a frame pointer: the sound mixer's inner loops
+# (port/linux/src/dsound_mix_kernels.c), integer leaf functions that call
+# nothing, so no stack walk passes through them; it frees a seventh
+# register for their loops
+XBOX_NO_FRAME_POINTER_UNITS = {
+    "port/linux/src/dsound_mix_kernels.c",
+}
+
+# Game units nothing on the console uses, left out of its build: libtiff's
+# and zlib's parts the game never calls (the tools' TIFF import, gzip files,
+# compression), 140 KB of fax tables among them. A unit something did use
+# would fail the link (the TIFF reading, strip and compress units are named
+# by code the link then drops: they stay, and -opt:ref drops their code).
+XBOX_EXCLUDED_UNITS = {
+    "source/bitmaps/libtiff/tif_fax3.c",
+    "source/bitmaps/libtiff/tif_thunder.c",
+    "source/bitmaps/libtiff/tif_next.c",
+    "source/bitmaps/libtiff/tif_print.c",
+    "source/bitmaps/libtiff/tif_ccittrle.c",
+    "source/memory/zlib/gzio.c",
+}
 
 GAME_FLAGS = [
     "-std=gnu89",
@@ -150,6 +221,15 @@ LWIP_OPTIONS = [
     "-DTCPIP_MBOX_SIZE=64",
     "-DLWIP_LOOPBACK_MAX_PBUFS=64",
     "-DSO_REUSE=1", "-DLWIP_NETIF_LOOPBACK=1",
+    # a link-local address (169.254.x.x) when no DHCP server answers, as
+    # the retail network stack had: two consoles on a crossover cable or a
+    # bare switch (nxdk compiles AutoIP in; DHCP still wins where it answers)
+    "-DLWIP_DHCP_AUTOIP_COOP=1",
+    "-DLWIP_DHCP_AUTOIP_COOP_TRIES=3",
+    # a LAN game's consoles each in the address table, and packets kept
+    # while an address is resolved (10 entries and no queue by default)
+    "-DARP_TABLE_SIZE=32",
+    "-DARP_QUEUEING=1",
 ]
 
 
@@ -240,6 +320,8 @@ def generate_xbox_build(n: Writer, sln: Any) -> None:
         print("Xbox build disabled: nxdk not found (configure.py --nxdk DIR, NXDK_DIR, or ~/nxdk)", file=sys.stderr)
         return
     cxbe = nxdk / "tools" / "cxbe" / "cxbe"
+    if not cxbe.is_file() and cxbe.with_suffix(".exe").is_file():
+        cxbe = cxbe.with_suffix(".exe")  # nxdk built on Windows (MSYS2)
     missing = [str(nxdk / "lib" / lib) for lib in NXDK_LIBRARIES if not (nxdk / "lib" / lib).is_file()]
     if not cxbe.is_file():
         missing.append(str(cxbe))
@@ -303,7 +385,11 @@ def generate_xbox_build(n: Writer, sln: Any) -> None:
     )
     n.rule(
         name="xbox_cxbe",
-        command=f"{_quote(cxbe)} -OUT:$out -TITLE:Halo -MODE:retail $in > $out.log",
+        # (ninja runs commands without a shell on Windows: cmd does the
+        # redirection). The XBE keeps cxbe's 64 MB limit: a 128 MB console
+        # without it had the game's fixed memory taken at start-up; only the
+        # 720p disc's copy loses it (tools/xbox_disc.py)
+        command=f"{'cmd /c ' if os.name == 'nt' else ''}{_quote(cxbe)} -OUT:$out -TITLE:Halo -MODE:retail $in > $out.log",
         description="XBOX CXBE $out",
     )
     # the linked image may not use SSE2 (see XBOX_ABI_FLAGS)
@@ -315,13 +401,17 @@ def generate_xbox_build(n: Writer, sln: Any) -> None:
 
     abi = " ".join(XBOX_ABI_FLAGS + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
     libc = " ".join(nxdk_libc_flags(nxdk))
-    excluded = set(linux_config.get("exclude_sources", []))
+    excluded = set(linux_config.get("exclude_sources", [])) | XBOX_EXCLUDED_UNITS
     objects: List[Path] = []
 
     def add_object(source: Path, cflags: str, implicit: Optional[List[Path]] = None) -> None:
         # (no spaces: lld-link's response file takes none unquoted)
         obj = obj_dir / Path(str(source.with_suffix(".o")).replace(" ", "_"))
         objects.append(obj)
+        if source.as_posix() in XBOX_HOT_UNITS:
+            cflags += " -O2"  # (after -Os: the last one counts)
+        if source.as_posix() in XBOX_NO_FRAME_POINTER_UNITS:
+            cflags += " -fomit-frame-pointer"  # (after -fno-omit-frame-pointer: the last one counts)
         compiled = inline_export_wrapper(source)
         n.build(
             outputs=obj,
@@ -420,6 +510,9 @@ def generate_xbox_build(n: Writer, sln: Any) -> None:
             # of D: (the disc, or the folder the XBE runs from)
             "ldflags": " ".join([
                 "-subsystem:windows", "-fixed", "-base:0x00010000", "-stack:0x80000",
+                # unreferenced functions dropped (-ffunction-sections); none
+                # folded together, so the map keeps a name for each address
+                "-opt:ref", "-opt:noicf",
                 "-merge:.edata=.edataxb", "-include:_automount_d_drive",
                 f"-map:{_quote(BUILD / 'halo.map')}",
             ]),

@@ -395,8 +395,10 @@ static void decode_level(const struct xgpu_texture_description *description, uns
 	}
 }
 
-#ifdef HALO_ANDROID
-/* ---------- DXT decoding, for ES drivers without S3TC (Mali) */
+#ifndef HALO_XBOX
+/* ---------- DXT decoding, for ES drivers without S3TC (Mali), and for the
+desktop's OpenGL 2.0 renderer where the driver has no S3TC, or none for
+volume textures (xgpu_capabilities, xgpu.h) */
 
 static unsigned long color565(unsigned long value)
 {
@@ -534,6 +536,15 @@ static GLenum compressed_format(unsigned char kind)
 	}
 }
 
+#ifndef HALO_ANDROID
+/* the texel kind of a format, which xbox_textures_convert.h numbers as
+this file does: for the light renderer's own upload (xgpu_fixed_textures.c) */
+int xgpu_texture_format_kind(DWORD format)
+{
+	return format_information(format).kind;
+}
+#endif
+
 /* ---------- upload */
 
 /* debug.texture_dump_directory writes level 0 of every upload as a TGA, read back from GL */
@@ -589,6 +600,9 @@ static void upload(GLuint texture, GLenum target, const struct xgpu_texture_desc
 
 #ifdef HALO_ANDROID
 	decode_compressed = description->compressed && !xgpu_capabilities.s3tc;
+#else
+	decode_compressed = description->compressed &&
+		(!xgpu_capabilities.s3tc || (target == GL_TEXTURE_3D && !xgpu_capabilities.s3tc_3d));
 #endif
 	converted = description->compressed && !decode_compressed ? NULL : malloc(largest * sizeof(unsigned long));
 	glBindTexture(target, texture);
@@ -624,13 +638,11 @@ static void upload(GLuint texture, GLenum target, const struct xgpu_texture_desc
 			}
 			else
 			{
-#ifdef HALO_ANDROID
 				if (decode_compressed)
 					dxt_decode_level(information.kind, source, (unsigned long)width, (unsigned long)height,
 						(unsigned long)depth, converted);
 				else
-#endif
-				decode_level(description, level, source, palette, converted);
+					decode_level(description, level, source, palette, converted);
 				if (target == GL_TEXTURE_3D)
 					glTexImage3D(image_target, (GLint)level, GL_RGBA8, width, height, depth, 0, GL_BGRA, GL_UNSIGNED_BYTE, converted);
 				else
@@ -827,6 +839,7 @@ void xgpu_texture_cache_begin_frame(void)
 			{
 				*link = entry->next;
 				glDeleteTextures(1, &entry->texture);
+				xgpu_gl_texture_deleted(entry->texture);
 				xgpu_gl_state_invalidate();
 				texture_drop_serial++;
 				free(entry);

@@ -21,10 +21,49 @@ static void *resource_data(DWORD data)
 	return data ? PLATFORM_PHYSICAL_TO_VIRTUAL(data) : NULL;
 }
 
+#ifdef HALO_XBOX
+/* The console's GPU reads resources from memory while the CPU runs ahead of
+it: a lock that waits (no D3DLOCK_NOOVERWRITE or D3DLOCK_READONLY) waits,
+as the retail runtime's did, for the GPU to finish with that resource: the
+fence after its last use (d3d8_nv2a.c). The game's dynamic vertices rely on
+it: one buffer per vertex type, rewritten from its start each frame with a
+waiting first lock; without the wait the CPU rewrote particles the GPU was
+still drawing (oversized and torn sprites on a real console; the emulator's
+GPU keeps up). And like the runtime's, resources are write-combined:
+nothing the CPU writes waits in its cache where the GPU would not see it. */
+void halo_xbox_gpu_wait_for_resource(void *resource);
+BOOL halo_xbox_gpu_resource_busy(void *resource);
+/* The GPU also keeps the vertices it fetched, by address, in a cache of
+its own, which the runtime emptied at every vertex buffer lock (unless
+D3DLOCK_NOFLUSH): the rewritten buffers are at the same addresses, and a
+stale entry draws last frame's vertex. The emulator has no such cache. */
+void halo_xbox_gpu_invalidate_vertex_cache(void);
+#ifndef D3DLOCK_NOFLUSH
+#define D3DLOCK_NOFLUSH 0x00000010L
+#endif
+
+/* resource NULL: everything the GPU was given */
+static void wait_for_gpu(void *resource, DWORD flags)
+{
+	if (!(flags & (D3DLOCK_NOOVERWRITE | D3DLOCK_READONLY)))
+		halo_xbox_gpu_wait_for_resource(resource);
+}
+
+#define RESOURCE_PROTECTION (PAGE_READWRITE | PAGE_WRITECOMBINE)
+#else
+static void wait_for_gpu(void *resource, DWORD flags)
+{
+	(void)resource;
+	(void)flags;
+}
+
+#define RESOURCE_PROTECTION PAGE_READWRITE
+#endif
+
 static void *allocate_resource_memory(unsigned long size)
 {
 	void *memory = platform_contiguous_alloc(size, D3DTEXTURE_ALIGNMENT,
-		PLATFORM_ANY_PHYSICAL_ADDRESS, PAGE_READWRITE);
+		PLATFORM_ANY_PHYSICAL_ADDRESS, RESOURCE_PROTECTION);
 
 	if (!memory)
 		platform_log("Direct3D: out of contiguous memory for a %lu byte resource", size);
@@ -102,6 +141,10 @@ void WINAPI D3DResource_Register(D3DResource *resource, void *base)
 	DWORD *fields = (DWORD *)resource;
 
 	fields[1] = PLATFORM_VIRTUAL_TO_PHYSICAL((unsigned long)base + fields[1]);
+	/* no use by the GPU yet: the headers come from the map file, whose Lock
+	words hold whatever the tools left there (the console's lock waits read
+	them as fences) */
+	fields[2] = 0;
 }
 
 ULONG WINAPI D3DResource_Release(D3DResource *resource)
@@ -128,13 +171,18 @@ ULONG WINAPI D3DResource_Release(D3DResource *resource)
 
 BOOL WINAPI D3DResource_IsBusy(D3DResource *resource)
 {
+#ifdef HALO_XBOX
+	return halo_xbox_gpu_resource_busy(resource);
+#else
 	(void)resource;
 	return FALSE;
+#endif
 }
 
 void WINAPI D3DResource_BlockUntilNotBusy(D3DResource *resource)
 {
 	(void)resource;
+	wait_for_gpu(resource, 0);
 }
 
 /* ---------- textures */
@@ -244,14 +292,14 @@ static void lock_level(const DWORD *resource, unsigned long face, unsigned long 
 
 void WINAPI D3DTexture_LockRect(D3DTexture *texture, UINT level, D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
 {
-	(void)flags;
+	wait_for_gpu(texture, flags);
 	lock_level((const DWORD *)texture, 0, level, locked, rectangle);
 }
 
 void WINAPI D3DCubeTexture_LockRect(D3DCubeTexture *texture, D3DCUBEMAP_FACES face, UINT level,
 	D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
 {
-	(void)flags;
+	wait_for_gpu(texture, flags);
 	lock_level((const DWORD *)texture, (unsigned long)face, level, locked, rectangle);
 }
 
@@ -263,7 +311,7 @@ void WINAPI D3DVolumeTexture_LockBox(D3DVolumeTexture *texture, UINT level, D3DL
 	unsigned long row_pitch, slice;
 	char *bits;
 
-	(void)flags;
+	wait_for_gpu(texture, flags);
 	xgpu_texture_describe(resource[3], resource[4], &description);
 	row_pitch = xgpu_texture_level_pitch(&description, level);
 	slice = row_pitch * level_dimension(description.height, level);
@@ -330,7 +378,8 @@ void WINAPI D3DSurface_GetDesc(D3DSurface *surface, D3DSURFACE_DESC *description
 
 void WINAPI D3DSurface_LockRect(D3DSurface *surface, D3DLOCKED_RECT *locked, CONST RECT *rectangle, DWORD flags)
 {
-	(void)flags;
+	/* (a surface's own Lock word is not its texture's: everything) */
+	wait_for_gpu(NULL, flags);
 	lock_level((const DWORD *)surface, 0, 0, locked, rectangle);
 }
 
@@ -361,7 +410,11 @@ HRESULT WINAPI D3DDevice_CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf,
 void WINAPI D3DVertexBuffer_Lock(D3DVertexBuffer *buffer, UINT offset, UINT size, BYTE **data, DWORD flags)
 {
 	(void)size;
-	(void)flags;
+#ifdef HALO_XBOX
+	if (!(flags & D3DLOCK_NOFLUSH))
+		halo_xbox_gpu_invalidate_vertex_cache();
+#endif
+	wait_for_gpu(buffer, flags);
 	*data = buffer->Data ? (BYTE *)resource_data(buffer->Data) + offset : NULL;
 }
 
@@ -424,7 +477,7 @@ HRESULT WINAPI D3DDevice_CreatePalette(D3DPALETTESIZE size, D3DPalette **result)
 
 void WINAPI D3DPalette_Lock(D3DPalette *palette, D3DCOLOR **colors, DWORD flags)
 {
-	(void)flags;
+	wait_for_gpu(palette, flags);
 	*colors = (D3DCOLOR *)resource_data(palette->Data);
 }
 

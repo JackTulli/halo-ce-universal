@@ -459,26 +459,36 @@ static void rasterizer_screen_effect_set_texture_transforms(
 #ifdef HALO_LINUX
 		{
 			/* the frame as a texture is addressed in its texels, which the
-			console's widescreen buffer squeezes (halo_screen_texture_scale_x) */
+			console's widescreen buffer squeezes (halo_screen_texture_scale_x)
+			and its 720p buffer scales (both axes) */
 			real squeeze = halo_screen_texture_scale_x();
+			real stretch = halo_screen_texture_scale_y();
 
 			if (convolution_bitmap == &viewport_map)
 			{
 				constants[0][0] *= squeeze;
 				constants[0][3] *= squeeze;
+				constants[1][1] *= stretch;
+				constants[1][3] *= stretch;
 			}
 			if (scanline_bitmap == &viewport_map)
 			{
 				constants[2][0] *= squeeze;
 				constants[2][3] *= squeeze;
+				constants[3][1] *= stretch;
+				constants[3][3] *= stretch;
 			}
 			if (noise_bitmap == &viewport_map)
 			{
 				constants[4][0] *= squeeze;
 				constants[4][3] *= squeeze;
+				constants[5][1] *= stretch;
+				constants[5][3] *= stretch;
 			}
 			constants[6][0] *= squeeze;
 			constants[6][3] *= squeeze;
+			constants[7][1] *= stretch;
+			constants[7][3] *= stretch;
 		}
 #endif
 		IDirect3DDevice8_SetVertexShaderConstant(

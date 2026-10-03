@@ -213,6 +213,72 @@ static wchar_t *fallback_string(long tag_index, short string_index)
 	return fallback_multiplayer_game_text_strings[fallback_index];
 }
 
+/* The menus' system link is internet play here too (the master server, the
+System Link page as its game browser): its strings say so. Each entry is
+the map's text and what shows instead (writable copies, as the tag's
+strings are). */
+static wchar_t renamed_system_link_play[] = L"ONLINE PLAY";
+static wchar_t renamed_system_link_description[] =
+	L"Play over the internet or the \r\nlocal network with up to \r\nsixteen players.";
+static wchar_t renamed_join_closed[] = L"Unable to join the\r\nonline game because it\r\nis closed.";
+static wchar_t renamed_join_failed[] = L"Unable to join the\r\nonline game.";
+static wchar_t renamed_game_closed[] = L"The online game\r\nhas closed down.";
+static wchar_t renamed_no_network[] =
+	L"You can't play online\r\ngames without first \r\nconnecting to an active \r\nnetwork.";
+static wchar_t renamed_connection_lost[] =
+	L"Network connection lost. \r\nThe network cable \r\nmay be disconnected\r\nor the network is down.";
+static wchar_t renamed_join_failed_2[] = L"Failed to join the\r\nonline game.";
+static wchar_t renamed_difficulties[] = L"Your online\r\nconnection is\r\nexperiencing\r\ndifficulties...";
+
+static const struct
+{
+	const wchar_t *original;
+	wchar_t *renamed;
+} renamed_strings[] =
+{
+	{ L"SYSTEM LINK PLAY", renamed_system_link_play },
+	{ L"Connect up to four Xbox video \r\ngame systems for a total of \r\nup to sixteen players.",
+		renamed_system_link_description },
+	{ L"Unable to join System\r\nLink game because it\r\nis closed.", renamed_join_closed },
+	{ L"Unable to join System\r\nLink game.", renamed_join_failed },
+	{ L"The System Link game\r\nhas closed down.", renamed_game_closed },
+	{ L"You can't play System\r\nLink games without first \r\nconnecting to an active \r\nnetwork or Xbox console.",
+		renamed_no_network },
+	{ L"Network connection lost. \r\nXbox System Link Cable \r\nmay be disconnected\r\nor the network is down.",
+		renamed_connection_lost },
+	{ L"Failed to join the\r\nSystem Link game.", renamed_join_failed_2 },
+	{ L"Your Xbox System\r\nLink connection is\r\nexperiencing\r\ndifficulties...", renamed_difficulties },
+};
+
+static boolean wide_strings_equal(const wchar_t *a, const wchar_t *b)
+{
+	while (*a && *a == *b)
+	{
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
+/* the string, or its online play wording */
+static wchar_t *renamed_string(wchar_t *string)
+{
+	long index;
+
+	/* (only strings that mention system link, found by their first letters) */
+	if (string[0] != L'S' && string[0] != L'C' && string[0] != L'U' && string[0] != L'T' &&
+		string[0] != L'Y' && string[0] != L'N' && string[0] != L'F')
+	{
+		return string;
+	}
+	for (index = 0; index < (long)NUMBEROF(renamed_strings); index++)
+	{
+		if (wide_strings_equal(string, renamed_strings[index].original))
+			return renamed_strings[index].renamed;
+	}
+	return string;
+}
+
 #endif
 /* ---------- public code */
 
@@ -261,6 +327,9 @@ wchar_t *unicode_string_list_get_string(long tag_index, short string_index)
 			{
 				result = entry->string.address;
 				result[entry->string.size / sizeof(wchar_t) - 1] = L'\0';
+#ifdef HALO_LINUX
+				result = renamed_string(result);
+#endif
 			}
 		}
 #ifdef HALO_LINUX

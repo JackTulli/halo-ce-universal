@@ -256,6 +256,23 @@ enum
 	CACHE_COPY_THREAD_STACK_SIZE = 0x4000,
 };
 
+#ifdef HALO_XBOX
+/* a 1 MB write buffer when the texture cache is the reduced one (720p in
+the low 64 MB, 9 or 10 MB): the copy's buffers come out of the texture cache
+(texture_cache_steal_memory), and with 4 MB a copy left 1.9 MB of textures
+for the lobby drawn meanwhile. Slightly more, smaller writes. */
+static long cache_copy_write_size(
+	void)
+{
+	return halo_xbox_texture_cache_size() < 0xC00000UL ? 0x100000 : WRITE_BUFFER_SIZE;
+}
+#define COPY_WRITE_BUFFER_SIZE cache_copy_write_size()
+#define COPY_TOTAL_BUFFER_SIZE 	(NUMBER_OF_READ_BUFFERS * READ_BUFFER_SIZE + NUMBER_OF_WRITE_BUFFERS * COPY_WRITE_BUFFER_SIZE + ZLIB_BUFFER_SIZE)
+#else
+#define COPY_WRITE_BUFFER_SIZE WRITE_BUFFER_SIZE
+#define COPY_TOTAL_BUFFER_SIZE TOTAL_BUFFER_SIZE
+#endif
+
 enum
 {
 	_copy_write_failed_bit,
@@ -532,7 +549,7 @@ long cache_copy_buffer_size(
 {
 	cache_copy_set_priority(blocking);
 
-	return TOTAL_BUFFER_SIZE;
+	return COPY_TOTAL_BUFFER_SIZE;
 }
 
 void cache_copy_set_priority(
@@ -579,7 +596,7 @@ void cache_copy_begin(
 		match_assert(
 			"c:\\halo\\SOURCE\\cache\\cache_files_decompress_windows.c",
 			527,
-			size>= TOTAL_BUFFER_SIZE);
+			size>= COPY_TOTAL_BUFFER_SIZE);
 		match_assert(
 			"c:\\halo\\SOURCE\\cache\\cache_files_decompress_windows.c",
 			528,
@@ -718,12 +735,12 @@ static void cache_copy_initialize_read_buffers(
 	}
 	global_self->write_buffers[0] = address;
 
-	XPhysicalProtect(self->allocated_buffer, TOTAL_BUFFER_SIZE, PAGE_READWRITE);
-	csmemset(self->allocated_buffer, 0xfd, TOTAL_BUFFER_SIZE - ZLIB_BUFFER_SIZE);
-	XPhysicalProtect(self->allocated_buffer, TOTAL_BUFFER_SIZE - ZLIB_BUFFER_SIZE, PAGE_READONLY);
+	XPhysicalProtect(self->allocated_buffer, COPY_TOTAL_BUFFER_SIZE, PAGE_READWRITE);
+	csmemset(self->allocated_buffer, 0xfd, COPY_TOTAL_BUFFER_SIZE - ZLIB_BUFFER_SIZE);
+	XPhysicalProtect(self->allocated_buffer, COPY_TOTAL_BUFFER_SIZE - ZLIB_BUFFER_SIZE, PAGE_READONLY);
 
 	self->zlib_buffer_size = ZLIB_BUFFER_SIZE;
-	self->zlib_buffer = (byte *)self->allocated_buffer + TOTAL_BUFFER_SIZE - ZLIB_BUFFER_SIZE;
+	self->zlib_buffer = (byte *)self->allocated_buffer + COPY_TOTAL_BUFFER_SIZE - ZLIB_BUFFER_SIZE;
 	self->next_allocation = self->zlib_buffer;
 
 	csmemset(
@@ -886,7 +903,7 @@ static long cache_copy_write_buffer_size(
 		1642,
 		write_buffer_index>=0 && write_buffer_index<NUMBER_OF_WRITE_BUFFERS);
 
-	return WRITE_BUFFER_SIZE;
+	return COPY_WRITE_BUFFER_SIZE;
 }
 
 static boolean any_bit_vector_flag_set(
@@ -1386,7 +1403,7 @@ static void cache_copy_issue_write_internal(
 		1654,
 		write_buffer_index>=0 && write_buffer_index<NUMBER_OF_WRITE_BUFFERS);
 
-	XPhysicalProtect(buffer, WRITE_BUFFER_SIZE, PAGE_READONLY);
+	XPhysicalProtect(buffer, COPY_WRITE_BUFFER_SIZE, PAGE_READONLY);
 
 	cache_copy_issue_write(
 		self,
@@ -1520,7 +1537,7 @@ static void cache_copy_update_write_buffers(
 				self->current_write_buffer_index = write_buffer_index;
 				XPhysicalProtect(
 					self->write_buffers[write_buffer_index],
-					WRITE_BUFFER_SIZE,
+					COPY_WRITE_BUFFER_SIZE,
 					PAGE_READWRITE);
 				break;
 			}

@@ -1957,6 +1957,12 @@ void do_convoluation_coords(
 	real x,
 	real y)
 {
+#ifdef HALO_XBOX
+	/* the frame's texels: the console's buffer is wider than 640 on a
+	widescreen display (720) and larger at 720p (1280x720) */
+	x *= halo_screen_texture_scale_x() * (real)halo_screen_width() / 640.f;
+	y *= halo_screen_texture_scale_y();
+#endif
 	D3DDevice_SetVertexData2f(D3DVSDE_TEXCOORD0, x - blur_offset, blur_offset + y);
 	D3DDevice_SetVertexData2f(D3DVSDE_TEXCOORD1, x - blur_offset, y - blur_offset);
 	D3DDevice_SetVertexData2f(D3DVSDE_TEXCOORD2, blur_offset + x, y - blur_offset);
@@ -2014,7 +2020,12 @@ static void this_is_awful(
 	texture->Common= 0x00040005;
 	texture->Data= surface->Data;
 	texture->Lock= 0;
+#ifdef HALO_XBOX
+	/* the buffer's own size and pitch: 640x480 only on a 4:3 480 display */
+	texture->Size= surface->Size;
+#else
 	texture->Size= 0x271df27f;
+#endif
 	texture->Format= 0x00011229;
 
 	return;

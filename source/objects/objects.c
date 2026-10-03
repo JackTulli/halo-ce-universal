@@ -119,6 +119,11 @@ long network_objects_new_object_index(void);
 boolean network_objects_creating_host_object(void);
 boolean network_objects_may_delete(long object_index);
 #endif
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+/* memory_pool.c's: the console walks a pool's whole block list once a tick
+for this one, rather than at every block operation */
+void memory_pool_verify(struct memory_pool *pool);
+#endif
 
 static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
 static void object_name_list_allocate(void);
@@ -177,6 +182,14 @@ boolean debug_object_garbage_collection;
 struct data_array *object_header_data;
 
 boolean debug_objects_position_velocity = FALSE;
+
+#ifdef HALO_XBOX
+/* the console's tick split (game.c's halo_xbox_tick_profile): objects_update's
+updates of whole objects by type, each with whatever it carries; the
+cycles of bipeds, vehicles and projectiles only (object_update_timed) */
+unsigned __int64 halo_xbox_object_update_cycles[NUMBER_OF_OBJECT_TYPES];
+long halo_xbox_object_update_count[NUMBER_OF_OBJECT_TYPES];
+#endif
 
 /* ---------- public code */
 
@@ -1875,7 +1888,13 @@ short object_get_marker_by_name(
 
 	struct object_datum const *object = object_get(object_index);
 	struct object_definition const *object_definition = object_definition_get(object->definition_index);
+#ifdef HALO_XBOX
+	/* the same datum: one lookup (the AI asks for heads and bodies by name
+	every tick) */
+	struct object_datum *matrix_object = (struct object_datum *)object;
+#else
 	struct object_datum *matrix_object = object_get(object_index);
+#endif
 	real_matrix4x3 const *matrices = (real_matrix4x3 *)object_header_block_get(object_index,
 		&matrix_object->object.node_matrices);
 
@@ -3881,6 +3900,10 @@ void objects_garbage_collection(
 {
 	short garbage_collect_mode = NONE;
 
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+	memory_pool_verify(object_memory_pool);
+#endif
+
 	if (object_globals->force_garbage_collection)
 	{
 		garbage_collect_mode = _garbage_collect_everything;
@@ -4199,6 +4222,34 @@ void objects_garbage_collection(
 	return;
 }
 
+#ifdef HALO_XBOX
+/* object_update, counted by type for the console's tick split, and timed for
+the types that grow with a fight; the rest of objects_update is everything
+else (two time stamp reads around every weapon, item and piece of scenery
+would cost more than they tell) */
+static void object_update_timed(
+	long object_index,
+	short type)
+{
+	if (type==_object_type_biped || type==_object_type_vehicle || type==_object_type_projectile)
+	{
+		unsigned __int64 start = __builtin_ia32_rdtsc();
+
+		object_update(object_index);
+		halo_xbox_object_update_cycles[type] += __builtin_ia32_rdtsc()-start;
+	}
+	else
+	{
+		object_update(object_index);
+	}
+	if (type>=0 && type<NUMBER_OF_OBJECT_TYPES)
+	{
+		halo_xbox_object_update_count[type]++;
+	}
+
+	return;
+}
+#endif
 
 void objects_update(
 	void)
@@ -4283,7 +4334,11 @@ void objects_update(
 					TEST_FLAG(_object_mask_unit, object_header->type) &&
 					unit_get(object_index)->unit.player_index!=NONE)
 				{
+#ifdef HALO_XBOX
+					object_update_timed(object_index, object_header->type);
+#else
 					object_update(object_index);
+#endif
 				}
 			}
 		}
@@ -4303,7 +4358,11 @@ void objects_update(
 					object_header->flags,
 					_object_header_being_created_bit,
 					FALSE);
+#ifdef HALO_XBOX
+				object_update_timed(DATUM_INDEX_NEW(i, object_header->identifier), object_header->type);
+#else
 				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+#endif
 			}
 
 			if (TEST_FLAG(object_header->flags, _object_header_being_deleted_bit))
@@ -4955,7 +5014,11 @@ static void object_compute_function_values(
 
 		if (TEST_FLAG(function->flags, _object_function_clip_to_bounds_and_normalize))
 		{
+#ifdef HALO_XBOX
+			output = fraction_of(output+object->object.outgoing_function_values[function_index]); /* (fmod's, without the x87 call) */
+#else
 			output = fmod(output+object->object.outgoing_function_values[function_index], 1.f);
+#endif
 		}
 
 		object->object.outgoing_function_values[function_index] = output;

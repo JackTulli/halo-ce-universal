@@ -96,6 +96,9 @@ symbols in this file:
 #include "text/draw_string.h"
 #include "text/text_group.h"
 #include "units/units.h"
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+#include "cseries/profile.h"
+#endif
 
 /* ---------- constants */
 
@@ -260,7 +263,18 @@ void ai_profile_update(
 	for (index = 0; index < NUMBER_OF_AI_METERS; index++, definition++, meter++)
 	{
 		match_assert("c:\\halo\\SOURCE\\ai\\ai_profile.c", 140, definition->meter_id == index);
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+		/* the console samples the units and swarm-actors meters, which walk
+		every actor of every encounter, only while a display shows them: the
+		profile display, or the stats, actors and swarms overlays (each shows
+		the value of the tick it is drawn in); every meter's accumulator still
+		passes into its value and history each tick */
+		if (definition->sample_proc &&
+			(profile_display || ai_profile.show_stats || ai_profile.show_actors || ai_profile.show_swarms ||
+			(definition->sample_proc != ai_profile_sample_units && definition->sample_proc != ai_profile_sample_swarm_actors)))
+#else
 		if (definition->sample_proc)
+#endif
 		{
 			meter->accumulator = definition->sample_proc();
 		}

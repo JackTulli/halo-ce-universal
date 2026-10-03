@@ -19,6 +19,15 @@ build needs it made with the options tools/xbox_build.py gives
 #include <lwip/ip4_addr.h>
 #include <lwip/api.h>
 
+/* 127.0.0.1 (a local game's client and server, internet play's stand-ins)
+needs lwIP's loopback interface: tools/xbox_lwip_patch.py on nxdk, then its
+network library rebuilt (port/xbox/README.md, "Requirements"). The defines
+are unguarded in nxdk's lwipopts.h; a network library built from the
+unpatched header fails the link instead (netif_list, nx_net_describe) */
+#if LWIP_SINGLE_NETIF || !LWIP_HAVE_LOOPIF
+#error "nxdk's lwipopts.h lacks tools/xbox_lwip_patch.py: 127.0.0.1 would be unroutable"
+#endif
+
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
@@ -166,10 +175,10 @@ static int to_lwip_address(const void *address, int length, struct sockaddr_in *
 	result->sin_family = AF_INET;
 	result->sin_port = winsock->port;
 	result->sin_addr.s_addr = winsock->address;
-	/* the console talking to itself (a local game's client and server)
-	goes to its own address, which lwIP loops back */
-	if (winsock->address == lwip_htonl(0x7F000001UL) && posix_local_ipv4_address())
-		result->sin_addr.s_addr = posix_local_ipv4_address();
+	/* (127.0.0.1, the console talking to itself (a local game's client and
+	server), stays: lwIP's loopback interface carries it whatever the cable
+	and the address (tools/xbox_lwip_patch.py); the console's own address
+	needs the link) */
 	return 1;
 }
 
@@ -497,15 +506,26 @@ int posix_network_link_up(void)
 {
 	struct netif *netif = the_netif();
 
-	return netif && netif_is_up(netif);
+	/* the cable (the network driver keeps the link flag), not only the
+	interface: the game says the network is gone when it is unplugged */
+	return netif && netif_is_up(netif) && netif_is_link_up(netif);
 }
 
 /* for the start-up log */
 void nx_net_describe(char *text, unsigned long size)
 {
 	struct netif *netif = the_netif();
+	struct netif *each;
+	int count = 0, loopback = 0;
 
-	snprintf(text, size, "netif %p (g_pnetif %p) flags %02x", (void *)netif, (void *)g_pnetif, netif ? netif->flags : 0);
+	/* (netif_list exists only in a network library built with the patch) */
+	NETIF_FOREACH(each)
+	{
+		count++;
+		loopback |= ip4_addr_get_u32(netif_ip4_addr(each)) == PP_HTONL(IPADDR_LOOPBACK);
+	}
+	snprintf(text, size, "netif %p (g_pnetif %p) flags %02x; %d interfaces%s", (void *)netif, (void *)g_pnetif,
+		netif ? netif->flags : 0, count, loopback ? ", loopback 127.0.0.1" : ", NO loopback");
 }
 
 /* ---------- random bytes

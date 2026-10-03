@@ -99,6 +99,12 @@ long _rasterizer_widget_submit_occlusion_test(
 	long index);
 long _rasterizer_widget_get_occlusion_test_result(
 	long index);
+#ifdef HALO_XBOX
+/* (HALO_XBOX) the occlusion test has no answer yet (the GPU is behind) or
+none for this number: the lens flare keeps its last visibility
+(rasterizer_lights_begin_for_new_frame) */
+#define RASTERIZER_OCCLUSION_TEST_PENDING (-2)
+#endif
 void _rasterizer_widget_end(
 	void);
 

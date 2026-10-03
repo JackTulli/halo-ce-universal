@@ -39,6 +39,7 @@ from .linux_build import generate_linux_build, linux_configure_inputs
 from .android_build import generate_android_build, android_configure_inputs
 from .windows_build import generate_windows_build, windows_configure_inputs
 from .xbox_build import generate_xbox_build, xbox_configure_inputs
+from .win9x_build import generate_win9x_build, win9x_configure_inputs
 from .parked_functions import (
     ParkedFunctionsError,
     require_valid_parked_functions,
@@ -278,6 +279,7 @@ def generate_native_build_ninja(sln: SolutionConfig) -> None:
     generate_android_build(n, sln)
     generate_windows_build(n, sln)
     generate_xbox_build(n, sln)
+    generate_win9x_build(n, sln)
 
     n.comment("Reconfigure on change")
     n.rule(
@@ -298,6 +300,7 @@ def generate_native_build_ninja(sln: SolutionConfig) -> None:
             *android_configure_inputs(),
             *windows_configure_inputs(),
             *xbox_configure_inputs(),
+            *win9x_configure_inputs(),
         ],
     )
     n.newline()
@@ -647,6 +650,7 @@ def generate_build_ninja(sln: SolutionConfig) -> None:
     ###
     generate_windows_build(n, sln)
     generate_xbox_build(n, sln)
+    generate_win9x_build(n, sln)
 
     ###
     # Regenerate on change
@@ -670,6 +674,7 @@ def generate_build_ninja(sln: SolutionConfig) -> None:
             *android_configure_inputs(),
             *windows_configure_inputs(),
             *xbox_configure_inputs(),
+            *win9x_configure_inputs(),
         ],
     )
     n.newline()

@@ -158,6 +158,14 @@ def march_flag(sln: Any) -> str:
     return "-march=x86-64" if getattr(sln, "port_portable", False) else "-march=native"
 
 
+def window_base_flags(sln: Any) -> List[str]:
+    """Where the Xbox memory window goes (configure.py --window-base;
+    port/include/halo_memory_window.h): nothing for the console's own
+    0x80000000, the default"""
+    base = getattr(sln, "port_window_base", None)
+    return [f"-DHALO_WINDOW_BASE=0x{base:08X}UL"] if base is not None else []
+
+
 def lto_mode(sln: Any) -> str:
     """full, thin or off (configure.py --lto)"""
     return getattr(sln, "port_lto", "full")
@@ -314,7 +322,7 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
         pool="console",
     )
 
-    abi = " ".join(LINUX_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []) + (["-DHALO_BIG_SESSIONS"] if getattr(sln, "port_big_sessions", False) else []))
+    abi = " ".join(LINUX_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []) + (["-DHALO_BIG_SESSIONS"] if getattr(sln, "port_big_sessions", False) else []) + window_base_flags(sln))
     port_include = PORT_DIR / "include"
     sdk_flags = f"-idirafter {XDK_INCLUDE}"
     excluded = set(config.get("exclude_sources", []))

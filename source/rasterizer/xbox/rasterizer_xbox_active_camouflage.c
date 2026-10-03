@@ -153,6 +153,17 @@ enum
 
 /* ---------- macros */
 
+/* the frame's texels, where the camouflage samples it: the console's
+widescreen buffer squeezes the game's columns into fewer, its 720p buffer
+scales columns and lines alike */
+#ifdef HALO_LINUX
+#define FRAME_TEXEL_X(x) ((short)((real)(x) * halo_screen_texture_scale_x() + 0.5f))
+#define FRAME_TEXEL_Y(y) ((short)((real)(y) * halo_screen_texture_scale_y() + 0.5f))
+#else
+#define FRAME_TEXEL_X(x) (x)
+#define FRAME_TEXEL_Y(y) (y)
+#endif
+
 /* ---------- structures */
 
 /* no shared header declares these yet; compatible TU-local copies also live in
@@ -282,6 +293,25 @@ void rasterizer_active_camouflage_cache_primary_render_target(
 		41,
 		global_d3d_device);
 
+#ifdef HALO_LIGHT_PIPELINE
+	/* the light pipeline's camouflage is a tint (rasterizer_active_
+	camouflage_draw), which samples no copy of the frame: only the
+	bookkeeping the copy does */
+	if (rasterizer_light_pipeline())
+	{
+		if (rasterizer_debug_options.active_camouflage &&
+			local_active_camouflage_visibility_flag)
+		{
+			local_active_camouflage_debug_cache_count++;
+			if (!rasterizer_debug_options.active_camouflage_multipass)
+			{
+				local_active_camouflage_visibility_flag = FALSE;
+			}
+			local_active_camouflage_debug_cached_flag = TRUE;
+		}
+		return;
+	}
+#endif
 	if (rasterizer_debug_options.active_camouflage &&
 		local_active_camouflage_visibility_flag)
 	{
@@ -411,8 +441,8 @@ void rasterizer_active_camouflage_cache_primary_render_target(
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			4,
-			global_window_parameters.camera.viewport_bounds.x0,
-			global_window_parameters.camera.viewport_bounds.y1);
+			FRAME_TEXEL_X(global_window_parameters.camera.viewport_bounds.x0),
+			FRAME_TEXEL_Y(global_window_parameters.camera.viewport_bounds.y1));
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			0,
@@ -421,8 +451,8 @@ void rasterizer_active_camouflage_cache_primary_render_target(
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			4,
-			global_window_parameters.camera.viewport_bounds.x1,
-			global_window_parameters.camera.viewport_bounds.y1);
+			FRAME_TEXEL_X(global_window_parameters.camera.viewport_bounds.x1),
+			FRAME_TEXEL_Y(global_window_parameters.camera.viewport_bounds.y1));
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			0,
@@ -431,8 +461,8 @@ void rasterizer_active_camouflage_cache_primary_render_target(
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			4,
-			global_window_parameters.camera.viewport_bounds.x1,
-			global_window_parameters.camera.viewport_bounds.y0);
+			FRAME_TEXEL_X(global_window_parameters.camera.viewport_bounds.x1),
+			FRAME_TEXEL_Y(global_window_parameters.camera.viewport_bounds.y0));
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			0,
@@ -441,8 +471,8 @@ void rasterizer_active_camouflage_cache_primary_render_target(
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			4,
-			global_window_parameters.camera.viewport_bounds.x0,
-			global_window_parameters.camera.viewport_bounds.y0);
+			FRAME_TEXEL_X(global_window_parameters.camera.viewport_bounds.x0),
+			FRAME_TEXEL_Y(global_window_parameters.camera.viewport_bounds.y0));
 		IDirect3DDevice8_SetVertexData2s(
 			global_d3d_device,
 			0,
@@ -528,7 +558,13 @@ void rasterizer_active_camouflage_draw(
 				rasterizer_globals.first_person_weapon_far_clip_distance);
 		}
 
-		if (group->effect.intensity==1.0f)
+		if (group->effect.intensity==1.0f
+#ifdef HALO_LIGHT_PIPELINE
+			/* (the light pipeline cannot blend the scene behind over the
+			model: from half-way into the cloak it stops drawing the model) */
+			|| (rasterizer_light_pipeline() && group->effect.intensity>=0.5f)
+#endif
+			)
 		{
 			/* fully cloaked: lay down depth only, alpha tested against the base map */
 			rasterizer_set_texture(
@@ -692,6 +728,99 @@ void rasterizer_active_camouflage_draw(
 			rasterizer_profile_enable(TRUE);
 		}
 
+#ifdef HALO_LIGHT_PIPELINE
+		if (rasterizer_light_pipeline())
+		{
+			/* the plain form: what the distortion pass draws when it bends
+			nothing, the scene behind times the tint -- so the frame is
+			multiplied by the tint where the model's depth is, with no copy
+			of the frame, no cube map and no texture. The tint is darkened
+			by an eighth, so that a white one still shows where the cloaked
+			are; a model that is still drawn takes the tint by degrees */
+			real_vector4d vertex_constants[3];
+			real_rgb_color tint_color;
+			real tint_amount = group->effect.intensity<0.5f ? group->effect.intensity*2.0f : 1.0f;
+
+			tint_color.red = (1.0f - group->effect.parameter)*global_rasterizer_data->active_camouflage_tint_color.red +
+				group->effect.parameter*global_rasterizer_data->active_camouflage_hyper_stealth_tint_color.red;
+			tint_color.green = (1.0f - group->effect.parameter)*global_rasterizer_data->active_camouflage_tint_color.green +
+				group->effect.parameter*global_rasterizer_data->active_camouflage_hyper_stealth_tint_color.green;
+			tint_color.blue = (1.0f - group->effect.parameter)*global_rasterizer_data->active_camouflage_tint_color.blue +
+				group->effect.parameter*global_rasterizer_data->active_camouflage_hyper_stealth_tint_color.blue;
+			tint_color.red = PIN(1.0f + tint_amount*(tint_color.red*0.875f - 1.0f), 0.0f, 1.0f);
+			tint_color.green = PIN(1.0f + tint_amount*(tint_color.green*0.875f - 1.0f), 0.0f, 1.0f);
+			tint_color.blue = PIN(1.0f + tint_amount*(tint_color.blue*0.875f - 1.0f), 0.0f, 1.0f);
+
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_CULLMODE,
+				TEST_FLAG(model->model.flags, _shader_model_two_sided_bit) ?
+					D3DCULL_NONE : D3DCULL_CCW);
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_COLORWRITEENABLE,
+				D3DCOLORWRITEENABLE_RED |
+				D3DCOLORWRITEENABLE_GREEN |
+				D3DCOLORWRITEENABLE_BLUE);
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_ALPHATESTENABLE,
+				FALSE);
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_ZENABLE,
+				TRUE);
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_ZWRITEENABLE,
+				FALSE);
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_ZFUNC,
+				D3DCMP_EQUAL);
+			IDirect3DDevice8_SetRenderState(
+				global_d3d_device,
+				D3DRS_ZBIAS,
+				0);
+			SetRenderStateSmart(D3DRS_ALPHABLENDENABLE, TRUE);
+			SetRenderStateSmart(D3DRS_SRCBLEND, D3DBLEND_DESTCOLOR);
+			SetRenderStateSmart(D3DRS_DESTBLEND, D3DBLEND_ZERO);
+			SetRenderStateSmart(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+
+			/* (the distortion pass's vertex shader, for its position; its
+			texture coordinates are not read) */
+			rasterizer_set_vertex_shader_permutation(
+				_rasterizer_vertex_shader_active_camouflage,
+				rasterizer_transparent_geometry_get_primary_vertex_type(group),
+				0);
+			csmemset(vertex_constants, 0, sizeof(vertex_constants));
+			vertex_constants[0].k = (real)ACTIVE_CAMOUFLAGE_SCREEN_WIDTH;
+			vertex_constants[0].l = (real)ACTIVE_CAMOUFLAGE_SCREEN_HEIGHT;
+			IDirect3DDevice8_SetVertexShaderConstant(
+				global_d3d_device,
+				-84,
+				vertex_constants,
+				NUMBEROF(vertex_constants));
+
+			csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+			pixel_shader.combiner_count = PS_COMBINERCOUNT(1, 0);
+			pixel_shader.final_combiner_constant_0 = real_rgb_color_to_pixel32(&tint_color);
+			pixel_shader.final_combiner_inputs_abcd = PS_COMBINERINPUTS(
+				PS_REGISTER_ZERO,
+				PS_REGISTER_ZERO,
+				PS_REGISTER_ZERO,
+				PS_REGISTER_C0);
+			rasterizer_set_pixel_shader(&pixel_shader);
+
+			rasterizer_transparent_geometry_group_draw__internal(group, FALSE);
+
+			if (TEST_FLAG(group->geometry_flags, _rasterizer_geometry_first_person_bit))
+			{
+				rasterizer_set_frustum_z(0.0f, 0.0f);
+			}
+			return;
+		}
+#endif
 		rasterizer_set_texture_direct(
 			0,
 			global_rasterizer_data->active_camouflage_distortion.index,

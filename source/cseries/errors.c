@@ -131,6 +131,12 @@ static void write_to_debug_file(
 	FILE *file = debug_file;
 	char prefix[32];
 
+	/* debug.log_file off: no debug.txt (on the console, nor its echo to
+	the screen and the network) */
+	if (!halo_debug_log_file_enabled())
+	{
+		return;
+	}
 	if (!file)
 	{
 		FILE *opened = fopen("d:\\debug.txt", "a+b");

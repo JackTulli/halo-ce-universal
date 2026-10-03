@@ -23,6 +23,10 @@ render target, as on the console) and leaves pbkit's depth window in place
 
 static int started;
 static void resync(void);
+static void wait_until_graphics_idle(void);
+static void drain_for_console(void);
+static unsigned long flush_dwords; /* (below, with the ring) */
+static void park_unless_console_owner(void);
 static void ensure_room(unsigned long dwords);
 /* the free space last read from the pusher, less what has been written
 since: the pusher only frees more, so a stale count is a safe one, and the
@@ -46,6 +50,16 @@ int nx_gpu_start(unsigned long push_buffer_size)
 		push_buffer_size = 512 * 1024;
 	pb_size(push_buffer_size);
 	nx_video_configure();
+	/* 720p in the low 64 MB: two frame buffers, and none of pbkit's depth
+	buffer (the device has its own) (tools/xbox_pbkit_patch.py) */
+	if (nx_video_low_memory_hd())
+	{
+		pb_set_back_buffer_count(1);
+		flush_dwords = 2048;
+	}
+	/* none of pbkit's depth buffer: the device has its own
+	(nx_gpu_depth_buffer), and nothing addressed pbkit's (1.3 MB at 480) */
+	pb_set_depth_buffer(0);
 	status = pb_init();
 	if (status != 0)
 	{
@@ -61,7 +75,16 @@ int nx_gpu_start(unsigned long push_buffer_size)
 	push_size = push_buffer_size;
 	/* pbkit's first target: its depth buffer becomes the depth DMA window */
 	pb_target_back_buffer();
-	pb_create_dma_ctx(NX_GPU_MEMORY_CONTEXT_COLOR, DMA_CLASS_3D, 0, MAXRAM, &color_context);
+	/* and its last: the device binds its own window and surface at each
+	frame (d3d8_nv2a.c, apply_render_target), so pb_finished need not
+	re-target pbkit's, eight GPU interrupts a frame (tools/xbox_pbkit_patch.py,
+	version 6) */
+	pb_set_retarget_on_finish(0);
+	/* all of memory: at 720p the game's surfaces, textures and vertices
+	are in the top 64 MB of a 128 MB console (its last 20 KB are the
+	GPU's, as MAXRAM leaves them out of the low 64 MB) */
+	pb_create_dma_ctx(NX_GPU_MEMORY_CONTEXT_COLOR, DMA_CLASS_3D, 0,
+		nx_high_memory_placed() ? nx_physical_top() - 0x5001 : MAXRAM, &color_context);
 	pb_bind_channel(&color_context);
 	/* the visibility reports: a page of their own, which their DMA context
 	spans, so the report methods' 24-bit offsets are within it */
@@ -86,21 +109,70 @@ int nx_gpu_started(void)
 	return started;
 }
 
+int nx_gpu_flip_pending(void)
+{
+	return started && pb_flip_pending();
+}
+
+/* whether the buffer the next frame is drawn into is still on the screen or
+waiting to be: it was the frame's (buffers - 1) before, so the display must
+have flipped to the one after that (tools/xbox_pbkit_patch.py, version 4).
+pbkit's ready table counts only frames the GPU has finished, which with the
+frame rate unlocked let the GPU draw into the frame being shown */
+int nx_gpu_back_buffer_in_use(void)
+{
+	int buffers = nx_video_low_memory_hd() ? 2 : 3;
+
+	return started && pb_frames_pending() > buffers - 2;
+}
+
+int nx_gpu_frames_pending(void)
+{
+	return started ? pb_frames_pending() : 0;
+}
+
 void *nx_gpu_reports(void)
 {
 	return reports;
+}
+
+/* the thread that showed the console (a crash report): from then on any
+other thread that pushes parks at its next push (park_unless_console_owner),
+so the game, still drawing on its own thread, cannot draw over the report:
+at 720p in the low 64 MB the screen is the depth buffer too, which every
+frame clears */
+static PKTHREAD volatile console_owner;
+
+static void park_unless_console_owner(void)
+{
+	PKTHREAD owner = console_owner;
+
+	if (owner && owner != KeGetCurrentThread())
+	{
+		for (;;)
+			Sleep(1000);
+	}
 }
 
 void nx_gpu_show_console(void)
 {
 	if (started)
 	{
+		if (!console_owner)
+			console_owner = KeGetCurrentThread();
+		/* every other pusher to the slow path, where it parks */
+		nx_gpu_room_end = nx_gpu_put;
+		nx_gpu_kick_at = NULL;
 		nx_gpu_flush();
 		ensure_room(4096);
+		/* what was queued drawn first, before the text */
+		drain_for_console();
 		pb_show_debug_screen();
 		nx_print_screen_shown();
 		resync();
 		free_cache = 0;
+		nx_gpu_room_end = nx_gpu_put;
+		nx_gpu_kick_at = NULL;
 	}
 }
 
@@ -133,17 +205,39 @@ unsigned long nx_gpu_depth_buffer(unsigned long bytes)
 {
 	static void *buffer;
 	static unsigned long size;
+	static int shared;
 
 	if (!buffer || size < bytes)
 	{
-		if (buffer)
+		if (buffer && !shared)
 			MmFreeContiguousMemory(buffer);
-		buffer = MmAllocateContiguousMemoryEx(bytes, 0, MAXRAM, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+		buffer = NULL;
+		shared = 0;
+		/* 720p in the low 64 MB: nxdk's text screen is the depth buffer
+		too. XVideoSetMode gave it the mode's size (1280x720x4, 3.5 MB, the
+		depth buffer's exactly), contiguous and write-combined, for text
+		that shows only before the game does and after a crash, when the
+		depth is of no more use (nx_print_screen_shown clears it first); a
+		stray line during play marks a few depth values for a frame. That
+		is the room a 64 MB console needs for 720p. */
+		if (nx_video_low_memory_hd())
+		{
+			void *screen = XVideoGetFB();
+
+			if (screen && MmQueryAllocationSize(screen) >= bytes)
+			{
+				buffer = screen;
+				shared = 1;
+			}
+		}
+		/* (at 720p in the top 64 MB, like the game's other surfaces) */
+		if (!buffer)
+			buffer = nx_physical_alloc(bytes, 0xffffffffUL, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
 		size = buffer ? bytes : 0;
 		if (buffer)
 			memset(buffer, 0, bytes);
 	}
-	return buffer ? (unsigned long)buffer & 0x03FFFFFF : 0;
+	return buffer ? (unsigned long)buffer & 0x7FFFFFFF : 0;
 }
 
 /* The commands go into the ring as they are written; the GPU is told
@@ -153,6 +247,9 @@ every few kilobytes and before anything waits on it. Telling it after every
 Direct3D call, as before, cost tens of thousands of exits a frame. */
 
 #define FLUSH_DWORDS 8192
+/* 2048 at 720p in the low 64 MB: double buffered, the GPU waits for the CPU
+at each frame's start, and a smaller kick sets it going sooner */
+static unsigned long flush_dwords = FLUSH_DWORDS;
 /* the room ensure_room keeps beyond any reservation: pbkit's own pushes
 (the flip, the debug screen) check nothing, and they land in it */
 #define ROOM_MARGIN 1025
@@ -179,7 +276,7 @@ static uint32_t *put_pointer(void)
 
 static void set_kick_at(void)
 {
-	nx_gpu_kick_at = (unsigned long *)(flushed_ptr + FLUSH_DWORDS);
+	nx_gpu_kick_at = (unsigned long *)(flushed_ptr + flush_dwords);
 }
 
 /* no fast path until ensure_room has counted the room again */
@@ -199,7 +296,10 @@ static void resync(void)
 
 void nx_gpu_flush(void)
 {
-	uint32_t *put = put_pointer();
+	uint32_t *put;
+
+	park_unless_console_owner();
+	put = put_pointer();
 
 	if (put != flushed_ptr)
 	{
@@ -309,12 +409,14 @@ static void ensure_room(unsigned long dwords)
 
 unsigned long *nx_gpu_reserve_slow(unsigned long dwords)
 {
+	park_unless_console_owner();
 	ensure_room(dwords);
 	return nx_gpu_put;
 }
 
 void nx_gpu_end_slow(unsigned long *end)
 {
+	park_unless_console_owner();
 	nx_gpu_put = end;
 	nx_gpu_flush();
 }
@@ -341,6 +443,7 @@ int nx_gpu_finish(void)
 {
 	int result;
 
+	park_unless_console_owner();
 	nx_gpu_flush();
 	ensure_room(1024);
 	result = pb_finished();
@@ -373,10 +476,49 @@ int nx_gpu_busy(void)
 	return pb_busy();
 }
 
+/* the graphics engine idle, by its status register alone. pbkit's
+pb_wait_until_gr_not_busy also runs the interrupt handlers itself, from the
+thread, and an interrupt between its read of the pending bits and its call
+had the handler run twice for one event: a flip or a frame's end counted
+twice, and the counters behind Present's buffer wait (pb_frames_pending)
+off for good. A trap the engine waits on is the interrupt's to serve. */
+static void wait_until_graphics_idle(void)
+{
+	unsigned long spins = 0;
+
+	while (*(volatile unsigned long *)0xFD400700UL != 0) /* NV_PGRAPH_STATUS: not busy */
+	{
+		if (++spins == 50000000UL)
+		{
+			nx_print("halo-xbox: the graphics engine did not go idle\n");
+			break;
+		}
+		__asm__ __volatile__("pause");
+	}
+}
+
+/* before a crash report shows: the pusher to the end of what it was told,
+then the engine idle, within 200 ms. At a raised IRQL the DPC that serves
+the GPU's traps (pbkit's subprograms, at every frame's end) cannot run, and
+the GPU stops at the next one: no waiting then (shutdown_notification shows
+the console again once it has lowered the IRQL) */
+static void drain_for_console(void)
+{
+	ULONGLONG from = KeQueryPerformanceCounter(), limit = KeQueryPerformanceFrequency() / 5;
+	unsigned long put = (unsigned long)flushed_ptr & 0x03FFFFFFUL;
+
+	if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+		return;
+	while (gpu_get() != put && KeQueryPerformanceCounter() - from < limit)
+		__asm__ __volatile__("pause");
+	while (*(volatile unsigned long *)0xFD400700UL != 0 && KeQueryPerformanceCounter() - from < limit)
+		__asm__ __volatile__("pause");
+}
+
 void nx_gpu_wait_until_idle(void)
 {
 	nx_gpu_flush();
-	pb_wait_until_gr_not_busy();
+	wait_until_graphics_idle();
 }
 
 void nx_gpu_drain(void)
@@ -397,7 +539,7 @@ void nx_gpu_drain(void)
 		}
 		__asm__ __volatile__("pause");
 	}
-	pb_wait_until_gr_not_busy();
+	wait_until_graphics_idle();
 	stat_wait_ticks += KeQueryPerformanceCounter() - waited_from;
 }
 

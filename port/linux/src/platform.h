@@ -113,11 +113,15 @@ const char *platform_save_root(void);
 /* ---------- contiguous ("physical") memory
 
 The Xbox maps physical memory at virtual 0x80000000 + P. The layer reserves
-that window at start-up and hands out page-granular blocks from it, so the
-physical/virtual arithmetic the game and Direct3D rely on keeps working. */
+a window like it at start-up and hands out page-granular blocks from it, so
+the physical/virtual arithmetic the game and Direct3D rely on keeps working.
+The window is at 0x80000000 too unless the build moves it
+(port/include/halo_memory_window.h; Windows 9x). */
 
-#define PLATFORM_CONTIGUOUS_BASE 0x80000000UL
-#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL /* a 128 MB development kit */
+#include "../../include/halo_memory_window.h"
+
+#define PLATFORM_CONTIGUOUS_BASE HALO_WINDOW_BASE
+#define PLATFORM_CONTIGUOUS_SIZE HALO_WINDOW_SIZE
 #define PLATFORM_ANY_PHYSICAL_ADDRESS 0xffffffffUL
 
 /* returns NULL on failure; physical_address places the block exactly */
@@ -125,8 +129,11 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 	unsigned long physical_address, DWORD protect);
 void platform_contiguous_free(void *address);
 BOOL platform_is_contiguous(const void *address);
-#define PLATFORM_PHYSICAL_TO_VIRTUAL(physical) ((void *)((unsigned long)(physical) | PLATFORM_CONTIGUOUS_BASE))
-#define PLATFORM_VIRTUAL_TO_PHYSICAL(address) ((unsigned long)(address) & ~PLATFORM_CONTIGUOUS_BASE)
+/* By mask rather than by the base, so that an address in the console's
+window converts too when this build's is elsewhere: the Data of a map's
+vertex buffer is one until it is registered. */
+#define PLATFORM_PHYSICAL_TO_VIRTUAL(physical) ((void *)HALO_WINDOW_ADDRESS(physical))
+#define PLATFORM_VIRTUAL_TO_PHYSICAL(address) HALO_WINDOW_PHYSICAL(address)
 
 /* ---------- guest memory write tracking (memory_watch.c)
 

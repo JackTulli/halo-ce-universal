@@ -550,6 +550,15 @@ struct shader_transparent_water_definition
 
 static void rasterizer_environment_specular_spot_light_begin(
 	long light_index);
+#ifdef HALO_LIGHT_PIPELINE
+static void rasterizer_environment_light_pipeline_draw(
+	struct shader const *shader,
+	short bitmap_index,
+	long dynamic_triangle_buffer_index,
+	long first_triangle_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer);
+#endif
 
 /* ---------- globals */
 
@@ -575,6 +584,25 @@ void _rasterizer_environment_lightmap_draw(
 		135,
 		global_d3d_device);
 
+#ifdef HALO_LIGHT_PIPELINE
+	/* the light pipeline draws the lightmap and the base map together (the
+	debug drawing modes stay the full pipeline's) */
+	if (rasterizer_light_pipeline() &&
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal)
+	{
+		if (rasterizer_debug_options.draw_environment_lightmaps)
+		{
+			rasterizer_environment_light_pipeline_draw(
+				shader,
+				bitmap_index,
+				dynamic_triangle_buffer_index,
+				first_triangle_index,
+				triangle_count,
+				vertex_buffer);
+		}
+		return;
+	}
+#endif
 	if (rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_vectors)
 	{
 		if (vertex_buffer->type == _rasterizer_vertex_type_environment_compressed)
@@ -1118,6 +1146,13 @@ void _rasterizer_environment_lightmaps_begin(
 		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_diffuse_texture_times_bump_edge) &&
 		rasterizer_debug_options.draw_environment_lightmaps)
 	{
+#ifdef HALO_LIGHT_PIPELINE
+		/* (the light pipeline's lightmap pass has no bump mapping: it never
+		reads the normalization cube map) */
+		if (!rasterizer_light_pipeline() ||
+			rasterizer_debug_options.drawing_mode != _rasterizer_drawing_mode_normal)
+#endif
+		{
 		rasterizer_set_texture_direct(3, global_rasterizer_data->vector_normalization.index, 0);
 		D3DDevice_SetTextureState_Deferred(3, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 		D3DDevice_SetTextureState_Deferred(3, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
@@ -1125,6 +1160,7 @@ void _rasterizer_environment_lightmaps_begin(
 		D3DDevice_SetTextureState_Deferred(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 		D3DDevice_SetTextureState_Deferred(3, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 		D3DDevice_SetTextureState_Deferred(3, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+		}
 
 		D3DDevice_SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
 		D3DDevice_SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_ALL);
@@ -1465,6 +1501,41 @@ void _rasterizer_environment_diffuse_lights_end(
 	return;
 }
 
+#ifdef HALO_LINUX
+/* whether the diffuse light pass draws: the test its callbacks make, read
+when the pass starts. With it off (performance mode, graphics.dynamic_lights
+=false) lights_render_diffuse (object_lights.c) skips each light's surface
+query and dynamic triangles, which would only reach callbacks that return */
+boolean rasterizer_environment_diffuse_lights_drawn(
+	void)
+{
+	return rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal &&
+		rasterizer_debug_options.draw_environment_diffuse_lights;
+}
+#endif
+
+#ifdef HALO_LIGHT_PIPELINE
+/* whether the diffuse texture pass draws: the test its callbacks make. The
+light pipeline has drawn the base maps with the lightmaps, so its pass draws
+nothing, and structure_render_diffuse_texture (structure_render.c) asks
+first instead of walking every surface for a callback that returns */
+boolean rasterizer_environment_diffuse_textures_drawn(
+	void)
+{
+	if (rasterizer_light_pipeline() &&
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal)
+		return FALSE;
+	return (rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal ||
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_overdraw ||
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_specular_mask ||
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_specular_mask_times_bump_color ||
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_specular_mask_times_bump_edge ||
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_diffuse_texture_times_bump_color ||
+		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_diffuse_texture_times_bump_edge) &&
+		rasterizer_debug_options.draw_environment_textures;
+}
+#endif
+
 void _rasterizer_environment_diffuse_textures_end(
 	void)
 {
@@ -1482,6 +1553,10 @@ void _rasterizer_environment_diffuse_textures_begin(
 		global_d3d_device);
 
 	rasterizer_profile_begin(_rasterizer_profile_environment_textures);
+#ifdef HALO_LIGHT_PIPELINE
+	if (!rasterizer_environment_diffuse_textures_drawn())
+		return;
+#endif
 	if ((rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal ||
 		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_overdraw ||
 		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_specular_mask ||
@@ -1534,6 +1609,10 @@ void _rasterizer_environment_diffuse_texture_draw(
 		968,
 		global_d3d_device);
 
+#ifdef HALO_LIGHT_PIPELINE
+	if (!rasterizer_environment_diffuse_textures_drawn())
+		return;
+#endif
 	if ((rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal ||
 		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_overdraw ||
 		rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_specular_mask ||
@@ -2121,6 +2200,17 @@ void _rasterizer_environment_specular_lights_end(
 	rasterizer_profile_end(_rasterizer_profile_environment_specular_lights);
 	return;
 }
+
+#ifdef HALO_LINUX
+/* the same for the specular light pass (performance mode,
+graphics.specular=false), asked by lights_render_specular */
+boolean rasterizer_environment_specular_lights_drawn(
+	void)
+{
+	return rasterizer_debug_options.drawing_mode == _rasterizer_drawing_mode_normal &&
+		rasterizer_debug_options.draw_environment_specular_lights;
+}
+#endif
 
 void _rasterizer_environment_specular_lightmap_end(
 	void)
@@ -3401,3 +3491,432 @@ static void rasterizer_environment_specular_spot_light_begin(
 	}
 	return;
 }
+
+#ifdef HALO_LIGHT_PIPELINE
+/* ---------- the light pipeline (rasterizer.c, rasterizer_light_pipeline)
+
+What the lightmap pass and the diffuse texture pass draw together, in
+passes a card with two texture units and no shaders can draw:
+
+	lightmap * material color * base map        (the frame's depth)
+	+ self-illumination * its color * base map  (added; each lit channel)
+	* primary detail map                        (graphics.detail_maps)
+
+which is the full pipeline's (lightmap * bump + self-illumination) * base *
+detail without the bump, secondary and micro detail maps. An alpha-tested
+surface's holes are in its bump map's alpha, a third texture, so it draws
+the lightmap tested by that first and multiplies by the base map after.
+
+Every pass uses the lightmap pass's vertex shader (16), so that the passes
+which test for equal depth compute the very position the first did: its
+first texture coordinates are the surface's times c[-84].xy, its second
+times c[-84].z, its third the lightmap's. */
+
+static void rasterizer_environment_light_pipeline_set_texture_scale(
+	struct shader const *shader,
+	real first_scale_u,
+	real first_scale_v,
+	real second_scale)
+{
+	real_vector4d texture_transform_constants[3];
+
+	texture_transform_constants[0].i = first_scale_u;
+	texture_transform_constants[0].j = first_scale_v;
+	texture_transform_constants[0].k = second_scale;
+	texture_transform_constants[0].l = 1.0f;
+	texture_transform_constants[1].i = 1.0f;
+	texture_transform_constants[1].j = 0.0f;
+	texture_transform_constants[1].k = 0.0f;
+	texture_transform_constants[1].l = 0.0f;
+	texture_transform_constants[2].i = 0.0f;
+	texture_transform_constants[2].j = 1.0f;
+	texture_transform_constants[2].k = 0.0f;
+	texture_transform_constants[2].l = 0.0f;
+	shader_environment_texture_animation_evaluate(
+		shader,
+		global_frame_parameters.game_time_sec,
+		&texture_transform_constants[1].l,
+		&texture_transform_constants[2].l);
+	IDirect3DDevice8_SetVertexShaderConstant(global_d3d_device, -84, texture_transform_constants, 3);
+	return;
+}
+
+static void rasterizer_environment_light_pipeline_set_texture_stage(
+	short stage,
+	boolean filtered)
+{
+	IDirect3DDevice8_SetTextureStageState(global_d3d_device, stage, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+	IDirect3DDevice8_SetTextureStageState(global_d3d_device, stage, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+	IDirect3DDevice8_SetTextureStageState(
+		global_d3d_device, stage, D3DTSS_MAGFILTER, filtered ? D3DTEXF_LINEAR : D3DTEXF_POINT);
+	IDirect3DDevice8_SetTextureStageState(
+		global_d3d_device, stage, D3DTSS_MINFILTER, filtered ? D3DTEXF_LINEAR : D3DTEXF_POINT);
+	IDirect3DDevice8_SetTextureStageState(
+		global_d3d_device, stage, D3DTSS_MIPFILTER, filtered ? D3DTEXF_LINEAR : D3DTEXF_POINT);
+	return;
+}
+
+/* a pass over what the first pass drew: where the depth is equal, without
+writing depth or alpha, blended as given */
+static void rasterizer_environment_light_pipeline_begin_second_pass(
+	unsigned long source_blend,
+	unsigned long destination_blend)
+{
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHATESTENABLE, FALSE);
+	IDirect3DDevice8_SetRenderState(
+		global_d3d_device,
+		D3DRS_COLORWRITEENABLE,
+		D3DCOLORWRITEENABLE_RED |
+		D3DCOLORWRITEENABLE_GREEN |
+		D3DCOLORWRITEENABLE_BLUE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHABLENDENABLE, TRUE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_SRCBLEND, source_blend);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_DESTBLEND, destination_blend);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_BLENDOP, D3DBLENDOP_ADD);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZFUNC, D3DCMP_EQUAL);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZWRITEENABLE, FALSE);
+	return;
+}
+
+/* back to what _rasterizer_environment_lightmaps_begin set, for the next
+surface's first pass */
+static void rasterizer_environment_light_pipeline_end_second_passes(
+	void)
+{
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_ALL);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHABLENDENABLE, FALSE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZWRITEENABLE, TRUE);
+	return;
+}
+
+/* the first pass's light: the lightmap (texture 2), or what the lightmap
+modes without one put in its place, as a final combiner input */
+static unsigned long rasterizer_environment_light_pipeline_light_input(
+	void)
+{
+	if (rasterizer_globals.lightmap_mode == _rasterizer_lightmap_mode_no_lightmap)
+	{
+		/* the vertex shader's light, from the constants the full pass sets */
+		real_vector4d lightmap_mode_constants[4];
+
+		lightmap_mode_constants[0].i = 0.5f;
+		lightmap_mode_constants[0].j = 0.6f;
+		lightmap_mode_constants[0].k = 0.6f;
+		lightmap_mode_constants[0].l = 1.0f;
+		lightmap_mode_constants[1].i = 0.0f;
+		lightmap_mode_constants[1].j = 0.0f;
+		lightmap_mode_constants[1].k = 1.0f;
+		lightmap_mode_constants[1].l = 0.1f;
+		lightmap_mode_constants[2].i = 0.9f;
+		lightmap_mode_constants[2].j = 0.9f;
+		lightmap_mode_constants[2].k = 0.8f;
+		lightmap_mode_constants[2].l = 0.0f;
+		lightmap_mode_constants[3].i = 0.1f;
+		lightmap_mode_constants[3].j = 0.1f;
+		lightmap_mode_constants[3].k = 0.3f;
+		lightmap_mode_constants[3].l = 0.0f;
+		IDirect3DDevice8_SetVertexShaderConstant(global_d3d_device, -81, lightmap_mode_constants, 4);
+		return 0x04;
+	}
+	if (rasterizer_globals.lightmap_mode == _rasterizer_lightmap_mode_fullbright ||
+		rasterizer_globals.lightmap_mode == _rasterizer_lightmap_mode_lightmap_bitmap)
+	{
+		/* final combiner constant 1, the ambient color */
+		return 0x02;
+	}
+	return 0x0A;
+}
+
+static void rasterizer_environment_light_pipeline_draw(
+	struct shader const *shader,
+	short bitmap_index,
+	long dynamic_triangle_buffer_index,
+	long first_triangle_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer)
+{
+	static boolean detail_maps_checked = FALSE;
+	static boolean detail_maps = FALSE;
+	struct shader_environment_definition *shader_environment;
+	struct shader_environment_diffuse_properties const *diffuse;
+	struct shader_environment_self_illumination_properties const *illumination;
+	struct vertex_buffer const *lightmap_vertex_buffer =
+		vertex_buffer + !rasterizer_environment_globals.lightmap_missing;
+	union point2d base_map_size;
+	unsigned long light_input;
+	unsigned long lightmap_texture_mode =
+		rasterizer_environment_globals.lightmap_missing ? 0 : 0x00000400;
+	boolean second_passes = FALSE;
+
+	match_assert(
+		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_environment.c",
+		347,
+		shader);
+	match_assert(
+		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_environment.c",
+		348,
+		vertex_buffer);
+	if (!detail_maps_checked)
+	{
+		detail_maps = halo_graphics_option("detail_maps") != 0;
+		detail_maps_checked = TRUE;
+	}
+	shader_environment = (struct shader_environment_definition *)
+		shader_get_and_verify_type((struct shader *)shader, _shader_type_environment);
+	diffuse = &shader_environment->environment.diffuse;
+	illumination = &shader_environment->environment.self_illumination;
+	rasterizer_set_vertex_shader_permutation(
+		16,
+		vertex_buffer->type,
+		shader_get_vertex_shader_permutation(shader));
+	light_input = rasterizer_environment_light_pipeline_light_input();
+
+	if (!(TEST_FLAG(
+			shader_environment->environment.flags,
+			_shader_environment_alpha_tested_bit) &&
+		rasterizer_debug_options.alpha_testing_enabled))
+	{
+		/* one pass: light * material color * base map. Texture 0 is the
+		base map, texture 2 the lightmap; the alpha is the product of
+		theirs, so that two texture units which each modulate compute all
+		of it */
+		IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHATESTENABLE, FALSE);
+		base_map_size = *rasterizer_set_texture(0, 0, 1, diffuse->base_map.index, bitmap_index);
+		rasterizer_environment_light_pipeline_set_texture_stage(0, TRUE);
+		rasterizer_environment_light_pipeline_set_texture_scale(shader, 1.0f, 1.0f, 1.0f);
+
+		csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+		pixel_shader.texture_modes = lightmap_texture_mode | 0x00000001;
+		pixel_shader.combiner_count = 1;
+		pixel_shader.alpha_inputs[0] = 0x1A180000;
+		pixel_shader.alpha_outputs[0] = 0x000000C0;
+		pixel_shader.final_combiner_inputs_abcd = (light_input << 24) | 0x000F0000;
+		pixel_shader.final_combiner_inputs_efg = 0x08011C00;
+		/* (the material color tints the lightmap alone: the full pass
+		leaves it out of the modes that draw without one) */
+		pixel_shader.final_combiner_constant_0 =
+			light_input == 0x0A ? real_rgb_color_to_pixel32(&diffuse->material_color) : 0x00FFFFFF;
+		pixel_shader.final_combiner_constant_1 =
+			real_rgb_color_to_pixel32(&rasterizer_environment_globals.local_lightmap_ambient_color);
+		rasterizer_set_pixel_shader(&pixel_shader);
+		rasterizer_draw_dynamic_triangles_static_vertices2(
+			dynamic_triangle_buffer_index,
+			first_triangle_index,
+			triangle_count,
+			vertex_buffer,
+			lightmap_vertex_buffer);
+	}
+	else
+	{
+		long alpha_map_index = TEST_FLAG(
+			shader_environment->environment.flags,
+			_shader_environment_bump_map_is_specular_mask_bit)
+				? NONE
+				: diffuse->bump_map.index;
+
+		/* light * material color, tested by the bump map's alpha (asked
+		for as an ordinary map: the pipeline has bump mapping off, which
+		would hand out the default bump map and its alpha) */
+		IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHATESTENABLE, TRUE);
+		rasterizer_set_texture(0, 0, alpha_map_index != NONE ? 1 : 3, alpha_map_index, bitmap_index);
+		rasterizer_environment_light_pipeline_set_texture_stage(0, TRUE);
+		rasterizer_environment_light_pipeline_set_texture_scale(
+			shader,
+			diffuse->runtime_bump_map_scale.i,
+			diffuse->runtime_bump_map_scale.j,
+			1.0f);
+
+		csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+		pixel_shader.texture_modes = lightmap_texture_mode | 0x00000001;
+		pixel_shader.combiner_count = 1;
+		pixel_shader.final_combiner_inputs_abcd = (light_input << 24) | 0x00010000;
+		pixel_shader.final_combiner_inputs_efg = 0x00001800;
+		pixel_shader.final_combiner_constant_0 =
+			light_input == 0x0A ? real_rgb_color_to_pixel32(&diffuse->material_color) : 0x00FFFFFF;
+		pixel_shader.final_combiner_constant_1 =
+			real_rgb_color_to_pixel32(&rasterizer_environment_globals.local_lightmap_ambient_color);
+		rasterizer_set_pixel_shader(&pixel_shader);
+		rasterizer_draw_dynamic_triangles_static_vertices2(
+			dynamic_triangle_buffer_index,
+			first_triangle_index,
+			triangle_count,
+			vertex_buffer,
+			lightmap_vertex_buffer);
+
+		/* then * base map, as the diffuse texture pass multiplies */
+		rasterizer_environment_light_pipeline_begin_second_pass(D3DBLEND_DESTCOLOR, D3DBLEND_ZERO);
+		second_passes = TRUE;
+		base_map_size = *rasterizer_set_texture(0, 0, 1, diffuse->base_map.index, bitmap_index);
+		rasterizer_environment_light_pipeline_set_texture_stage(0, TRUE);
+		rasterizer_environment_light_pipeline_set_texture_scale(shader, 1.0f, 1.0f, 1.0f);
+
+		csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+		pixel_shader.texture_modes = 0x00000001;
+		pixel_shader.combiner_count = 1;
+		pixel_shader.final_combiner_inputs_abcd = 0x00000008;
+		rasterizer_set_pixel_shader(&pixel_shader);
+		rasterizer_draw_dynamic_triangles_static_vertices2(
+			dynamic_triangle_buffer_index,
+			first_triangle_index,
+			triangle_count,
+			vertex_buffer,
+			lightmap_vertex_buffer);
+	}
+	if (rasterizer_debug_options.statistics_mode == _rasterizer_statistics_mode_enabled)
+	{
+		rasterizer_frame_statistics.lightmap_dynamic_draw_count++;
+		rasterizer_frame_statistics.lightmap_dynamic_triangle_count += triangle_count;
+		rasterizer_frame_statistics.lightmap_dynamic_vertex_count +=
+			rasterizer_frame_statistics_count_dynamic_vertices(
+				dynamic_triangle_buffer_index,
+				first_triangle_index,
+				triangle_count);
+	}
+
+	if (illumination->map.index != NONE)
+	{
+		/* self-illumination, added: the map's red channel lights the
+		primary color, its green the secondary, its blue the plasma's (the
+		plasma's moving band is not drawn: its "off" color is). A pass for
+		each channel whose color is not black, of the map's channel *
+		color * base map; texture 0 is the map, texture 1 the base map */
+		unsigned long const channel_masks[3] = { 0x00FF0000, 0x0000FF00, 0x000000FF };
+		real_rgb_color colors[3];
+		real primary_value;
+		real secondary_value;
+		short channel;
+		boolean begun = FALSE;
+
+		match_assert(
+			"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_environment.c",
+			448,
+			illumination->primary_animation_period!=0.0f);
+		match_assert(
+			"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_environment.c",
+			449,
+			illumination->secondary_animation_period!=0.0f);
+
+		primary_value =
+			periodic_function_evaluate(
+				illumination->primary_animation_function,
+				(global_frame_parameters.game_time_sec + illumination->primary_animation_phase) /
+					illumination->primary_animation_period);
+		secondary_value =
+			periodic_function_evaluate(
+				illumination->secondary_animation_function,
+				(global_frame_parameters.game_time_sec + illumination->secondary_animation_phase) /
+					illumination->secondary_animation_period);
+		scale_vector3d(
+			(real_vector3d const *)&illumination->primary_off_color,
+			1.0f - primary_value,
+			(real_vector3d *)&colors[0]);
+		scale_vector3d(
+			(real_vector3d const *)&illumination->secondary_off_color,
+			1.0f - secondary_value,
+			(real_vector3d *)&colors[1]);
+		point_from_line3d(
+			(real_point3d const *)&colors[0],
+			(real_vector3d const *)&illumination->primary_on_color,
+			primary_value,
+			(real_point3d *)&colors[0]);
+		point_from_line3d(
+			(real_point3d const *)&colors[1],
+			(real_vector3d const *)&illumination->secondary_on_color,
+			secondary_value,
+			(real_point3d *)&colors[1]);
+		colors[2] = illumination->plasma_off_color;
+
+		for (channel = 0; channel < 3; channel++)
+		{
+			unsigned long color = real_rgb_color_to_pixel32(&colors[channel]) & 0x00FFFFFF;
+
+			if (!color)
+				continue;
+			if (!begun)
+			{
+				rasterizer_environment_light_pipeline_begin_second_pass(D3DBLEND_ONE, D3DBLEND_ONE);
+				second_passes = TRUE;
+				rasterizer_set_texture(0, 0, 0, illumination->map.index, bitmap_index);
+				rasterizer_environment_light_pipeline_set_texture_stage(
+					0,
+					!TEST_FLAG(
+						illumination->flags,
+						_shader_environment_self_illumination_unfiltered_bit));
+				rasterizer_set_texture(1, 0, 1, diffuse->base_map.index, bitmap_index);
+				rasterizer_environment_light_pipeline_set_texture_stage(1, TRUE);
+				rasterizer_environment_light_pipeline_set_texture_scale(
+					shader,
+					illumination->map_scale,
+					illumination->map_scale,
+					1.0f);
+				begun = TRUE;
+			}
+
+			csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+			pixel_shader.texture_modes = 0x00000021;
+			pixel_shader.combiner_count = 1;
+			pixel_shader.constant_0[0] = channel_masks[channel];
+			pixel_shader.rgb_inputs[0] = 0x08010000;
+			pixel_shader.rgb_outputs[0] = 0x000020C0;
+			pixel_shader.final_combiner_inputs_abcd = 0x0C0F0000;
+			pixel_shader.final_combiner_inputs_efg = 0x09010000;
+			pixel_shader.final_combiner_constant_0 = color;
+			rasterizer_set_pixel_shader(&pixel_shader);
+			rasterizer_draw_dynamic_triangles_static_vertices2(
+				dynamic_triangle_buffer_index,
+				first_triangle_index,
+				triangle_count,
+				vertex_buffer,
+				lightmap_vertex_buffer);
+		}
+	}
+
+	if (detail_maps &&
+		diffuse->primary_detail_map.index != NONE &&
+		(diffuse->detail_map_function == _detail_map_function_double_biased_multiply ||
+			diffuse->detail_map_function == _detail_map_function_multiply))
+	{
+		/* the primary detail map, multiplied in (twice it for "double
+		biased multiply": destination * source + source * destination) */
+		union point2d detail_map_size;
+		real_vector2d detail_map_scale;
+
+		rasterizer_environment_light_pipeline_begin_second_pass(
+			D3DBLEND_DESTCOLOR,
+			diffuse->detail_map_function == _detail_map_function_double_biased_multiply
+				? D3DBLEND_SRCCOLOR
+				: D3DBLEND_ZERO);
+		second_passes = TRUE;
+		detail_map_size = *rasterizer_set_texture(0, 0, 2, diffuse->primary_detail_map.index, bitmap_index);
+		rasterizer_environment_light_pipeline_set_texture_stage(0, TRUE);
+		detail_map_scale.i = detail_map_scale.j = diffuse->primary_detail_map_scale;
+		if (TEST_FLAG(diffuse->flags, _shader_environment_diffuse_rescale_detail_maps_bit))
+		{
+			detail_map_scale.i *= (real)base_map_size.x / (real)detail_map_size.x;
+			detail_map_scale.j *= (real)base_map_size.y / (real)detail_map_size.y;
+		}
+		rasterizer_environment_light_pipeline_set_texture_scale(
+			shader,
+			detail_map_scale.i,
+			detail_map_scale.j,
+			1.0f);
+
+		csmemset(&pixel_shader, 0, sizeof(pixel_shader));
+		pixel_shader.texture_modes = 0x00000001;
+		pixel_shader.combiner_count = 1;
+		pixel_shader.final_combiner_inputs_abcd = 0x00000008;
+		rasterizer_set_pixel_shader(&pixel_shader);
+		rasterizer_draw_dynamic_triangles_static_vertices2(
+			dynamic_triangle_buffer_index,
+			first_triangle_index,
+			triangle_count,
+			vertex_buffer,
+			lightmap_vertex_buffer);
+	}
+
+	if (second_passes)
+		rasterizer_environment_light_pipeline_end_second_passes();
+	return;
+}
+#endif

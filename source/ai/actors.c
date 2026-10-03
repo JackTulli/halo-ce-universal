@@ -729,6 +729,17 @@ static void actor_verify_unit_activation(
 	return;
 }
 
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+/* the console: nothing. The check runs for every actor every tick (from
+actor_set_dormant) and only logs an inconsistency (error()); the retail
+game has neither of its messages */
+void actor_verify_activation(
+	long actor_index)
+{
+	return;
+}
+
+#else
 void actor_verify_activation(
 	long actor_index)
 {
@@ -771,6 +782,7 @@ void actor_verify_activation(
 
 	return;
 }
+#endif
 
 void actor_detach_from_unit(
 	long actor_index)

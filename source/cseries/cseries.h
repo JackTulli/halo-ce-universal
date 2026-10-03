@@ -190,6 +190,10 @@ char *strnlwr(char *string, long n);
 char *strupr(char *string);
 char *strlwr(char *string);
 char *csprintf(char *buffer, char *format, ...);
+#ifdef HALO_XBOX
+/* the console: a failed check is the unlikely path, warnings included */
+__attribute__((cold))
+#endif
 void display_assert(char *information, char *file, long line, boolean fatal);
 long csmemcmp(const void *p1, const void *p2, unsigned long size);
 void *csmemmove(void *destination, const void *source, unsigned long size);
@@ -209,6 +213,14 @@ unsigned long string_hash(char const *string);
 
 /* ---------- prototypes/CSERIES_WINDOWS.C */
 
+#if defined(HALO_XBOX) && !defined(HALO_RELEASE)
+/* the console's checked build: system_exit never returns (it ends in
+halt_and_catch_fire), so each failed assertion's block moves out of the way
+of the code that passes it (the 2026-10-01 audit: 71 KB less code). A release
+build returns from it for a skipped assertion. Not the computers' builds,
+whose profiles (PGO) would no longer match the code */
+__declspec(noreturn)
+#endif
 void system_exit(long code);
 #ifdef HALO_RELEASE
 /* set by display_assert when a release build skips a fatal assertion */
@@ -217,6 +229,10 @@ extern __thread boolean display_assert_skipped;
 
 /* ---------- prototypes/MAIN.C */
 
+#ifdef HALO_XBOX
+/* never returns, in any build (main.c) */
+__declspec(noreturn)
+#endif
 void halt_and_catch_fire(void);
 
 /* ---------- prototypes/DEBUG_MEMORY.C */
@@ -270,6 +286,13 @@ void stack_walk_disregard_symbol_names(boolean disregard);
 #define strlen csstrlen
 #define strcpy csstrcpy
 #define memcpy csmemcpy
+#ifdef HALO_XBOX
+/* the console: copies and fills inline, a constant size as moves (the
+2026-10-01 audit: 726 call sites, each a call through three checks to
+memcpy), and the rest straight to the C library's (nx_string.c) */
+#define csmemcpy(destination, source, size) __builtin_memcpy((destination), (source), (size))
+#define csmemset(buffer, c, size) __builtin_memset((buffer), (int)(c), (size))
+#endif
 
 #define match_malloc(file, line, size) debug_malloc(size, FALSE, MATCH_FILE(file), MATCH_LINE(line))
 #define match_free(file, line, ptr) debug_free(ptr, MATCH_FILE(file), MATCH_LINE(line))
@@ -322,6 +345,19 @@ extern const union real_rgb_color *global_real_rgb_violet;
 
 /* ---------- public code */
 
+#ifdef HALO_LINUX
+/* the x87 FISTP the retail asm rounds floats to integers with: round to
+nearest under the control word (real_math_reset_precision) */
+#ifdef HALO_XBOX
+/* the console: lrint of a double is a bare fld/fistp, where rint plus the
+cast is a call to the C library's rint and two control word reloads for
+the truncating cast. Not lrintf, which rounds under SSE's MXCSR instead */
+#define halo_fistp(x) __builtin_lrint((double)(x))
+#else
+#define halo_fistp(x) ((long)__builtin_rint((double)(x)))
+#endif
+#endif
+
 __inline long fast_ftol(
 	real value)
 {
@@ -329,7 +365,7 @@ __inline long fast_ftol(
 
 #ifdef HALO_LINUX
 	/* FISTP: round to nearest under the default control word */
-	result = (long)__builtin_rint((double)value);
+	result = halo_fistp(value);
 #else
 	__asm
 	{

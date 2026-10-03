@@ -63,6 +63,7 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#define HALO_DATA_C /* (data.h: the real datum_get here) */
 #include "data.h"
 
 /* ---------- constants */

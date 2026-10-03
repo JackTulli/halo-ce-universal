@@ -4,6 +4,14 @@ WIN32_NET.C
 The socket half of port/linux/src/posix.h for Windows (the Linux version is
 posix_net.c). The Xbox's Winsock and Windows' share option numbers and error
 codes, so this passes nearly everything straight through.
+
+Windows 98/ME (HALO_WIN9X) has Winsock 2 but none of what came after it:
+sockets come from socket() (WSASocketW's flag against inheritance is
+Windows 7's, and refused), names are looked up with gethostbyname, this
+machine's address is the one a UDP socket gets when it is connected
+towards the internet (no sending is involved; IP Helper's adapter list is
+XP's), and random bytes come from CryptoAPI, loaded at run time, or failing
+that from a hash of what varies between machines and moments.
 */
 
 /* select() takes as many sockets as the Linux version (FD_SETSIZE) */
@@ -12,8 +20,13 @@ codes, so this passes nearly everything straight through.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#ifdef HALO_WIN9X
+#include <wincrypt.h>
+#include <stdio.h>
+#else
 #include <iphlpapi.h>
 #include <bcrypt.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,6 +81,13 @@ int posix_socket(int family, int type, int protocol)
 	SOCKET result;
 
 	start_winsock();
+#ifdef HALO_WIN9X
+	/* (98/ME report no ICMP port unreachable on a UDP socket: Windows 2000
+	began that, and SIO_UDP_CONNRESET with it) */
+	result = socket(family, type, protocol);
+	if (result == INVALID_SOCKET)
+		return fail();
+#else
 	result = WSASocketW(family, type, protocol, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
 	if (result == INVALID_SOCKET)
 		return fail();
@@ -82,6 +102,7 @@ int posix_socket(int family, int type, int protocol)
 
 		WSAIoctl(result, SIO_UDP_CONNRESET, &report, sizeof(report), NULL, 0, &returned, NULL, NULL);
 	}
+#endif
 	last_error = 0;
 	return from_socket(result);
 }
@@ -281,6 +302,57 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 	return result;
 }
 
+#ifdef HALO_WIN9X
+/* the address of the interface the default route leaves by (connecting a
+UDP socket sends nothing), else the first the host name resolves to (a
+network without a gateway) */
+posix_ulong posix_local_ipv4_address(void)
+{
+	struct sockaddr_in remote, local;
+	int length = sizeof(local);
+	posix_ulong result = 0;
+	SOCKET probe;
+	char name[256];
+
+	start_winsock();
+	probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (probe != INVALID_SOCKET)
+	{
+		memset(&remote, 0, sizeof(remote));
+		remote.sin_family = AF_INET;
+		/* (an address of the internet's, never sent to: 192.0.2.1 is
+		RFC 5737's documentation network) */
+		remote.sin_addr.s_addr = htonl(0xC0000201UL);
+		remote.sin_port = htons(9);
+		memset(&local, 0, sizeof(local));
+		if (connect(probe, (struct sockaddr *)&remote, sizeof(remote)) == 0 &&
+			getsockname(probe, (struct sockaddr *)&local, &length) == 0 &&
+			local.sin_addr.s_addr != htonl(INADDR_ANY) && local.sin_addr.s_addr != htonl(INADDR_LOOPBACK))
+		{
+			result = local.sin_addr.s_addr;
+		}
+		closesocket(probe);
+	}
+	if (!result && gethostname(name, sizeof(name)) == 0)
+	{
+		struct hostent *host = gethostbyname(name);
+		int index;
+
+		for (index = 0; host && host->h_addrtype == AF_INET && host->h_addr_list[index]; index++)
+		{
+			unsigned long address;
+
+			memcpy(&address, host->h_addr_list[index], sizeof(address));
+			if (address != htonl(INADDR_LOOPBACK) && address != htonl(INADDR_ANY))
+			{
+				result = address;
+				break;
+			}
+		}
+	}
+	return result;
+}
+#else
 posix_ulong posix_local_ipv4_address(void)
 {
 	ULONG size = 16 * 1024;
@@ -295,16 +367,25 @@ posix_ulong posix_local_ipv4_address(void)
 		if (!adapters)
 			return 0;
 		status = GetAdaptersAddresses(AF_INET,
-			GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, NULL, adapters, &size);
+			GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS, NULL,
+			adapters, &size);
 	}
 	while (status == ERROR_BUFFER_OVERFLOW);
 	if (status == NO_ERROR)
 	{
+		/* an adapter with a gateway first (the one the network and the
+		internet are behind): a virtual machine's host-only adapter (VirtualBox,
+		192.168.56.1) comes up first in the list and has none */
+		int pass;
+
+		for (pass = 0; pass < 2 && !result; pass++)
 		for (adapter = adapters; adapter && !result; adapter = adapter->Next)
 		{
 			IP_ADAPTER_UNICAST_ADDRESS *address;
 
 			if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+				continue;
+			if (pass == 0 && !adapter->FirstGatewayAddress)
 				continue;
 			for (address = adapter->FirstUnicastAddress; address; address = address->Next)
 			{
@@ -321,7 +402,103 @@ posix_ulong posix_local_ipv4_address(void)
 	free(adapters);
 	return result;
 }
+#endif
 
+/* as on Linux: the link is an adapter with an address */
+int posix_network_link_up(void)
+{
+	return posix_local_ipv4_address() != 0;
+}
+
+#ifdef HALO_WIN9X
+/* p2p_crypto.c */
+void p2p_sha256(const void *data, int size, unsigned char *digest);
+
+/* CryptoAPI's generator (95 OSR2 with Internet Explorer 3.02, 98, ME); a
+hash of the clocks, the cursor, the memory and the process otherwise, chained
+from one call to the next */
+void posix_random_bytes(void *buffer, posix_ulong size)
+{
+	typedef BOOL (WINAPI *acquire_function)(HCRYPTPROV *provider, LPCSTR container, LPCSTR name, DWORD type,
+		DWORD flags);
+	typedef BOOL (WINAPI *generate_function)(HCRYPTPROV provider, DWORD size, BYTE *buffer);
+	static LONG looked;
+	static HCRYPTPROV provider;
+	static generate_function volatile generate;
+	static unsigned char chain[16];
+	static LONG counter;
+	unsigned char *bytes = buffer;
+	generate_function ready;
+
+	if (!InterlockedExchange(&looked, 1))
+	{
+		HMODULE advapi = LoadLibraryA("advapi32.dll");
+		acquire_function acquire = advapi ? (acquire_function)GetProcAddress(advapi, "CryptAcquireContextA") : NULL;
+		generate_function found = advapi ? (generate_function)GetProcAddress(advapi, "CryptGenRandom") : NULL;
+
+		/* (published only with the provider acquired: a thread here in the
+		meantime takes the hash below) */
+		if (acquire && found && acquire(&provider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+			InterlockedExchangePointer((PVOID volatile *)&generate, (PVOID)found);
+	}
+	ready = generate;
+	if (ready && ready(provider, (DWORD)size, bytes))
+		return;
+	while (size)
+	{
+		struct
+		{
+			unsigned char chain[16];
+			LONG counter;
+			unsigned long long cycles;
+			LARGE_INTEGER performance;
+			FILETIME time;
+			DWORD ticks, process, thread;
+			POINT cursor;
+			MEMORYSTATUS memory;
+			const void *stack;
+		} entropy;
+		unsigned char digest[32];
+		posix_ulong count = size < 16 ? size : 16;
+
+		memset(&entropy, 0, sizeof(entropy));
+		memcpy(entropy.chain, chain, sizeof(chain));
+		entropy.counter = InterlockedIncrement(&counter);
+		entropy.cycles = __builtin_ia32_rdtsc();
+		QueryPerformanceCounter(&entropy.performance);
+		GetSystemTimeAsFileTime(&entropy.time);
+		entropy.ticks = GetTickCount();
+		entropy.process = GetCurrentProcessId();
+		entropy.thread = GetCurrentThreadId();
+		GetCursorPos(&entropy.cursor);
+		entropy.memory.dwLength = sizeof(entropy.memory);
+		GlobalMemoryStatus(&entropy.memory);
+		entropy.stack = &entropy;
+		p2p_sha256(&entropy, (int)sizeof(entropy), digest);
+		/* half the digest out, the other half, never seen, on to the next */
+		memcpy(bytes, digest, count);
+		memcpy(chain, digest + 16, 16);
+		bytes += count;
+		size -= count;
+	}
+}
+
+posix_ulong posix_resolve_ipv4(const char *host)
+{
+	unsigned long address;
+	struct hostent *entry;
+
+	start_winsock();
+	address = inet_addr(host);
+	if (address != INADDR_NONE || !strcmp(host, "255.255.255.255"))
+		return address;
+	entry = gethostbyname(host);
+	if (!entry || entry->h_addrtype != AF_INET || !entry->h_addr_list[0])
+		return 0;
+	memcpy(&address, entry->h_addr_list[0], sizeof(address));
+	return address;
+}
+#else
 void posix_random_bytes(void *buffer, posix_ulong size)
 {
 	BCryptGenRandom(NULL, buffer, size, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
@@ -343,3 +520,4 @@ posix_ulong posix_resolve_ipv4(const char *host)
 	freeaddrinfo(results);
 	return address;
 }
+#endif

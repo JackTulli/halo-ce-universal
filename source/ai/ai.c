@@ -329,6 +329,13 @@ enum
    and the function comes out six bytes short of January's 327. */
 #define LINE_OF_FIRE_PILL_SPHERE_RADIUS(pill) ((pill).width)
 
+#ifdef HALO_XBOX
+/* the console's prop index for an encounter friend's line-of-fire pill: not
+looked up yet (ai_test_line_of_fire finds it for the pill that blocks). No
+datum index is -2, whose absolute index is negative. */
+#define LINE_OF_FIRE_PROP_NOT_LOOKED_UP (-2L)
+#endif
+
 /* ---------- structures */
 
 struct ai_spatial_effect
@@ -2171,7 +2178,14 @@ static short ai_find_line_of_fire_friend_pills(
 			{
 				ai_generate_line_of_fire_pill(
 					friend->meta.unit_index,
+#ifdef HALO_XBOX
+					/* a walk of the actor's props for every friend on every
+					burst tick, for an index only the blocking pill's reader
+					uses (the ballistic test none) */
+					LINE_OF_FIRE_PROP_NOT_LOOKED_UP,
+#else
 					prop_get_active_by_unit_index(actor_index, friend->meta.unit_index),
+#endif
 					&pills[pill_count]);
 				pill_count++;
 			}
@@ -2266,6 +2280,16 @@ boolean ai_test_line_of_fire(
 			{
 				line_of_fire = FALSE;
 				blocking_prop_index = pills[pill_index].prop_index;
+#ifdef HALO_XBOX
+				/* the same lookup the pill used to make (props do not change in
+				between), swarm members and NONE included */
+				if (blocking_prop_index == LINE_OF_FIRE_PROP_NOT_LOOKED_UP)
+				{
+					blocking_prop_index = blocking_prop_index_reference ?
+						prop_get_active_by_unit_index(actor_index, pills[pill_index].unit_index) :
+						NONE;
+				}
+#endif
 				pills[pill_index].hit = TRUE;
 				break;
 			}

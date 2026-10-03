@@ -28,27 +28,46 @@ buffer, so streams still drain at their real rate.
 
 audio.volume sets the master volume (default 1.0); audio.enabled = false
 skips opening a device (port_config.c).
+
+The console and Windows 98/ME (HALO_FIXED_MIXER) mix in integers instead,
+below; on 98/ME the output is DirectSound or the wave mapper
+(port/win9x/platform/w9x_audio.c) at the rate the device took
+(audio.output, audio.rate).
 */
 
 #include "platform.h"
 #include "port_config.h"
-#ifdef HALO_XBOX
+#if defined(HALO_XBOX) || defined(HALO_WIN9X)
+/* the console's integer mixer: the console, and Windows 98/ME's Pentium
+IIs and IIIs */
+#define HALO_FIXED_MIXER 1
+#endif
+#ifdef HALO_FIXED_MIXER
 /* the console: the same mixer, output through nxdk's AC97 path
-(port/xbox/src/nx_audio.c); its C runtime's math is the double one */
+(port/xbox/src/nx_audio.c); its C runtime's math is the double one, as on
+Windows 98/ME (nxdk's PDCLib) */
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsound_mix_kernels.h"
 #define sqrtf(x) __builtin_sqrtf(x)
 #define fabsf(x) __builtin_fabsf(x)
 #define powf(x, y) ((float)pow((double)(x), (double)(y)))
 #define cosf(x) ((float)cos((double)(x)))
+#ifdef HALO_WIN9X
+/* (whatever C runtime the 9x build has may define its own) */
+#define tanhf dsound_tanhf
+#endif
 static float tanhf(float x)
 {
 	float e = (float)exp(2.0 * (double)x);
 
 	return 1.0f - 2.0f / (e + 1.0f);
 }
+#ifdef HALO_WIN9X
+#include "../../win9x/platform/w9x_backend.h"
+#endif
 #else
 #include "sdl_platform.h"
 
@@ -60,7 +79,13 @@ static float tanhf(float x)
 #include <unistd.h>
 #endif
 
+#ifdef HALO_WIN9X
+/* the rate the device took (w9x_audio_open): 44.1, 48 or 22.05 kHz */
+static unsigned long output_rate = 48000;
+#define OUTPUT_RATE output_rate
+#else
 #define OUTPUT_RATE 48000
+#endif
 #define OUTPUT_CHANNELS 2
 #ifdef HALO_XBOX
 /* the game attaches four at most (sound_dsound_xbox.c,
@@ -70,7 +95,14 @@ its 81 streams */
 #else
 #define MAXIMUM_STREAM_PACKETS 64
 #endif
+#ifdef HALO_FIXED_MIXER
+/* the mixer holds its lock for a chunk, which the game's sound calls wait
+behind: a quarter of a 1024-frame buffer at a time (the same mixing, a
+quarter of the wait) */
+#define MIX_CHUNK_FRAMES 256
+#else
 #define MIX_CHUNK_FRAMES 1024
+#endif
 
 #define XBOX_ADPCM_BLOCK_BYTES 36
 #define XBOX_ADPCM_BLOCK_SAMPLES 64
@@ -119,7 +151,7 @@ struct sdl_stream
 	unsigned long packet_count;
 	/* position inside the head packet, in source frames */
 	double cursor;
-#ifdef HALO_XBOX
+#ifdef HALO_FIXED_MIXER
 	/* the console's mixer keeps it in whole frames and 1/65536ths */
 	unsigned long cursor_frame, cursor_fraction;
 #endif
@@ -128,6 +160,12 @@ struct sdl_stream
 	/* gains the mixer is ramping from, to avoid clicks */
 	float current_left, current_right;
 	BOOL gains_valid;
+	/* the gains it ramps to, as voice_gains last worked them out: kept
+	until a setter of this stream marks them dirty, or the listener moves
+	(listener_generation) */
+	float target_left, target_right;
+	BOOL gains_dirty;
+	unsigned long gains_generation;
 };
 
 static pthread_mutex_t mixer_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -135,6 +173,23 @@ static struct sdl_stream *streams;
 /* for the console's diagnostics: streams made, packets taken, and the
 frames the mixer last produced with any voice playing */
 static unsigned long streams_created, packets_taken, frames_with_voices;
+#ifdef HALO_XBOX
+/* and since the output thread's last look (dsound_work_statistics): frames
+mixed, voice frames among them, the most voices in one chunk, and the
+processor's cycles spent decoding packets */
+static struct
+{
+	unsigned long frames;
+	unsigned long voice_frames;
+	unsigned long voices_peak;
+	unsigned long long decode_cycles;
+} work;
+
+static unsigned long long cycle_count(void)
+{
+	return __builtin_ia32_rdtsc();
+}
+#endif
 
 /* the listener, in DirectSound's left-handed +y up space */
 static struct
@@ -147,6 +202,9 @@ static struct
 } listener = { { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, 1.0f, 1.0f };
 
 static float master_volume = 1.0f;
+/* moves on with every change to the listener or the master volume, which
+every voice's gains depend on */
+static unsigned long listener_generation = 1;
 
 static float gain_from_millibels(LONG millibels)
 {
@@ -174,34 +232,86 @@ static const int ima_step_table[89] =
 	32767,
 };
 
-static int ima_expand(int nibble, int *predictor, int *index)
-{
-	int step = ima_step_table[*index];
-	int difference = step >> 3;
+/* a nibble's step, as tables: for each step index and nibble, the
+difference it adds to the predictor and the step index it leads to,
+clamped (built once, in audio_start). The decoder then does a table look-up
+for each, where it tested the nibble's four bits and clamped the index:
+the same sums and clamps, at a third of the cost, on the game's thread,
+which decodes every packet it submits */
+#define ADPCM_STEP_INDICES 89
+static int adpcm_difference[ADPCM_STEP_INDICES * 16];
+static unsigned char adpcm_next_index[ADPCM_STEP_INDICES * 16];
 
-	if (nibble & 1) difference += step >> 2;
-	if (nibble & 2) difference += step >> 1;
-	if (nibble & 4) difference += step;
-	if (nibble & 8) difference = -difference;
-	*predictor += difference;
-	if (*predictor > 32767) *predictor = 32767;
-	if (*predictor < -32768) *predictor = -32768;
-	*index += ima_index_table[nibble];
-	if (*index < 0) *index = 0;
-	if (*index > 88) *index = 88;
-	return *predictor;
+static void adpcm_tables_build(void)
+{
+	int index, nibble;
+
+	for (index = 0; index < ADPCM_STEP_INDICES; index++)
+	{
+		for (nibble = 0; nibble < 16; nibble++)
+		{
+			int step = ima_step_table[index];
+			int difference = step >> 3;
+			int next = index + ima_index_table[nibble];
+
+			if (nibble & 1) difference += step >> 2;
+			if (nibble & 2) difference += step >> 1;
+			if (nibble & 4) difference += step;
+			if (nibble & 8) difference = -difference;
+			if (next < 0) next = 0;
+			if (next > 88) next = 88;
+			adpcm_difference[index * 16 + nibble] = difference;
+			adpcm_next_index[index * 16 + nibble] = (unsigned char)next;
+		}
+	}
+}
+
+/* one nibble: the predictor moves and is clamped, and the step index (as
+its row in the tables, index * 16) moves on */
+static inline short adpcm_expand(unsigned long nibble, int *predictor, unsigned long *row)
+{
+	unsigned long entry = *row + nibble;
+	int value = *predictor + adpcm_difference[entry];
+
+	if (value > 32767) value = 32767;
+	if (value < -32768) value = -32768;
+	*predictor = value;
+	*row = (unsigned long)adpcm_next_index[entry] * 16;
+	return (short)value;
+}
+
+/* one channel of a block: its header, then eight groups of four bytes
+(eight nibbles, low first), group_stride bytes apart, into every
+output_stride'th sample */
+static inline void decode_adpcm_channel(const unsigned char *header, const unsigned char *nibbles,
+	unsigned long group_stride, short *output, unsigned long output_stride)
+{
+	int predictor = (short)(header[0] | (header[1] << 8));
+	unsigned long row = (unsigned long)(header[2] > 88 ? 88 : header[2]) * 16;
+	unsigned long group, byte;
+
+	for (group = 0; group < 8; group++, nibbles += group_stride)
+	{
+		for (byte = 0; byte < 4; byte++)
+		{
+			output[0] = adpcm_expand(nibbles[byte] & 0xf, &predictor, &row);
+			output[output_stride] = adpcm_expand(nibbles[byte] >> 4, &predictor, &row);
+			output += 2 * output_stride;
+		}
+	}
 }
 
 /* Xbox ADPCM: per block, a 4-byte header per channel (predictor, step
 index), then 4-byte groups of eight nibbles, low nibble first, alternating
-between channels; 64 samples per channel */
+between channels; 64 samples per channel. Streams have one channel or
+two */
 static short *decode_adpcm(const unsigned char *source, unsigned long size, unsigned long channels,
 	unsigned long *frame_count)
 {
 	unsigned long block_bytes = XBOX_ADPCM_BLOCK_BYTES * channels;
 	unsigned long blocks = size / block_bytes;
 	short *samples = malloc((blocks ? blocks : 1) * XBOX_ADPCM_BLOCK_SAMPLES * channels * sizeof(short));
-	unsigned long block, channel;
+	unsigned long block;
 
 	if (!samples)
 	{
@@ -213,25 +323,15 @@ static short *decode_adpcm(const unsigned char *source, unsigned long size, unsi
 		const unsigned char *data = source + block * block_bytes;
 		short *output = samples + block * XBOX_ADPCM_BLOCK_SAMPLES * channels;
 
-		for (channel = 0; channel < channels; channel++)
+		if (channels == 1)
 		{
-			const unsigned char *header = data + channel * 4;
-			int predictor = (short)(header[0] | (header[1] << 8));
-			int index = header[2] > 88 ? 88 : header[2];
-			unsigned long group, byte;
-
-			for (group = 0; group < 8; group++)
-			{
-				const unsigned char *nibbles = data + 4 * channels + (group * channels + channel) * 4;
-
-				for (byte = 0; byte < 4; byte++)
-				{
-					unsigned long sample = group * 8 + byte * 2;
-
-					output[sample * channels + channel] = (short)ima_expand(nibbles[byte] & 0xf, &predictor, &index);
-					output[(sample + 1) * channels + channel] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
-				}
-			}
+			decode_adpcm_channel(data, data + 4, 4, output, 1);
+		}
+		else
+		{
+			/* both headers, then the channels' groups in turn */
+			decode_adpcm_channel(data, data + 8, 8, output, 2);
+			decode_adpcm_channel(data + 4, data + 12, 8, output + 1, 2);
 		}
 	}
 	*frame_count = blocks * XBOX_ADPCM_BLOCK_SAMPLES;
@@ -325,9 +425,25 @@ static void voice_gains(const struct sdl_stream *stream, float *left, float *rig
 	*right *= stream->volume * master_volume;
 }
 
+/* voice_gains, worked out again only once one of its inputs changed: the
+mixer asks for every voice's in every chunk (on the console 187 times a
+second, the 3D ones a square root, divisions, a cosine and a sine each),
+and the same inputs give the same gains */
+static void voice_target_gains(struct sdl_stream *stream, float *left, float *right)
+{
+	if (stream->gains_dirty || stream->gains_generation != listener_generation)
+	{
+		voice_gains(stream, &stream->target_left, &stream->target_right);
+		stream->gains_dirty = FALSE;
+		stream->gains_generation = listener_generation;
+	}
+	*left = stream->target_left;
+	*right = stream->target_right;
+}
+
 /* ---------- mixing */
 
-#ifndef HALO_XBOX
+#ifndef HALO_FIXED_MIXER
 
 static float packet_sample(const struct voice_packet *packet, unsigned long frame, unsigned long channel,
 	unsigned long channels)
@@ -345,7 +461,7 @@ static void mix_voice(struct sdl_stream *stream, float *output, unsigned long fr
 	if (stream->paused || !stream->packet_count || !stream->sample_rate)
 		return;
 	step = (double)(stream->frequency ? stream->frequency : stream->sample_rate) / OUTPUT_RATE;
-	voice_gains(stream, &target_left, &target_right);
+	voice_target_gains(stream, &target_left, &target_right);
 	if (!stream->gains_valid)
 	{
 		stream->current_left = target_left;
@@ -478,11 +594,11 @@ fraction, the gains are fixed point (1.0 is 1 << 20 while they ramp,
 1 << 12 when applied), the voices sum in 32-bit integers at the 16-bit
 output's scale, and the soft limiter's curve is a table. The gains
 themselves (distance, pan, volume) are still worked out in floating point,
-once per voice per chunk. Interpolation, ramps and the limiter are the
-float mixer's, to within the fixed point's rounding. */
+once per voice per chunk, and only when they changed. Interpolation, ramps
+and the limiter are the float mixer's, to within the fixed point's
+rounding. The loop over a packet's frames is dsound_mix_kernels.c's, which
+also has GAIN_RAMP_SHIFT and GAIN_SHIFT. */
 
-#define GAIN_RAMP_SHIFT 20
-#define GAIN_SHIFT 12
 /* the limiter: above 0.8 of full scale the excess is eased to
 0.2 tanh(excess / 0.2), looked up in steps of four ranges / table size */
 #define LIMIT_KNEE 26214
@@ -529,9 +645,10 @@ static struct voice_packet *first_unfinished_packet(struct sdl_stream *stream)
 /* mixes one voice into output (frames of stereo, 16-bit scale) */
 static void mix_voice_fixed(struct sdl_stream *stream, long *output, unsigned long frames)
 {
-	unsigned long rate, step_frames, step_fraction, frame = 0;
-	long left, right, ramp_left, ramp_right;
+	unsigned long rate, step_frames, step_fraction, step, frame = 0;
+	long left, right, target_fixed_left, target_fixed_right, ramp_left, ramp_right;
 	float target_left, target_right;
+	BOOL kernels, held, silent;
 	struct voice_packet *packet;
 
 	if (stream->paused || !stream->packet_count || !stream->sample_rate || !frames)
@@ -539,7 +656,7 @@ static void mix_voice_fixed(struct sdl_stream *stream, long *output, unsigned lo
 	rate = stream->frequency ? stream->frequency : stream->sample_rate;
 	step_frames = rate / OUTPUT_RATE;
 	step_fraction = ((rate % OUTPUT_RATE) << 16) / OUTPUT_RATE;
-	voice_gains(stream, &target_left, &target_right);
+	voice_target_gains(stream, &target_left, &target_right);
 	if (!stream->gains_valid)
 	{
 		stream->current_left = target_left;
@@ -548,8 +665,25 @@ static void mix_voice_fixed(struct sdl_stream *stream, long *output, unsigned lo
 	}
 	left = gain_to_fixed(stream->current_left);
 	right = gain_to_fixed(stream->current_right);
-	ramp_left = (gain_to_fixed(target_left) - left) / (long)frames;
-	ramp_right = (gain_to_fixed(target_right) - right) / (long)frames;
+	target_fixed_left = gain_to_fixed(target_left);
+	target_fixed_right = gain_to_fixed(target_right);
+	ramp_left = (target_fixed_left - left) / (long)frames;
+	ramp_right = (target_fixed_right - right) / (long)frames;
+
+	/* the kernels keep the position as one 16.16 number, which holds it
+	exactly for packets of up to 32768 frames and steps of less than 32768
+	frames (the game's packets have at most 8192). Gains from 0 to below
+	the applied scale's 1 at both ends of the chunk (the ramp stays between
+	them) add 0 to every frame: such a voice only moves through its
+	packets. (Compared unsigned: a gain that is not a number converts to a
+	negative one, which does add.) */
+	step = (step_frames << 16) | step_fraction;
+	kernels = step_frames < 0x8000 && step != 0;
+	held = !ramp_left && !ramp_right;
+	silent = (unsigned long)left < (1UL << (GAIN_RAMP_SHIFT - GAIN_SHIFT)) &&
+		(unsigned long)right < (1UL << (GAIN_RAMP_SHIFT - GAIN_SHIFT)) &&
+		(unsigned long)target_fixed_left < (1UL << (GAIN_RAMP_SHIFT - GAIN_SHIFT)) &&
+		(unsigned long)target_fixed_right < (1UL << (GAIN_RAMP_SHIFT - GAIN_SHIFT));
 
 	packet = first_unfinished_packet(stream);
 	while (packet && frame < frames)
@@ -569,6 +703,43 @@ static void mix_voice_fixed(struct sdl_stream *stream, long *output, unsigned lo
 			packet = first_unfinished_packet(stream);
 			continue;
 		}
+		if (kernels && count <= 0x8000)
+		{
+			/* the frames whose next frame is in the packet (a silent
+			voice: all of them), as far as the chunk goes */
+			unsigned long cursor = (position << 16) | fraction;
+			unsigned long limit = (silent ? count : count - 1) << 16;
+
+			if (cursor < limit)
+			{
+				unsigned long run = (limit - cursor - 1) / step + 1;
+
+				if (run > frames - frame)
+					run = frames - frame;
+				if (!silent)
+				{
+					long *destination = output + frame * 2;
+
+					if (channels == 1 && held)
+						dsound_mix_mono(samples, destination, run, cursor, step, left, right);
+					else if (channels == 1)
+						dsound_mix_mono_ramp(samples, destination, run, cursor, step, left, right, ramp_left, ramp_right);
+					else if (held)
+						dsound_mix_stereo(samples, destination, run, cursor, step, left, right);
+					else
+						dsound_mix_stereo_ramp(samples, destination, run, cursor, step, left, right, ramp_left,
+							ramp_right);
+				}
+				frame += run;
+				left += (long)run * ramp_left;
+				right += (long)run * ramp_right;
+				cursor += run * step;
+				position = cursor >> 16;
+				fraction = cursor & 0xFFFF;
+			}
+		}
+		/* the packet's last frame, which interpolates towards itself (or,
+		past the kernels' limits, every frame) */
 		for (; frame < frames && position < count; frame++)
 		{
 			const short *a = samples + position * channels;
@@ -601,15 +772,28 @@ static void mix_voice_fixed(struct sdl_stream *stream, long *output, unsigned lo
 static void mix_fixed(long *output, unsigned long frames)
 {
 	struct sdl_stream *stream;
+	unsigned long voices = 0;
 
 	memset(output, 0, frames * OUTPUT_CHANNELS * sizeof(long));
 	pthread_mutex_lock(&mixer_lock);
 	for (stream = streams; stream; stream = stream->next)
 	{
 		if (!stream->paused && stream->packet_count)
+		{
 			frames_with_voices += frames;
+			voices++;
+		}
 		mix_voice_fixed(stream, output, frames);
 	}
+#ifdef HALO_XBOX
+	work.frames += frames;
+	work.voice_frames += voices * frames;
+	if (voices > work.voices_peak)
+		work.voices_peak = voices;
+#else
+	/* (the console's diagnostics) */
+	(void)voices;
+#endif
 	pthread_mutex_unlock(&mixer_lock);
 }
 
@@ -619,10 +803,12 @@ static void mix_fixed(long *output, unsigned long frames)
 
 static BOOL audio_started = FALSE;
 
-#ifdef HALO_XBOX
+#ifdef HALO_FIXED_MIXER
 
 /* the loudest sample since the last look, for the diagnostics */
 static unsigned long output_peak;
+
+#ifdef HALO_XBOX
 
 void dsound_statistics(unsigned long *streams_count, unsigned long *packets_count, unsigned long *voiced_frames,
 	unsigned long *peak)
@@ -634,7 +820,26 @@ void dsound_statistics(unsigned long *streams_count, unsigned long *packets_coun
 	output_peak = 0;
 }
 
-/* the console's output thread asks for 16-bit frames (nx_audio.c, nx_apu.c) */
+/* the mixer's work since the last look, for the output paths' five-second
+lines (nx_audio.c, nx_apu.c): frames mixed and voice frames among them
+(their ratio is the average number of voices), the most voices in one
+chunk, and the cycles the game's thread spent decoding the packets it
+submitted (wall time: a mixer pass that interrupts a decode counts in it) */
+void dsound_work_statistics(unsigned long *frames, unsigned long *voice_frames, unsigned long *voices_peak,
+	unsigned long long *decode_cycles)
+{
+	pthread_mutex_lock(&mixer_lock);
+	*frames = work.frames;
+	*voice_frames = work.voice_frames;
+	*voices_peak = work.voices_peak;
+	*decode_cycles = work.decode_cycles;
+	memset(&work, 0, sizeof(work));
+	pthread_mutex_unlock(&mixer_lock);
+}
+#endif
+
+/* the console's output thread asks for 16-bit frames (nx_audio.c, nx_apu.c;
+on Windows 98/ME w9x_audio.c's) */
 static void console_fill(short *samples, unsigned long frames)
 {
 	long buffer[MIX_CHUNK_FRAMES * OUTPUT_CHANNELS];
@@ -692,9 +897,20 @@ static void audio_start(void)
 		return;
 	audio_started = TRUE;
 	master_volume = (float)config_real("audio.volume");
+	listener_generation++;
+	adpcm_tables_build();
 	limit_table_build();
+#ifdef HALO_XBOX
 	if (config_boolean("audio.enabled") && nx_audio_start(console_fill, config_string("audio.backend")))
 		return;
+#else
+	if (config_boolean("audio.enabled") &&
+		w9x_audio_open(config_string("audio.output"), (unsigned long)config_integer("audio.rate"), &output_rate))
+	{
+		w9x_audio_run(console_fill);
+		return;
+	}
+#endif
 	platform_log("sound is silent");
 	CreateThread(NULL, 32 * 1024, silent_clock_thread, NULL, 0, NULL);
 }
@@ -753,6 +969,8 @@ static void audio_start(void)
 		return;
 	audio_started = TRUE;
 	master_volume = (float)config_real("audio.volume");
+	listener_generation++;
+	adpcm_tables_build();
 
 	if (config_boolean("audio.enabled") && platform_sdl_initialize())
 	{
@@ -899,6 +1117,9 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 	struct voice_packet *entry;
 	unsigned long frames = 0;
 	short *samples;
+#ifdef HALO_XBOX
+	unsigned long long decode_start = cycle_count(), decode_cycles;
+#endif
 
 	(void)output;
 	if (!input)
@@ -907,7 +1128,13 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 	samples = stream->adpcm ?
 		decode_adpcm(input->pvBuffer, input->dwMaxSize, stream->channels, &frames) :
 		decode_pcm(input->pvBuffer, input->dwMaxSize, stream->channels, &frames);
+#ifdef HALO_XBOX
+	decode_cycles = cycle_count() - decode_start;
+#endif
 	pthread_mutex_lock(&mixer_lock);
+#ifdef HALO_XBOX
+	work.decode_cycles += decode_cycles;
+#endif
 	if (stream->packet_count == MAXIMUM_STREAM_PACKETS)
 	{
 		pthread_mutex_unlock(&mixer_lock);
@@ -928,7 +1155,7 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 	{
 		/* a stream that ran dry starts over */
 		stream->cursor = 0.0;
-#ifdef HALO_XBOX
+#ifdef HALO_FIXED_MIXER
 		stream->cursor_frame = 0;
 		stream->cursor_fraction = 0;
 #endif
@@ -958,7 +1185,7 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 			head->finished ? head->packet.dwMaxSize : 0);
 	}
 	stream->cursor = 0.0;
-#ifdef HALO_XBOX
+#ifdef HALO_FIXED_MIXER
 	stream->cursor_frame = 0;
 	stream->cursor_fraction = 0;
 #endif
@@ -1051,6 +1278,7 @@ HRESULT WINAPI IDirectSound_SetDistanceFactor(LPDIRECTSOUND sound, FLOAT factor,
 	(void)apply;
 	pthread_mutex_lock(&mixer_lock);
 	listener.distance_factor = factor > 0.0f ? factor : 1.0f;
+	listener_generation++;
 	pthread_mutex_unlock(&mixer_lock);
 	return DS_OK;
 }
@@ -1061,6 +1289,7 @@ HRESULT WINAPI IDirectSound_SetRolloffFactor(LPDIRECTSOUND sound, FLOAT factor, 
 	(void)apply;
 	pthread_mutex_lock(&mixer_lock);
 	listener.rolloff_factor = factor >= 0.0f ? factor : 1.0f;
+	listener_generation++;
 	pthread_mutex_unlock(&mixer_lock);
 	return DS_OK;
 }
@@ -1073,6 +1302,7 @@ HRESULT WINAPI IDirectSound_SetPosition(LPDIRECTSOUND sound, FLOAT x, FLOAT y, F
 	listener.position[0] = x;
 	listener.position[1] = y;
 	listener.position[2] = z;
+	listener_generation++;
 	pthread_mutex_unlock(&mixer_lock);
 	return DS_OK;
 }
@@ -1105,6 +1335,7 @@ HRESULT WINAPI IDirectSound_SetOrientation(LPDIRECTSOUND sound, FLOAT x_front, F
 	listener.top[2] = z_top;
 	normalize3(listener.front);
 	normalize3(listener.top);
+	listener_generation++;
 	pthread_mutex_unlock(&mixer_lock);
 	return DS_OK;
 }
@@ -1137,6 +1368,7 @@ HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDE
 	stream->minimum_distance = DS3D_DEFAULTMINDISTANCE;
 	stream->maximum_distance = DS3D_DEFAULTMAXDISTANCE;
 	stream->i3dl2_gain = 1.0f;
+	stream->gains_dirty = TRUE;
 	pthread_mutex_lock(&mixer_lock);
 	stream->next = streams;
 	streams_created++;
@@ -1165,10 +1397,13 @@ unsigned long __stdcall DirectSoundGetStreamVoiceStatus(LPDIRECTSOUNDSTREAM stre
 	return active;
 }
 
+/* (every one marks the stream's gains to be worked out again: most feed
+them) */
 #define STREAM_SETTER(body) \
 	struct sdl_stream *record = stream_from_interface(stream); \
 	pthread_mutex_lock(&mixer_lock); \
 	body; \
+	record->gains_dirty = TRUE; \
 	pthread_mutex_unlock(&mixer_lock); \
 	return DS_OK;
 
@@ -1206,6 +1441,7 @@ HRESULT WINAPI IDirectSoundStream_SetMixBinVolumes(LPDIRECTSOUNDSTREAM stream, D
 			record->mix_right = gain_from_millibels(volumes[index]);
 		index++;
 	}
+	record->gains_dirty = TRUE;
 	pthread_mutex_unlock(&mixer_lock);
 	return DS_OK;
 }

@@ -635,6 +635,14 @@ void rasterizer_lights_begin_for_new_frame(
 				long visible_pixels= rasterizer_widget_get_occlusion_test_result(lens_flare_index);
 				long occlusion_pixels= lens_flare_parameters->internal__occlusion_pixels;
 
+#ifdef HALO_XBOX
+				/* no answer yet: its last visibility stands */
+				if (visible_pixels==RASTERIZER_OCCLUSION_TEST_PENDING)
+				{
+					continue;
+				}
+#endif
+
 				latest_visibility= (byte)MIN(255, (255*visible_pixels + (occlusion_pixels>>1))/occlusion_pixels);
 			}
 			else

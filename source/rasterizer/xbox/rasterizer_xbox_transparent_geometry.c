@@ -2807,6 +2807,11 @@ void rasterizer_transparent_geometry_group_draw(
 							if (reflection_type ==
 								_shader_transparent_glass_reflection_type_dynamic_mirror)
 							{
+#ifdef HALO_LIGHT_PIPELINE
+								/* (the light pipeline has no mirror's view: it
+								draws a mirror's glass without the reflection) */
+								if (!rasterizer_light_pipeline())
+#endif
 								if (!global_window_parameters.has_mirror ||
 									global_window_parameters.rasterizer_target != 0)
 									continue;
@@ -2915,7 +2920,13 @@ void rasterizer_transparent_geometry_group_draw(
 									glass->reflection_view_parallel_color.alpha > 0.0f) &&
 								(glass->reflection_map.index != NONE ||
 									reflection_type ==
-										_shader_transparent_glass_reflection_type_dynamic_mirror))
+										_shader_transparent_glass_reflection_type_dynamic_mirror)
+#ifdef HALO_LIGHT_PIPELINE
+								/* (a bumped cube map or the mirror's view:
+								not the light pipeline's) */
+								&& !rasterizer_light_pipeline()
+#endif
+								)
 							{
 								real vsh_constants__texscale[3][4];
 
@@ -3229,6 +3240,17 @@ void rasterizer_transparent_geometry_group_draw(
 								pixel_shader.rgb_outputs[2] = 0xC0;
 								pixel_shader.final_combiner_inputs_abcd = 0xC;
 								pixel_shader.final_combiner_inputs_efg = 0x1C00;
+#ifdef HALO_LIGHT_PIPELINE
+								if (rasterizer_light_pipeline())
+								{
+									/* without the detail map: two textures,
+									(lightmap + vertex light) * diffuse map */
+									pixel_shader.texture_modes = 0x401;
+									pixel_shader.alpha_inputs[0] = 0x18300000;
+									pixel_shader.rgb_inputs[0] = 0x08200000;
+									pixel_shader.rgb_outputs[0] = 0xC0;
+								}
+#endif
 								rasterizer_set_pixel_shader(&pixel_shader);
 								rasterizer_transparent_geometry_group_draw__internal(
 									group,

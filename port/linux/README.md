@@ -229,7 +229,8 @@ have up to 4 players (split screen).
   128 players on up to 128 machines instead: `include/halo_port_limits.h`
   sets the limits, and `include/halo_port_capacity.h` the memory for them
   (larger pools of objects, effects, particles, contrails, lights and
-  sounds). The game state is 16 MB at `0x81A00000` (3.3 MB on the Xbox).
+  sounds). The game state is 16 MB at `0x81A00000` (3.3 MB on the Xbox),
+  `0x01A00000` above the start of the Xbox memory.
 - The byte-matching build keeps the limits of the Xbox. All the changes are
   in `#ifdef HALO_LINUX`.
 
@@ -387,7 +388,7 @@ person joins the game. If the game does not operate, Discord starts it.
 | Input | XInput on SDL3 (`src/xinput_sdl.c`): keyboard, mouse, gamepads with rumble, and the debug keyboard for the console. |
 | Files | The Win32 file functions and the MSVC file functions on POSIX, with the translation of Xbox paths. |
 | Threads | Threads, events, mutexes, critical sections, interlocked operations and alertable waits. |
-| Memory | The port reserves the Xbox memory at `0x80000000`. Thus the game gets the fixed addresses that it expects. |
+| Memory | The port reserves the Xbox memory at `0x80000000`. Thus the game gets the fixed addresses that it expects. `configure.py --window-base` puts the Xbox memory at a different address, a multiple of `0x08000000` (`port/include/halo_memory_window.h`). The port then moves the addresses in each map when it reads the map, reserves `0x80000000` with no access, and does not load saved checkpoints of a build with a different address. |
 | Saved games | The Xbox `UDATA` layout, with SHA-1 signatures. |
 | Networking | Winsock on BSD sockets. System link on a local network and on the internet. |
 | Bink video | Not available. The game skips the movies. |

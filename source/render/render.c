@@ -178,10 +178,19 @@ boolean render_weather_particle_systems_enabled = TRUE;
 void render_effects(
 	boolean enable)
 {
+#ifdef HALO_LINUX
+	/* a script turning effects back on (after a cinematic) keeps the
+	[graphics] settings' particles and weather off */
+	render_weather_particle_systems_enabled = enable && halo_graphics_option("weather");
+	render_particle_systems_enabled = enable && halo_graphics_option("particles");
+	render_particles_enabled = enable && halo_graphics_option("particles");
+	render_contrails_enabled = enable && halo_graphics_option("particles");
+#else
 	render_weather_particle_systems_enabled = enable;
 	render_particle_systems_enabled = enable;
 	render_particles_enabled = enable;
 	render_contrails_enabled = enable;
+#endif
 }
 
 void render_initialize(
@@ -565,7 +574,14 @@ static void render_player_frame(
 
 	if (main_get_window_count() == 1)
 	{
+#ifdef HALO_LIGHT_PIPELINE
+		/* (the light pipeline draws no mirrors, so no second view of the
+		scene for one either) */
+		if (!rasterizer_light_pipeline() &&
+			structure_visibility_find_mirror(camera, &frustum, &mirror))
+#else
 		if (structure_visibility_find_mirror(camera, &frustum, &mirror))
+#endif
 		{
 			short saved_cluster_index;
 			struct render_camera mirror_camera;

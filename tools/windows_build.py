@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from .linux_build import (LINUX_PROFILE, OPTIMISATION, WINDOWS_PROFILE, XDK_INCLUDE, lto_mode, march_flag, pgo_mode,
                           compile_launcher, musl_math_cflags, musl_math_sources, pgo_profile, profile_use_flags,
-                          xdk_headers)
+                          window_base_flags, xdk_headers)
 from .ninja_syntax import Writer
 
 LINUX_DIR = Path("port/linux")
@@ -276,7 +276,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         description="WINDOWS COPY $out",
     )
 
-    abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []) + (["-DHALO_BIG_SESSIONS"] if getattr(sln, "port_big_sessions", False) else []))
+    abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []) + (["-DHALO_BIG_SESSIONS"] if getattr(sln, "port_big_sessions", False) else []) + window_base_flags(sln))
     sdl_include = SDL_DIR / "include"
     excluded = set(linux_config.get("exclude_sources", []))
     libs = " ".join(
@@ -287,8 +287,10 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         "--target=i686-pc-windows-msvc",
         "-fuse-ld=lld",
         "-g",
-        # the Xbox memory window is at 0x80000000, in the upper half of the
-        # 32-bit address space
+        # the whole 4 GB a 32-bit process has on 64-bit Windows: the Xbox
+        # memory window is at 0x80000000, in the upper half, unless the build
+        # moves it (configure.py --window-base), and the room above 2 GB
+        # still serves the drivers and heaps then
         "-Wl,/LARGEADDRESSAWARE",
         "-Wl,/STACK:0x800000",
         "-Wl,/SUBSYSTEM:CONSOLE",

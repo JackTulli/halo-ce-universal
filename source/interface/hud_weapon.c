@@ -1176,6 +1176,18 @@ static void crosshairs_draw(
 								}
 
 							draw_crosshair:
+#ifdef HALO_LINUX
+								/* a crosshair state whose frame is not known yet draws
+								nothing this tick instead of halting: a network client
+								whose weapon the host has not given it yet ("weapon
+								(0x0), deleted unexpectedly") draws the 'empty'
+								interface, whose aim state is NONE until its update */
+								if (frame_index == NONE ||
+									(sequence && (frame_index < 0 || frame_index >= sequence->sprites.count)))
+								{
+									continue;
+								}
+#endif
 								match_vassert(
 									"c:\\halo\\SOURCE\\interface\\hud_weapon.c",
 									0x4A5,

@@ -1821,7 +1821,18 @@ static void actor_move_vector_avoidance(
 			actor->control.vector_avoidance_current_direction = best_avoidance_direction;
 		else
 			actor->control.vector_avoidance_current_direction = NONE;
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+		/* the console copies the cylinders in use rather than all 1024 (24 KB
+		every tick for each AI-driven flying vehicle): the debug display
+		reads no further than avoidance_object_count */
+		csmemcpy(&debug_info->avoidance_data, &avoidance_data,
+			offsetof(struct vector_avoidance_data, avoidance_objects) +
+			avoidance_data.avoidance_object_count*sizeof(struct vehicle_avoidance_cylinder));
+		debug_info->avoidance_data.avoid_width = avoidance_data.avoid_width;
+		debug_info->avoidance_data.avoid_distance = avoidance_data.avoid_distance;
+#else
 		debug_info->avoidance_data = avoidance_data;
+#endif
 		debug_info->field_654C = emergency;
 		debug_info->field_6540 = rotation;
 	}

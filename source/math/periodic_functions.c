@@ -242,7 +242,11 @@ real periodic_function_evaluate(
 	if (function_tables_initialized)
 	{
 		time *= 25.6f;
+#ifdef HALO_XBOX
+		fraction = fraction_of(time); /* (fmod's, without the x87 call) */
+#else
 		fraction = (real)fmod((double)time, 1.0);
+#endif
 		index = fast_ftol(time-fraction);
 		table = periodic_function_tables[function_type];
 		index &= PERIODIC_FUNCTION_TABLE_MASK;
@@ -296,7 +300,11 @@ real transition_function_evaluate(
 	{
 		table = transition_function_tables[function_type];
 		scaled = value*(real)(PERIODIC_FUNCTION_TABLE_SIZE-1);
+#ifdef HALO_XBOX
+		fraction = fraction_of(scaled);
+#else
 		fraction = (real)fmod((double)scaled, 1.0);
+#endif
 		index = fast_ftol(scaled-0.5f);
 		if ((short)index == PERIODIC_FUNCTION_TABLE_SIZE-1)
 			return table[PERIODIC_FUNCTION_TABLE_SIZE-1] * (1.0f/255.0f);

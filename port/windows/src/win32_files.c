@@ -6,6 +6,9 @@ version is posix_files.c). Paths are the platform layer's host paths, in the
 code page of the C runtime's narrow functions that open the same files
 (xbox_files.c opens them with open()). Failures set errno, which the callers
 turn into Xbox error codes.
+
+Windows 98/ME (HALO_WIN9X) cannot open a directory as a file, nor share one
+for deletion: a directory's times are left alone there.
 */
 
 #include <windows.h>
@@ -137,10 +140,23 @@ int posix_set_file_times(const char *path,
 	posix_ulong access_seconds, posix_ulong access_nanoseconds,
 	posix_ulong modification_seconds, posix_ulong modification_nanoseconds)
 {
+#ifdef HALO_WIN9X
+	DWORD attributes = GetFileAttributesA(path);
+	HANDLE handle;
+#else
 	HANDLE handle = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+#endif
 	FILETIME access, modification;
 	BOOL result;
+
+#ifdef HALO_WIN9X
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		return fail();
+	if (attributes & FILE_ATTRIBUTE_DIRECTORY)
+		return 0;
+	handle = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+#endif
 
 	if (handle == INVALID_HANDLE_VALUE)
 		return fail();

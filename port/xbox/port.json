@@ -12,6 +12,7 @@
     "p2p.c",
     "p2p_master.c",
     "p2p_crypto.c",
-    "dsound_sdl.c"
+    "dsound_sdl.c",
+    "dsound_mix_kernels.c"
   ]
 }

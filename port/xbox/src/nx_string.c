@@ -28,6 +28,20 @@ void *memcpy(void *destination, const void *source, size_t size)
 	void *to = destination;
 	const void *from = source;
 
+	/* a few bytes (most of the game's copies: vectors, small structures):
+	plain moves, which cost less than the string instructions' start-up
+	(the compiler makes no call of these loops: -fno-builtin) */
+	if (size < 16)
+	{
+		unsigned char *d = destination;
+		const unsigned char *s = source;
+
+		for (; size >= 4; size -= 4, d += 4, s += 4)
+			*(unaligned_word *)d = *(const unaligned_word *)s;
+		for (; size; size--)
+			*d++ = *s++;
+		return destination;
+	}
 	if (size >= 16)
 	{
 		/* bytes up to an aligned destination, then words */
@@ -81,6 +95,16 @@ void *memset(void *destination, int value, size_t size)
 	void *to = destination;
 	uint32_t pattern = (uint32_t)(unsigned char)value * 0x01010101u;
 
+	if (size < 16)
+	{
+		unsigned char *d = destination;
+
+		for (; size >= 4; size -= 4, d += 4)
+			*(unaligned_word *)d = pattern;
+		for (; size; size--)
+			*d++ = (unsigned char)pattern;
+		return destination;
+	}
 	if (size >= 16)
 	{
 		size_t head = (0u - (uintptr_t)to) & 3;

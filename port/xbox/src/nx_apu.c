@@ -291,12 +291,15 @@ static void start_voice(void)
 	vp_method(NV1BA0_PIO_VOICE_ON, VOICE_HANDLE);
 }
 
-/* the mixer's counters (dsound_sdl.c, the console's part) */
+/* the mixer's counters (dsound_sdl.c, the console's part), and the account
+of its work the AC97 path's line gives too (nx_audio.c) */
 void dsound_statistics(unsigned long *streams_count, unsigned long *packets_count, unsigned long *voiced_frames,
 	unsigned long *peak);
+void nx_audio_work_text(char *text, size_t size, unsigned long long mix_cycles, unsigned long long window_cycles);
 
-/* the mixer's time, in the processor's cycles (733 MHz) */
-static unsigned long long mix_cycles;
+/* the mixer's time, in the processor's cycles (733 MHz), and the start of
+the window it is a share of */
+static unsigned long long mix_cycles, window_start;
 
 static unsigned long long cycle_count(void)
 {
@@ -308,6 +311,7 @@ static unsigned long __stdcall fill_thread(void *parameter)
 	unsigned long passes = 0;
 
 	(void)parameter;
+	window_start = cycle_count();
 	for (;;)
 	{
 		unsigned long cbo = voice_cbo() % RING_FRAMES;
@@ -348,17 +352,19 @@ static unsigned long __stdcall fill_thread(void *parameter)
 		if (++passes % (5000 / FILL_INTERVAL_MS) == 0)
 		{
 			/* every five seconds: what the hardware and the mixer did */
-			char text[240];
+			char text[352], work[128];
 			unsigned long streams, packets, voiced, peak;
+			unsigned long long now = cycle_count();
 
 			dsound_statistics(&streams, &packets, &voiced, &peak);
+			nx_audio_work_text(work, sizeof(work), mix_cycles, now - window_start);
+			mix_cycles = 0;
+			window_start = now;
 			snprintf(text, sizeof(text),
 				"halo-xbox: apu: played %lu frames, restarted %lu, cbo %lu write %lu, ists %08lx fectl %08lx gprst %lx; "
-				"streams %lu, packets %lu, voiced frames %lu, peak %lu; mixing %lu ms a second\n",
+				"streams %lu, packets %lu, voiced frames %lu, peak %lu; %s\n",
 				consumed, underruns, voice_cbo(), write_frame, APU_REG(NV_PAPU_ISTS), APU_REG(NV_PAPU_FECTL),
-				GP_REG(NV_PAPU_GPRST), streams, packets, voiced, peak,
-				(unsigned long)(mix_cycles / 733333ULL / 5ULL));
-			mix_cycles = 0;
+				GP_REG(NV_PAPU_GPRST), streams, packets, voiced, peak, work);
 			nx_print(text);
 		}
 		Sleep(FILL_INTERVAL_MS);

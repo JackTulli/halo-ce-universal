@@ -42,6 +42,11 @@ void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)))
 /* performance mode (xbox_display.c): a performance.txt on the disc */
 int halo_performance_mode(void);
 
+/* the display mode, chosen once from the settings (xbox_display.c:
+display.hd_720p) before the GPU starts; the screen's queries and the
+device's creation call it */
+void halo_xbox_choose_display_mode(void);
+
 /* the device (d3d8_nv2a.c): columns everything the game draws on the
 screen shifts right by (the menus, laid out for 640 columns, centred on a
 wider screen) */
@@ -79,7 +84,9 @@ real thing, and the kernel hands out the blocks (MmAllocateContiguousMemoryEx,
 nx_kernel.c). The arithmetic the Linux units use keeps working. */
 
 #define PLATFORM_CONTIGUOUS_BASE 0x80000000UL
-#define PLATFORM_CONTIGUOUS_SIZE 0x04000000UL /* the retail console's 64 MB */
+/* the retail console's 64 MB, or a 128 MB console's (720p uses the top
+half: nx_physical_top says which this console has) */
+#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL
 #define PLATFORM_ANY_PHYSICAL_ADDRESS 0xffffffffUL
 
 /* returns NULL on failure; physical_address places the block exactly */

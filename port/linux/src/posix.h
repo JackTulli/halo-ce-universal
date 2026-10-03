@@ -79,6 +79,15 @@ copies the on-disk spelling into result and returns nonzero if found */
 int posix_find_entry_case_insensitive(const char *directory, const char *name,
 	char *result, posix_ulong result_size);
 
+/* ---------- memory */
+
+/* describes what this process has in [address, address + size): its
+mappings, or on Windows its allocations and the modules they belong to. For
+the log, when the memory window cannot be reserved (xbox_memory.c); returns
+0 if there is nothing to say */
+int posix_describe_address_range(posix_ulong address, posix_ulong size,
+	char *buffer, posix_ulong buffer_size);
+
 /* ---------- sockets
 
 Winsock and BSD share the sockaddr_in layout, so addresses pass through as

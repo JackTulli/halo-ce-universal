@@ -329,6 +329,14 @@ static boolean heap_verify(
 {
 	short heap_index;
 
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+	/* the console: TRUE, as path.c's path_heap_verify already is. The walk
+	runs on both sides of every heap insert and remove, which makes the
+	obstacle search quadratic in the heap, and it only logs (callers ignore
+	the result; heap_insert still runs inside its match_vassert) */
+	return TRUE;
+#endif
+
 	for (heap_index= 1; heap_index<path->heap_count; ++heap_index)
 	{
 		if (heap_cost(path, heap_parent_index(heap_index))>heap_cost(path, heap_index))

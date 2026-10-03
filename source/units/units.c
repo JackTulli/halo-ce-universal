@@ -1028,6 +1028,17 @@ static void unit_drop_inventory_weapons(
 	long unit_index);
 
 static void unit_verify_vectors(long unit_index, char const *debugstring);
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+/* The console checks a unit's vectors at the end of unit_update and in
+unit_control only: of the eight checks per unit per tick (a few hundred
+instructions each), the ones between unit_update's steps and in the node
+preprocessing only narrow down the step a bad vector came from. A bad
+vector still halts, a step or a tick later; HALO_HEAVY_CHECKS brings the
+steps back. */
+#define unit_verify_vectors_between_steps(unit_index, debugstring)
+#else
+#define unit_verify_vectors_between_steps unit_verify_vectors
+#endif
 static void unit_running_blind(long unit_index, real_vector3d *run_vector);
 
 static boolean unit_integrated_night_vision_is_active(long unit_index);
@@ -1068,6 +1079,11 @@ short magic_base_animation_seat_index = NONE;
 static struct unit_globals *unit_globals;
 
 static struct profile_section unit_update_section = {"unit_update", NONE, TRUE};
+#ifdef HALO_XBOX
+/* the console's tick split (game.c's halo_xbox_tick_profile): unit_update's
+part of every unit's update */
+unsigned __int64 halo_xbox_unit_update_cycles;
+#endif
 
 boolean debug_objects_unit_mouth_apeture;
 boolean debug_objects_unit_seats;
@@ -5259,10 +5275,13 @@ boolean unit_update(
 	boolean jetpack_cheat_active = FALSE;
 	boolean light_change_state = FALSE;
 	boolean allow_integrated_lights = game_engine_allow_integrated_lights(unit_index);
+#ifdef HALO_XBOX
+	unsigned __int64 tick_profile_start = __builtin_ia32_rdtsc();
+#endif
 
 	profile_enter(unit_update_section);
 
-	unit_verify_vectors(unit_index, "unit-update-begin");
+	unit_verify_vectors_between_steps(unit_index, "unit-update-begin");
 
 	++unit->unit.timer;
 
@@ -5631,7 +5650,7 @@ boolean unit_update(
 			}
 		}
 
-		unit_verify_vectors(unit_index, "unit-update-prevectors");
+		unit_verify_vectors_between_steps(unit_index, "unit-update-prevectors");
 
 		if (unit->unit.aiming_speed==_unit_aiming_speed_casual)
 		{
@@ -5653,7 +5672,7 @@ boolean unit_update(
 			unit->unit.aiming_vector = unit->unit.desired_aiming_vector;
 			unit_clip_to_aiming_bounds(unit_index, &unit->unit.aiming_vector, TRUE);
 			unit->unit.aiming_velocity = *global_zero_vector3d;
-			unit_verify_vectors(unit_index, "unit-update-aim-set");
+			unit_verify_vectors_between_steps(unit_index, "unit-update-aim-set");
 		}
 		else if (unit->unit.animation.aiming_with_euler_screen)
 		{
@@ -5673,7 +5692,7 @@ boolean unit_update(
 				aiming_velocity_limit,
 				aiming_angular_acceleration_limit);
 
-			unit_verify_vectors(unit_index, "unit-update-aim-euler");
+			unit_verify_vectors_between_steps(unit_index, "unit-update-aim-euler");
 		}
 		else
 		{
@@ -5683,7 +5702,7 @@ boolean unit_update(
 				&unit->unit.aiming_velocity,
 				aiming_velocity_limit,
 				aiming_angular_acceleration_limit);
-			unit_verify_vectors(unit_index, "unit-update-aim-3d");
+			unit_verify_vectors_between_steps(unit_index, "unit-update-aim-3d");
 		}
 
 		{
@@ -5705,7 +5724,7 @@ boolean unit_update(
 				unit_clip_to_aiming_bounds(unit_index, &unit->unit.looking_vector, FALSE);
 				unit->unit.looking_velocity = *global_zero_vector3d;
 
-				unit_verify_vectors(unit_index, "unit-update-look-set");
+				unit_verify_vectors_between_steps(unit_index, "unit-update-look-set");
 			}
 			else if (unit->unit.animation.looking_with_euler_screen)
 			{
@@ -5725,7 +5744,7 @@ boolean unit_update(
 					looking_velocity_limit,
 					looking_angular_acceleration_limit);
 
-				unit_verify_vectors(unit_index, "unit-update-look-euler");
+				unit_verify_vectors_between_steps(unit_index, "unit-update-look-euler");
 			}
 			else
 			{
@@ -5735,14 +5754,14 @@ boolean unit_update(
 					&unit->unit.looking_velocity,
 					looking_velocity_limit,
 					looking_angular_acceleration_limit);
-				unit_verify_vectors(unit_index, "unit-update-look-3d");
+				unit_verify_vectors_between_steps(unit_index, "unit-update-look-3d");
 			}
 		}
 
 
 		match_assert_valid_real_normal3d("c:\\halo\\SOURCE\\units\\units.c", 1076, &unit->unit.looking_vector);
 
-		unit_verify_vectors(unit_index, "unit-update-postvector");
+		unit_verify_vectors_between_steps(unit_index, "unit-update-postvector");
 
 		if (!jetpack_cheat_active)
 		{
@@ -6091,6 +6110,9 @@ boolean unit_update(
 	unit_verify_vectors(unit_index, "unit-update-end");
 	
 	profile_exit(unit_update_section);
+#ifdef HALO_XBOX
+	halo_xbox_unit_update_cycles += __builtin_ia32_rdtsc()-tick_profile_start;
+#endif
 	
 	return TRUE;
 }
@@ -10594,7 +10616,7 @@ void unit_preprocess_node_orientations(
 			node_orientations);
 	}
 
-	unit_verify_vectors(unit_index, "unit-preprocess-nodes");
+	unit_verify_vectors_between_steps(unit_index, "unit-preprocess-nodes");
 	unit->unit.animation.aiming_with_euler_screen = FALSE;
 	unit->unit.animation.looking_with_euler_screen = FALSE;
 

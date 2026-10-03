@@ -1677,6 +1677,14 @@ boolean actor_nearby_firing_positions(
 			group_selection_mode);
 		struct path_state state;
 		short firing_position_index;
+#ifdef HALO_XBOX
+		/* the console floods the 4 m around the test point when the first
+		firing position of the groups within those 4 m needs it, not up
+		front: pursuit runs this for every firing position of the
+		encounter, and the flood changes nothing the game reads (only the
+		AI profile's counter) */
+		boolean state_ready= FALSE;
+#else
 
 		if (!actor->state.flying)
 		{
@@ -1692,6 +1700,7 @@ boolean actor_nearby_firing_positions(
 			path_state_new(&input, &state, NULL);
 			path_state_find(&state);
 		}
+#endif
 
 		for (firing_position_index= 0;
 			firing_position_index<encounter->firing_positions.count;
@@ -1722,6 +1731,23 @@ boolean actor_nearby_firing_positions(
 				{
 					real distance;
 
+#ifdef HALO_XBOX
+					if (!state_ready)
+					{
+						struct path_input input;
+
+						path_input_new(
+							&input,
+							definition->moving.pathfinding_radius,
+							TRUE,
+							NONE);
+						path_input_set_start(&input, test_point, test_surface_index);
+						path_input_set_search_bounds(&input, 4.0f);
+						path_state_new(&input, &state, NULL);
+						path_state_find(&state);
+						state_ready= TRUE;
+					}
+#endif
 					path_state_estimated_distance(
 						&state,
 						&firing_position->position,

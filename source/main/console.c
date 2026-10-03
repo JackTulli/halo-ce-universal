@@ -429,6 +429,12 @@ boolean console_update(
 			}
 		}
 	}
+#ifdef HALO_LINUX
+	/* debug.console off: the console does not open */
+	else if (!halo_debug_console_enabled())
+	{
+	}
+#endif
 	else if (input_key_is_down(_key_backquote) == TRUE && !console_globals.active)
 	{
 		console_globals.input_state.result[0] = '\0';

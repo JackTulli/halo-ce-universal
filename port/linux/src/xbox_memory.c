@@ -8,13 +8,21 @@ On the Xbox, physical memory at address P is visible at virtual address
 0x80000000 + P. The game asks for its game state and tag cache at fixed
 addresses that way (physical_memory_map.c), and Direct3D resources carry
 physical addresses in their Data fields. A 32-bit Linux process on a 64-bit
-kernel owns the whole 4 GB address space, so the layer reserves the same
-virtual window at start-up and allocates page-granular blocks inside it:
+kernel owns the whole 4 GB address space, so the layer reserves a virtual
+window like it at start-up and allocates page-granular blocks inside it:
 placed requests at exactly the address asked for, the rest top-down as the
 Xbox kernel does.
+
+The window is the console's own, 0x80000000, unless the build moves it
+(port/include/halo_memory_window.h; Windows 9x, whose 0x80000000 and up is
+the system's shared arena, puts it at 0x40000000). The retail maps' addresses
+are then moved to it as they are read (xbox_map_rebase.h); where the system
+allows it, the console's window is reserved too, with no access, so that an
+address the move missed faults where it can be recognised.
 */
 
 #include "platform.h"
+#include "posix.h"
 
 #include <errno.h>
 #include <string.h>
@@ -44,25 +52,69 @@ static int protection_to_host(DWORD protect)
 	}
 }
 
+/* reserves size bytes at exactly address, with no access */
+static BOOL reserve_range(void *address, unsigned long size)
+{
+	void *result = mmap(address, size, PROT_NONE,
+		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+
+	if (result == address)
+		return TRUE;
+	if (result != MAP_FAILED)
+	{
+		munmap(result, size);
+		errno = EEXIST;
+	}
+	return FALSE;
+}
+
+/* logs what holds a range that could not be reserved */
+static void log_range_holders(unsigned long address, unsigned long size)
+{
+	char description[1024];
+
+	if (posix_describe_address_range(address, size, description, sizeof(description)))
+		platform_log("  0x%08lx-0x%08lx holds: %s", address, address + size - 1, description);
+}
+
 /* Reserve the window before anything else can map into it. */
 __attribute__((constructor(101)))
 static void contiguous_arena_reserve(void)
 {
 	void *wanted = (void *)PLATFORM_CONTIGUOUS_BASE;
-	void *result = mmap(wanted, PLATFORM_CONTIGUOUS_SIZE, PROT_NONE,
-		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
 
-	if (result == wanted)
+	if (reserve_range(wanted, PLATFORM_CONTIGUOUS_SIZE))
 	{
 		arena_reserved = TRUE;
+		platform_log("Xbox contiguous memory window at 0x%08lx-0x%08lx",
+			PLATFORM_CONTIGUOUS_BASE, PLATFORM_CONTIGUOUS_BASE + PLATFORM_CONTIGUOUS_SIZE - 1);
 	}
 	else
 	{
-		if (result != MAP_FAILED)
-			munmap(result, PLATFORM_CONTIGUOUS_SIZE);
 		platform_log("cannot reserve the Xbox contiguous memory window at %p (%s)",
 			wanted, strerror(errno));
+		log_range_holders(PLATFORM_CONTIGUOUS_BASE, PLATFORM_CONTIGUOUS_SIZE);
 	}
+
+#if HALO_WINDOW_BASE != HALO_XBOX_WINDOW_BASE && !defined(HALO_WIN9X)
+	/* The window is not the console's: the retail maps' addresses point
+	into the console's until they are moved. Reserving it with no access
+	makes one the move missed fault at a 0x8xxxxxxx address rather than
+	read whatever else would be there. It is only a check, so failing is
+	no error; 9x never tries, since that range is its shared arena. */
+	if (reserve_range((void *)HALO_XBOX_WINDOW_BASE, HALO_WINDOW_SIZE))
+	{
+		platform_log("the console's own memory window 0x%08lx-0x%08lx is reserved with no access",
+			HALO_XBOX_WINDOW_BASE, HALO_XBOX_WINDOW_BASE + HALO_WINDOW_SIZE - 1);
+	}
+	else
+	{
+		platform_log("cannot reserve the console's own memory window at 0x%08lx (%s): "
+			"map addresses left there are not caught",
+			HALO_XBOX_WINDOW_BASE, strerror(errno));
+		log_range_holders(HALO_XBOX_WINDOW_BASE, HALO_WINDOW_SIZE);
+	}
+#endif
 }
 
 BOOL platform_is_contiguous(const void *address)
@@ -109,7 +161,7 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 	}
 	if (physical_address != PLATFORM_ANY_PHYSICAL_ADDRESS)
 	{
-		unsigned long wanted = (physical_address & ~PLATFORM_CONTIGUOUS_BASE) / PAGE_SIZE_BYTES;
+		unsigned long wanted = HALO_WINDOW_PHYSICAL(physical_address) / PAGE_SIZE_BYTES;
 
 		if (pages_free(wanted, count))
 			first = wanted;

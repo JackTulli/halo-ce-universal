@@ -218,7 +218,13 @@ static void NTAPI shutdown_notification(PHAL_SHUTDOWN_REGISTRATION registration)
 		nx_print(text);
 	}
 	if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+	{
 		KfLowerIrql(PASSIVE_LEVEL);
+		/* the GPU goes on with what it was given once its traps are served
+		again: the report again after it (at 720p in the low 64 MB the screen
+		is the depth buffer) */
+		nx_gpu_show_console();
+	}
 	nx_print("halo-xbox: holding 20 seconds before the console restarts\n");
 	Sleep(20000);
 }

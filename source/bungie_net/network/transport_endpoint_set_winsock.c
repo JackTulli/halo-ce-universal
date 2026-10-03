@@ -231,6 +231,22 @@ void transport_push_key(
 XNADDR *transport_get_xnaddr(
 	XNADDR *address)
 {
+#ifdef HALO_XBOX
+	/* an address DHCP (or AutoIP) gave after the transport started: the
+	console's was 0.0.0.0 for the whole session otherwise, and a late DHCP
+	answer replaces an AutoIP address (169.254.x.y) the LAN cannot reach.
+	The last address stays while the console has none (a lease renewed, the
+	cable out). */
+	{
+		XNADDR current;
+
+		XNetGetTitleXnAddr(&current);
+		if (current.ina.s_addr && current.ina.s_addr != global_address.ina.s_addr)
+		{
+			global_address = current;
+		}
+	}
+#endif
 	*address = global_address;
 	return address;
 }

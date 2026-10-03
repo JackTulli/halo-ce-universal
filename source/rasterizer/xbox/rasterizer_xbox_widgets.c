@@ -241,6 +241,15 @@ long _rasterizer_widget_get_occlusion_test_result(
 			while (result == D3DERR_TESTINCOMPLETE);
 			rasterizer_spin_end();
 		}
+#ifdef HALO_XBOX
+#ifndef S_FALSE
+#define S_FALSE ((HRESULT)1L)
+#endif
+		/* the device has no answer yet (the GPU is behind) or none for this
+		number: the flare keeps its last visibility */
+		if (result == S_FALSE)
+			return RASTERIZER_OCCLUSION_TEST_PENDING;
+#endif
 
 		if (result >= 0)
 		{

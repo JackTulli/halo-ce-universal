@@ -528,6 +528,11 @@ boolean debug_biped_limp_body_disable = FALSE;
 boolean rider_ejection = TRUE;
 
 static struct profile_section biped_update_section = {"biped_update", NONE, TRUE};
+#ifdef HALO_XBOX
+/* the console's tick split (game.c's halo_xbox_tick_profile): biped_update's
+part of every biped's update */
+unsigned __int64 halo_xbox_biped_update_cycles;
+#endif
 
 extern boolean debug_objects_biped_autoaim_pills;
 extern boolean debug_objects_biped_physics_pills;
@@ -1614,11 +1619,22 @@ static void biped_verify_object_vectors(
 	return;
 }
 
+#if defined(HALO_XBOX) && !defined(HALO_HEAVY_CHECKS)
+/* The console checks a biped's forward and up once a tick, at the end of
+biped_update: the twenty-odd checks between its steps (a biped_get and a
+vector test each) only narrow down the step a bad vector came from. A bad
+vector still halts, at the end of that biped_update or the next one;
+HALO_HEAVY_CHECKS brings the steps back. */
+#define biped_verify_object_vectors_between_steps(biped_index, state)
+#else
+#define biped_verify_object_vectors_between_steps biped_verify_object_vectors
+#endif
+
 void biped_preprocess_node_orientations(
 	long biped_index,
 	struct real_orientation *node_orientations)
 {
-	biped_verify_object_vectors(biped_index, "preprocess-nodes");
+	biped_verify_object_vectors_between_steps(biped_index, "preprocess-nodes");
 
 	return;
 }
@@ -1632,7 +1648,7 @@ void biped_accelerate(
 
 	if (!TEST_FLAG(definition->unit.flags, _unit_is_special_bit))
 	{
-		biped_verify_object_vectors(biped_index, "pre-accel");
+		biped_verify_object_vectors_between_steps(biped_index, "pre-accel");
 
 		if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
 		{
@@ -1675,7 +1691,7 @@ void biped_accelerate(
 			{
 				biped->object.forward = forward;
 				biped_snap_facing(biped_index);
-				biped_verify_object_vectors(biped_index, "post-accel");
+				biped_verify_object_vectors_between_steps(biped_index, "post-accel");
 			}
 		}
 	}
@@ -1923,7 +1939,7 @@ static void biped_update_dead(
 	{
 		if (!debug_biped_limp_body_disable)
 			biped_limp_noodle_relax_nodes_onto_environment(biped_index);
-		biped_verify_object_vectors(biped_index, "post-limp-noodle");
+		biped_verify_object_vectors_between_steps(biped_index, "post-limp-noodle");
 		animation->crouching = FALSE;
 
 		return;
@@ -1935,7 +1951,7 @@ static void biped_update_dead(
 		if (biped->unit.animation.state==_unit_state_dying_airborne)
 			biped_apply_rotation(biped_index);
 		animation->state_desired = _unit_state_dying_airborne;
-		biped_verify_object_vectors(biped_index, "post-dying-airborne");
+		biped_verify_object_vectors_between_steps(biped_index, "post-dying-airborne");
 	}
 	else
 	{
@@ -1945,7 +1961,7 @@ static void biped_update_dead(
 			biped_snap_facing(biped_index);
 		}
 		animation->state_desired = _unit_state_dying;
-		biped_verify_object_vectors(biped_index, "post-dying");
+		biped_verify_object_vectors_between_steps(biped_index, "post-dying");
 	}
 
 	animation->crouching = FALSE;
@@ -2142,7 +2158,7 @@ static void biped_update_airborne(
 		animation->state_desired = _unit_state_airborne;
 	}
 
-	biped_verify_object_vectors(biped_index, "post-airborne");
+	biped_verify_object_vectors_between_steps(biped_index, "post-airborne");
 
 	return;
 }
@@ -2171,7 +2187,7 @@ static void biped_update_landing(
 		? _unit_state_land_hard
 		: _unit_state_land_soft;
 
-	biped_verify_object_vectors(biped_index, "post-landing");
+	biped_verify_object_vectors_between_steps(biped_index, "post-landing");
 
 	return;
 }
@@ -2191,7 +2207,7 @@ static void biped_update_slipping(
 		biped_make_footstep(biped_index, _material_effect_biped_sliding, 1);
 	}
 
-	biped_verify_object_vectors(biped_index, "post-slipping");
+	biped_verify_object_vectors_between_steps(biped_index, "post-slipping");
 
 	return;
 }
@@ -3072,7 +3088,7 @@ static void biped_snap_facing(
 		biped->object.up.j = left.j*sine + up.j;
 		biped->object.up.k = left.k*sine + up.k;
 
-		biped_verify_object_vectors(biped_index, "post-bank-snapfacing");
+		biped_verify_object_vectors_between_steps(biped_index, "post-bank-snapfacing");
 	}
 	else if (TEST_FLAG(definition->biped.flags, _biped_climbs_anything_bit) &&
 		!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
@@ -3131,14 +3147,14 @@ static void biped_snap_facing(
 		biped->object.forward = forward;
 		biped->object.up = normal;
 
-		biped_verify_object_vectors(biped_index, "post-climb-snapfacing");
+		biped_verify_object_vectors_between_steps(biped_index, "post-climb-snapfacing");
 	}
 	else if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
 		!TEST_FLAG(biped->biped.flags, _biped_airborne_bit))
 	{
 		real cosine_of_angle;
 
-		biped_verify_object_vectors(biped_index, "pre-deadplane-snapfacing");
+		biped_verify_object_vectors_between_steps(biped_index, "pre-deadplane-snapfacing");
 
 		cosine_of_angle = dot_product3d(&biped->object.up, &biped->biped.ground_plane.n);
 		if (!(fabs(cosine_of_angle - 1.f)<_real_epsilon))
@@ -3163,7 +3179,7 @@ static void biped_snap_facing(
 			}
 		}
 
-		biped_verify_object_vectors(biped_index, "post-deadplane-snapfacing");
+		biped_verify_object_vectors_between_steps(biped_index, "post-deadplane-snapfacing");
 	}
 	else
 	{
@@ -3172,7 +3188,7 @@ static void biped_snap_facing(
 			biped->object.forward = *global_forward3d;
 		biped->object.up = *global_up3d;
 
-		biped_verify_object_vectors(biped_index, "post-normal-snapfacing");
+		biped_verify_object_vectors_between_steps(biped_index, "post-normal-snapfacing");
 	}
 
 	return;
@@ -3291,7 +3307,7 @@ static void biped_update_turning(
 		}
 
 		biped_snap_facing(biped_index);
-		biped_verify_object_vectors(biped_index, "post-fly-turn");
+		biped_verify_object_vectors_between_steps(biped_index, "post-fly-turn");
 	}
 	else if (biped->unit.animation.base_seat_index!=_unit_base_seat_asleep)
 	{
@@ -3439,7 +3455,7 @@ static void biped_update_turning(
 				}
 			}
 
-			biped_verify_object_vectors(biped_index, "post-moving-turn");
+			biped_verify_object_vectors_between_steps(biped_index, "post-moving-turn");
 		}
 		else if (biped->biped.state==biped_state_idle &&
 			!flaming &&
@@ -3457,7 +3473,7 @@ static void biped_update_turning(
 					_unit_state_turn_right : _unit_state_turn_left;
 			}
 
-			biped_verify_object_vectors(biped_index, "post-standing-turn");
+			biped_verify_object_vectors_between_steps(biped_index, "post-standing-turn");
 		}
 	}
 
@@ -4159,12 +4175,15 @@ boolean biped_update(
 	struct biped_datum *biped = biped_get(biped_index);
 	struct biped_definition *definition = biped_definition_get(biped->definition_index);
 	struct unit_animation_update_data animation;
+#ifdef HALO_XBOX
+	unsigned __int64 tick_profile_start = __builtin_ia32_rdtsc();
+#endif
 
 	if (debug_biped_skip_update)
 		return TRUE;
 
 	profile_enter(biped_update_section);
-	biped_verify_object_vectors(biped_index, "pre-update");
+	biped_verify_object_vectors_between_steps(biped_index, "pre-update");
 
 	animation.state_desired = _unit_state_idle;
 	animation.crouching = FALSE;
@@ -4254,15 +4273,15 @@ boolean biped_update(
 			biped->unit.control_flags,
 			_unit_control_crouch_modifier_bit);
 
-		biped_verify_object_vectors(biped_index, "pre-turning");
+		biped_verify_object_vectors_between_steps(biped_index, "pre-turning");
 		if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
 		{
 			biped_update_turning(biped_index, &animation);
-			biped_verify_object_vectors(biped_index, "post-turning");
+			biped_verify_object_vectors_between_steps(biped_index, "post-turning");
 		}
 
 		biped_update_moving(biped_index, &animation);
-		biped_verify_object_vectors(biped_index, "post-moving");
+		biped_verify_object_vectors_between_steps(biped_index, "post-moving");
 
 		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
 		{
@@ -4281,7 +4300,7 @@ boolean biped_update(
 			biped_update_slipping(biped_index, &animation);
 		}
 
-		biped_verify_object_vectors(biped_index, "post-dead/air/land/slip");
+		biped_verify_object_vectors_between_steps(biped_index, "post-dead/air/land/slip");
 
 		if (!biped->biped.player_melee_ticks)
 		{
@@ -4347,6 +4366,9 @@ boolean biped_update(
 
 	biped_verify_object_vectors(biped_index, "post-update");
 	profile_exit(biped_update_section);
+#ifdef HALO_XBOX
+	halo_xbox_biped_update_cycles += __builtin_ia32_rdtsc()-tick_profile_start;
+#endif
 
 	return TRUE;
 }

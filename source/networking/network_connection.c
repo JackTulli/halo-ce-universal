@@ -1195,7 +1195,18 @@ struct network_connection *network_connection_new(
 #else
 			reliable_queue_size = 0x8000;
 #endif
+#ifdef HALO_LINUX
+			/* every datagram the host sent since the last idle: with 1600 bytes
+			an idle read one or two (it stops once less than a datagram's room is
+			left), fewer than the host sends a tick (object and unit states,
+			inventories, statistics), so the rest waited in the socket and a
+			client at 30 frames or fewer applied the host's state seconds late,
+			snapping its own player back (2026-10-01: a remote console
+			rubberbanded); as the server's queue above */
+			unreliable_queue_size = 0x20000;
+#else
 			unreliable_queue_size = 0x640;
+#endif
 		}
 	}
 
@@ -1615,6 +1626,74 @@ static boolean network_connection_idle_server_reliable_endpoint(
 	return success;
 }
 
+#ifdef HALO_LINUX
+/* (the native ports) a client's intake of the host's datagrams, logged every
+five seconds with the netcode's own figures (network_distributed.c): idles,
+datagrams read, the most in one idle, and the idles a full queue stopped
+before the socket was empty (any at all: the client falls behind the host) */
+void platform_log(const char *format, ...);
+void network_distributed_statistics_text(char *text, long size);
+
+/* [0] a client's connection, [1] the host's server connection (a host has
+its own client too, whose line then leaves the netcode's figures to the
+host's) */
+static struct
+{
+	unsigned long since;
+	long idles;
+	long datagrams;
+	long most;
+	long cut;
+} connection_intake[2];
+
+static void network_connection_note_intake(
+	struct network_connection *connection,
+	long datagrams,
+	boolean cut)
+{
+	unsigned long now;
+	boolean host = TEST_FLAG(connection->flags, _connection_create_server_bit);
+	short role = host ? 1 : 0;
+
+	if (!host && !TEST_FLAG(connection->flags, _connection_create_clientside_client_bit))
+	{
+		return;
+	}
+	now = system_milliseconds();
+	if (!connection_intake[role].since)
+	{
+		connection_intake[role].since = now;
+	}
+	connection_intake[role].idles++;
+	connection_intake[role].datagrams += datagrams;
+	if (datagrams > connection_intake[role].most)
+	{
+		connection_intake[role].most = datagrams;
+	}
+	if (cut)
+	{
+		connection_intake[role].cut++;
+	}
+	if (now - connection_intake[role].since >= 5000)
+	{
+		char text[256];
+
+		text[0] = 0;
+		if (host || !connection_intake[1].since || now - connection_intake[1].since > 10000)
+		{
+			network_distributed_statistics_text(text, sizeof(text));
+		}
+		platform_log("net: %s: %ld idles, %ld datagrams (at most %ld in one), %ld stopped by a full queue%s%s",
+			host ? "host" : "client", connection_intake[role].idles, connection_intake[role].datagrams,
+			connection_intake[role].most, connection_intake[role].cut, text[0] ? "; " : "", text);
+		memset(&connection_intake[role], 0, sizeof(connection_intake[role]));
+		connection_intake[role].since = now;
+	}
+
+	return;
+}
+#endif
+
 boolean network_connection_idle(
 	struct network_connection *connection,
 	long timeout,
@@ -1680,6 +1759,9 @@ boolean network_connection_idle(
 	if (success && connection->unreliable_endpoint)
 	{
 		long free_space = circular_queue_free_space(connection->unreliable_incoming_queue);
+#ifdef HALO_LINUX
+		long datagrams_read = 0;
+#endif
 
 		while (success &&
 			free_space >= DATAGRAM_MAXIMUM_SIZE + sizeof(unsigned long))
@@ -1730,8 +1812,14 @@ boolean network_connection_idle(
 				"endpoint read buffer overflowed");
 			if (buffer_size <= 0)
 			{
+#ifdef HALO_LINUX
+				network_connection_note_intake(connection, datagrams_read, FALSE);
+#endif
 				return success;
 			}
+#ifdef HALO_LINUX
+			datagrams_read++;
+#endif
 
 			source_ipv4_address = source_address.address.long_words[0];
 			if (source_ipv4_address)
@@ -1758,6 +1846,9 @@ boolean network_connection_idle(
 
 			free_space = circular_queue_free_space(connection->unreliable_incoming_queue);
 		}
+#ifdef HALO_LINUX
+		network_connection_note_intake(connection, datagrams_read, success);
+#endif
 	}
 
 	return success;

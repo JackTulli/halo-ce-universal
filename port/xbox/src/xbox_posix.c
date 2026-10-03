@@ -91,8 +91,11 @@ static PRTL_CRITICAL_SECTION section_of(pthread_mutex_t *mutex)
 		}
 		else
 		{
+			/* (Sleep(1): Sleep(0) gives way only to threads of the same
+			priority, and the one making the section may be lower: the
+			internet play thread runs above the game) */
 			while (mutex->state != 2)
-				Sleep(0);
+				Sleep(1);
 		}
 	}
 	return mutex->section;

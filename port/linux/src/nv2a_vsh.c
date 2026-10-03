@@ -126,6 +126,13 @@ static void operand(struct xgpu_text *text, const DWORD *instruction, char which
 		xgpu_text_append(text, "v%lu", field(instruction, 1, 9, 4));
 		break;
 	case _mux_constant:
+#ifndef HALO_ANDROID
+		/* GLSL 1.10 clamps floats only */
+		if (relative && !xgpu_capabilities.modern_shading_language)
+			xgpu_text_append(text, "c[int(clamp(float(a0 + %lu), 0.0, %d.0))]", field(instruction, 1, 13, 8),
+				XGPU_VERTEX_CONSTANT_COUNT - 1);
+		else
+#endif
 		if (relative)
 			xgpu_text_append(text, "c[clamp(a0 + %lu, 0, %d)]", field(instruction, 1, 13, 8), XGPU_VERTEX_CONSTANT_COUNT - 1);
 		else
@@ -194,15 +201,108 @@ static const char shader_prologue[] =
 	"	return vec4(1.0, max(s.x, 0.0), specular, 1.0);\n"
 	"}\n";
 
+#ifndef HALO_ANDROID
+/* ---------- the desktop without OpenGL 4.5 (xgpu_capabilities, xgpu.h) */
+
+/* the prologue again in GLSL 1.10: varying for out, and no invariant
+qualifier (GLSL 1.20's). The functions are the same. */
+static const char shader_prologue_legacy[] =
+	"#version 110\n"
+	"uniform vec4 c[192];\n"
+	"uniform vec4 viewport_scale;\n"
+	"uniform vec4 viewport_offset;\n"
+	"uniform float point_size;\n"
+	"uniform float screen_offset;\n"
+	"varying vec4 xD0;\n"
+	"varying vec4 xD1;\n"
+	"varying vec4 xB0;\n"
+	"varying vec4 xB1;\n"
+	"varying vec4 xT0;\n"
+	"varying vec4 xT1;\n"
+	"varying vec4 xT2;\n"
+	"varying vec4 xT3;\n"
+	"varying float xFog;\n"
+	"vec4 nv2a_rcc(float x)\n"
+	"{\n"
+	"	float r = 1.0 / x;\n"
+	"	if (r > 0.0) r = clamp(r, 5.42101e-20, 1.884467e+19);\n"
+	"	else r = clamp(r, -1.884467e+19, -5.42101e-20);\n"
+	"	return vec4(r);\n"
+	"}\n"
+	"vec4 nv2a_exp(float x)\n"
+	"{\n"
+	"	return vec4(exp2(floor(x)), fract(x), exp2(x), 1.0);\n"
+	"}\n"
+	"vec4 nv2a_log(float x)\n"
+	"{\n"
+	"	x = abs(x);\n"
+	"	if (x == 0.0) return vec4(-1.0e30, 1.0, -1.0e30, 1.0);\n"
+	"	float e = floor(log2(x));\n"
+	"	return vec4(e, x / exp2(e), log2(x), 1.0);\n"
+	"}\n"
+	"vec4 nv2a_lit(vec4 s)\n"
+	"{\n"
+	"	float specular = s.x > 0.0 ? pow(max(s.y, 0.0), clamp(s.w, -127.9961, 127.9961)) : 0.0;\n"
+	"	return vec4(1.0, max(s.x, 0.0), specular, 1.0);\n"
+	"}\n";
+
+/* A NORMPACKED3 element without integer attributes: its four bytes arrive
+as floats 0..255, lowest first, and the 11, 11 and 10 bit fields are put
+together with arithmetic that is exact in floats (the numbers
+unpack_normpacked3 gives). The fields are split by multiplying with 1/8 and
+1/64, not by dividing: a GPU that divides by multiplying with a reciprocal
+it has rounded down takes 8 / 8 below 1, and floor then loses the bit. */
+static const char shader_unpack_bytes[] =
+	"vec4 unpack_normpacked3_bytes(vec4 p)\n"
+	"{\n"
+	"	p = floor(p + 0.5);\n"
+	"	float y_low = floor(p.y * 0.125);\n"
+	"	float z_low = floor(p.z * 0.015625);\n"
+	"	float x = p.x + 256.0 * (p.y - 8.0 * y_low);\n"
+	"	float y = y_low + 32.0 * (p.z - 64.0 * z_low);\n"
+	"	float z = z_low + 4.0 * p.w;\n"
+	"	if (x >= 1024.0) x -= 2048.0;\n"
+	"	if (y >= 1024.0) y -= 2048.0;\n"
+	"	if (z >= 512.0) z -= 1024.0;\n"
+	"	return vec4(x / 1023.0, y / 1023.0, z / 511.0, 1.0);\n"
+	"}\n";
+
+/* what comes before main: the prologue and the attributes */
+static void desktop_declarations(struct xgpu_text *text, unsigned long packed_attribute_mask)
+{
+	BOOL modern = xgpu_capabilities.modern_shading_language;
+	unsigned long index;
+
+	xgpu_text_append(text, "%s", modern ? shader_prologue : shader_prologue_legacy);
+	if (!xgpu_capabilities.clip_control)
+		xgpu_text_append(text, "uniform float clip_flip;\n");
+	if (packed_attribute_mask && !xgpu_capabilities.integer_attributes)
+		xgpu_text_append(text, "%s", shader_unpack_bytes);
+	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+	{
+		BOOL packed = (packed_attribute_mask & (1UL << index)) != 0;
+		const char *type = packed && xgpu_capabilities.integer_attributes ? "uint" : "vec4";
+		const char *suffix = packed ? "packed" : "in";
+
+		/* GLSL 1.10 has no layout qualifier: the device binds each
+		attribute's location by its name before it links (d3d8_gl.c) */
+		if (modern)
+			xgpu_text_append(text, "layout(location = %lu) in %s v%lu_%s;\n", index, type, index, suffix);
+		else
+			xgpu_text_append(text, "attribute %s v%lu_%s;\n", type, index, suffix);
+	}
+}
+#endif
+
 char *nv2a_vertex_shader_to_glsl(const DWORD *instructions, unsigned long instruction_count,
-	unsigned long packed_attribute_mask)
+	unsigned long packed_attribute_mask, unsigned long color_attribute_mask)
 {
 	struct xgpu_text text = { 0 };
 	unsigned long index;
 
 #ifdef HALO_ANDROID
+	(void)color_attribute_mask;
 	xgpu_text_append(&text, "#version %s\n", xgpu_capabilities.shading_language);
-#endif
 	xgpu_text_append(&text, "%s", shader_prologue);
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
@@ -211,10 +311,21 @@ char *nv2a_vertex_shader_to_glsl(const DWORD *instructions, unsigned long instru
 		else
 			xgpu_text_append(&text, "layout(location = %lu) in vec4 v%lu_in;\n", index, index);
 	}
+#else
+	desktop_declarations(&text, packed_attribute_mask);
+#endif
 
 	xgpu_text_append(&text, "void main()\n{\n");
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
+#ifndef HALO_ANDROID
+		if ((packed_attribute_mask & (1UL << index)) && !xgpu_capabilities.integer_attributes)
+			xgpu_text_append(&text, "\tvec4 v%lu = unpack_normpacked3_bytes(v%lu_packed);\n", index, index);
+		/* a D3DCOLOR's bytes are blue, green, red, alpha */
+		else if ((color_attribute_mask & (1UL << index)) && !(packed_attribute_mask & (1UL << index)))
+			xgpu_text_append(&text, "\tvec4 v%lu = v%lu_in.zyxw;\n", index, index);
+		else
+#endif
 		if (packed_attribute_mask & (1UL << index))
 			xgpu_text_append(&text, "\tvec4 v%lu = unpack_normpacked3(v%lu_packed);\n", index, index);
 		else
@@ -356,6 +467,22 @@ char *nv2a_vertex_shader_to_glsl(const DWORD *instructions, unsigned long instru
 		"\tgl_Position = vec4(ndc * oPos.w, oPos.w);\n"
 #endif
 #ifdef HALO_ANDROID
+		, XGPU_VERTEX_CONSTANT_BIAS - 38, XGPU_VERTEX_CONSTANT_BIAS - 37
+#endif
+		);
+#ifndef HALO_ANDROID
+	/* without glClipControl, what it does: depth 0..1, and rows from the top
+	in a render target (clip_flip -1; the window's own back buffer has its
+	rows from the bottom and is drawn as it comes, clip_flip 1) */
+	if (!xgpu_capabilities.clip_control)
+	{
+		xgpu_text_append(&text,
+			"\tgl_Position.y = gl_Position.y * clip_flip;\n"
+			"\tgl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n");
+	}
+#endif
+	xgpu_text_append(&text,
+#ifdef HALO_ANDROID
 		/* what glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE) does on desktop
 		GL: rows from the top, depth 0..1 */
 		"\tgl_Position.y = -gl_Position.y;\n"
@@ -371,10 +498,6 @@ char *nv2a_vertex_shader_to_glsl(const DWORD *instructions, unsigned long instru
 		"\txT2 = oT2;\n"
 		"\txT3 = oT3;\n"
 		"\txFog = oFog.x;\n"
-		"}\n"
-#ifdef HALO_ANDROID
-		, XGPU_VERTEX_CONSTANT_BIAS - 38, XGPU_VERTEX_CONSTANT_BIAS - 37
-#endif
-		);
+		"}\n");
 	return text.buffer;
 }

@@ -120,6 +120,7 @@ Give these options to `configure.py`:
 | `--release` | A release build. The game does not examine assertions, as in the retail game. |
 | `--portable` | The Linux and Windows builds operate on all x86-64 processors. Use this option for builds that you give to other persons. |
 | `--lto=thin`, `--lto=off` | Less link-time optimization. The link is faster. |
+| `--window-base=0x40000000` | The Linux and Windows builds put the Xbox memory at this address, not at `0x80000000`. The game moves the addresses in the maps when it reads them. Refer to `port/windows/README.md`. |
 | `--pgo=off` | No profile-guided optimization. |
 | `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
 

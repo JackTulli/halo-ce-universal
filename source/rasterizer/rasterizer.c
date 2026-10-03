@@ -710,9 +710,69 @@ disc): the effects that cost the most frame time go, the look of the game
 stays -- soft shadows, dynamic lights and reflections on the environment,
 grass, bump mapping, the sun's rays, the lens flares' visibility tests
 (which the game waits on) and the second pass of active camouflage */
+extern boolean render_particles_enabled;
+extern boolean render_particle_systems_enabled;
+extern boolean render_contrails_enabled;
+extern boolean render_weather_particle_systems_enabled;
+
+/* the [graphics] settings of config.toml: each can only turn an effect off
+(so performance mode's set stays off) */
+static void rasterizer_graphics_settings(
+	void)
+{
+	if (!halo_graphics_option("shadows"))
+		rasterizer_debug_options.environment_shadows = FALSE;
+	if (!halo_graphics_option("soft_shadows"))
+		rasterizer_debug_options.shadows_convolution = FALSE;
+	if (!halo_graphics_option("dynamic_lights"))
+		rasterizer_debug_options.environment_diffuse_lights = FALSE;
+	if (!halo_graphics_option("specular"))
+	{
+		rasterizer_debug_options.environment_specular_lights = FALSE;
+		rasterizer_debug_options.environment_specular_lightmaps = FALSE;
+	}
+	if (!halo_graphics_option("reflections"))
+	{
+		rasterizer_debug_options.environment_reflections = FALSE;
+		rasterizer_debug_options.environment_reflection_mirrors = FALSE;
+	}
+	if (!halo_graphics_option("decals"))
+		rasterizer_debug_options.environment_decals = FALSE;
+	if (!halo_graphics_option("detail_objects"))
+		rasterizer_debug_options.detail_objects = FALSE;
+	if (!halo_graphics_option("bump_mapping"))
+		rasterizer_debug_options.bump_mapping = FALSE;
+	if (!halo_graphics_option("lens_flares"))
+		rasterizer_debug_options.lens_flares = FALSE;
+	if (!halo_graphics_option("lens_flare_occlusion"))
+		rasterizer_debug_options.lens_flares_occlusion = FALSE;
+	if (!halo_graphics_option("sun_rays"))
+		rasterizer_debug_options.ray_of_buddha = FALSE;
+	if (!halo_graphics_option("fog"))
+	{
+		rasterizer_debug_options.fog_atmosphere = FALSE;
+		rasterizer_debug_options.fog_plane = FALSE;
+	}
+	if (!halo_graphics_option("screen_flashes"))
+		rasterizer_debug_options.screen_flashes = FALSE;
+	if (!halo_graphics_option("screen_effects"))
+		rasterizer_debug_options.screen_effects = FALSE;
+	if (!halo_graphics_option("active_camouflage_quality"))
+		rasterizer_debug_options.active_camouflage_multipass = FALSE;
+	if (!halo_graphics_option("particles"))
+	{
+		render_particles_enabled = FALSE;
+		render_particle_systems_enabled = FALSE;
+		render_contrails_enabled = FALSE;
+	}
+	if (!halo_graphics_option("weather"))
+		render_weather_particle_systems_enabled = FALSE;
+}
+
 static void rasterizer_performance_mode(
 	void)
 {
+	rasterizer_graphics_settings();
 	if (!halo_performance_mode())
 		return;
 	rasterizer_debug_options.environment_shadows = FALSE;
@@ -725,8 +785,65 @@ static void rasterizer_performance_mode(
 	rasterizer_debug_options.detail_objects = FALSE;
 	rasterizer_debug_options.bump_mapping = FALSE;
 	rasterizer_debug_options.ray_of_buddha = FALSE;
-	rasterizer_debug_options.lens_flares_occlusion = FALSE;
+	/* (lens flare occlusion stays: without it every flare, a lamp's, a
+	muzzle flash's, a plasma bolt's, drew through the walls as a white
+	glow; graphics.lens_flare_occlusion still turns it off) */
 	rasterizer_debug_options.active_camouflage_multipass = FALSE;
+	rasterizer_debug_options.fps_accumulation = FALSE;
+}
+#endif
+
+#ifdef HALO_LIGHT_PIPELINE
+/* the light pipeline (the desktop builds; halo_linux_source_fixups.h): what
+a card without shaders can draw. The effects that need more than two
+textures, a cube map or a render target go, as performance mode's go, and
+the passes that stay ask this to draw their simple form: the environment
+its lightmap and base map in one pass (rasterizer_xbox_environment.c),
+water and glass without their reflections, active camouflage as a tint.
+What stays is the lightmaps, base maps, self-illumination, model lighting,
+fog, transparency, particles, decals, the HUD, text, menus, screen flashes,
+lens flares with their occlusion and the sky. The [graphics] settings still
+turn off what is left; none turns back on what the pipeline cannot draw. */
+static boolean rasterizer_light_pipeline_enabled = FALSE;
+
+boolean rasterizer_light_pipeline(
+	void)
+{
+	return rasterizer_light_pipeline_enabled;
+}
+
+/* once the device exists (it has chosen its renderer) */
+static void rasterizer_light_pipeline_initialize(
+	void)
+{
+	int setting = halo_light_pipeline_setting();
+
+	rasterizer_light_pipeline_enabled =
+		setting < 0 ? halo_renderer_is_light() != 0 : setting != 0;
+	if (!rasterizer_light_pipeline_enabled)
+		return;
+	/* shadows and their blur: a render target each */
+	rasterizer_debug_options.environment_shadows = FALSE;
+	rasterizer_debug_options.shadows_convolution = FALSE;
+	/* dynamic lights draw between the lightmap pass and the texture pass,
+	which multiplies them by the base map; with the two in one pass they
+	would add untextured light (and they need a cube map and a 3D texture) */
+	rasterizer_debug_options.environment_diffuse_lights = FALSE;
+	rasterizer_debug_options.environment_specular_lights = FALSE;
+	rasterizer_debug_options.environment_specular_lightmaps = FALSE;
+	rasterizer_debug_options.environment_reflection_lightmap_mask = FALSE;
+	rasterizer_debug_options.environment_reflection_mirrors = FALSE;
+	rasterizer_debug_options.environment_reflections = FALSE;
+	rasterizer_debug_options.bump_mapping = FALSE;
+	rasterizer_debug_options.detail_objects = FALSE;
+	/* the sun's rays and the screen effects convolve copies of the frame
+	(screen flashes are one quad, and stay) */
+	rasterizer_debug_options.ray_of_buddha = FALSE;
+	rasterizer_debug_options.screen_effects = FALSE;
+	rasterizer_debug_options.active_camouflage_multipass = FALSE;
+	/* plasma is two 3D noise textures; z-sprites replace depth per pixel */
+	rasterizer_debug_options.plasma_energy = FALSE;
+	rasterizer_debug_options.zsprites = FALSE;
 	rasterizer_debug_options.fps_accumulation = FALSE;
 }
 #endif
@@ -745,7 +862,16 @@ boolean rasterizer_initialize(
 #ifdef HALO_LINUX
 	rasterizer_performance_mode();
 #endif
+#ifdef HALO_LIGHT_PIPELINE
+	{
+		boolean initialized = _rasterizer_initialize();
+
+		rasterizer_light_pipeline_initialize();
+		return initialized;
+	}
+#else
 	return _rasterizer_initialize();
+#endif
 }
 
 void rasterizer_reset_state(
@@ -755,9 +881,18 @@ void rasterizer_reset_state(
 	return;
 }
 
+#ifdef HALO_XBOX
+/* the device (d3d8_nv2a.c): finishes the last frame's Present (its wait for
+the back buffer) before this frame draws anything */
+extern void halo_xbox_frame_begin(void);
+#endif
+
 void rasterizer_frame_begin(
 	struct rasterizer_frame_begin_parameters const *parameters)
 {
+#ifdef HALO_XBOX
+	halo_xbox_frame_begin();
+#endif
 	if (rasterizer_debug_options.environment <= 1)
 	{
 		rasterizer_debug_options.environment_fog = rasterizer_debug_options.environment;

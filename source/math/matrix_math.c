@@ -88,6 +88,9 @@ symbols in this file:
 
 #include "cseries.h"
 #include "real_math.h"
+#ifdef HALO_XBOX
+#include <xmmintrin.h>
+#endif
 
 /* ---------- constants */
 
@@ -926,6 +929,23 @@ real_plane3d *matrix4x3_inverse_transform_plane(
 	return result;
 }
 
+#ifdef HALO_XBOX
+/* one row of b times the rows of a, lane by lane in the order of the SSE
+block in matrix4x3_multiply: (b0 * forward + b1 * left) + b2 * up */
+static __forceinline __m128 matrix4x3_multiply_row(
+	real const *b_row,
+	__m128 forward,
+	__m128 left,
+	__m128 up)
+{
+	return _mm_add_ps(
+		_mm_add_ps(
+			_mm_mul_ps(_mm_load_ps1(&b_row[0]), forward),
+			_mm_mul_ps(_mm_load_ps1(&b_row[1]), left)),
+		_mm_mul_ps(_mm_load_ps1(&b_row[2]), up));
+}
+#endif
+
 void matrix4x3_multiply(
 	real_matrix4x3 const *a,
 	real_matrix4x3 const *b,
@@ -936,7 +956,37 @@ void matrix4x3_multiply(
 	real *result_elements = result->n[0];
 	real const *a_scale = &a->scale;
 
-#ifdef HALO_LINUX
+#if defined(HALO_XBOX)
+	{
+		/* the console: the SSE block below as SSE1 intrinsics (the Pentium
+		III has no SSE2), under half the scalar form's instructions.
+		Each row of a sits in the lanes (x, 0, y, z) and every lane is summed
+		in the scalar form's order, so the results are the same bits. All of
+		a and b is read before the first store: callers pass result as a or
+		as b */
+		__m128 const forward = _mm_loadh_pi(_mm_load_ss(&a_elements[0]), (__m64 const *)&a_elements[1]);
+		__m128 const left = _mm_loadh_pi(_mm_load_ss(&a_elements[3]), (__m64 const *)&a_elements[4]);
+		__m128 const up = _mm_loadh_pi(_mm_load_ss(&a_elements[6]), (__m64 const *)&a_elements[7]);
+		__m128 const position = _mm_loadh_pi(_mm_load_ss(&a_elements[9]), (__m64 const *)&a_elements[10]);
+		__m128 const row0 = matrix4x3_multiply_row(&b_elements[0], forward, left, up);
+		__m128 const row1 = matrix4x3_multiply_row(&b_elements[3], forward, left, up);
+		__m128 const row2 = matrix4x3_multiply_row(&b_elements[6], forward, left, up);
+		__m128 const row3 = _mm_add_ps(
+			_mm_mul_ps(
+				matrix4x3_multiply_row(&b_elements[9], forward, left, up),
+				_mm_load_ps1(a_scale)),
+			position);
+
+		_mm_store_ss(&result_elements[0], row0);
+		_mm_storeh_pi((__m64 *)&result_elements[1], row0);
+		_mm_store_ss(&result_elements[3], row1);
+		_mm_storeh_pi((__m64 *)&result_elements[4], row1);
+		_mm_store_ss(&result_elements[6], row2);
+		_mm_storeh_pi((__m64 *)&result_elements[7], row2);
+		_mm_store_ss(&result_elements[9], row3);
+		_mm_storeh_pi((__m64 *)&result_elements[10], row3);
+	}
+#elif defined(HALO_LINUX)
 	{
 		/* the SSE block below: rows of b combine the rows of a, and the
 		position is scaled by a's scale before a's own is added */

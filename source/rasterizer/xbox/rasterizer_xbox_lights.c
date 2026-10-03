@@ -898,9 +898,12 @@ static void rasterizer_sun_glow_copy_source(
 	vertex_constants[7][2] = 0.0f;
 	vertex_constants[7][3] = 0.0f;
 #ifdef HALO_LINUX
-	/* the frame's texels, which the console's widescreen buffer squeezes */
+	/* the frame's texels, which the console's widescreen buffer squeezes
+	(and its 720p buffer scales) */
 	vertex_constants[0][0] *= halo_screen_texture_scale_x();
 	vertex_constants[0][3] *= halo_screen_texture_scale_x();
+	vertex_constants[1][1] *= halo_screen_texture_scale_y();
+	vertex_constants[1][3] *= halo_screen_texture_scale_y();
 #endif
 	IDirect3DDevice8_SetVertexShaderConstant(
 		global_d3d_device,

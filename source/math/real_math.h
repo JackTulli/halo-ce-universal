@@ -969,7 +969,14 @@ real square_root(
 __inline real square_root(
 	real x)
 {
+#ifdef HALO_XBOX
+	/* SSE's single-precision root (sqrtss) rather than a trip through the
+	x87 in double: the double root rounded to single is the correctly
+	rounded single root, so the results are the same as the other builds' */
+	return __builtin_sqrtf(x);
+#else
 	return sqrt(x);
+#endif
 }
 #endif
 
@@ -978,6 +985,26 @@ __inline real reciprocal_square_root(
 {
 	return 1.f / square_root(x);
 }
+
+#ifdef HALO_XBOX
+/* the console: (real)fmod((double)x, 1.0), the fractional part with the
+sign of x, without the C library's x87 call. Below 2^23 the truncation and
+the difference are exact in single precision, and the sign is put back so a
+zero keeps x's, as fmod's does (the same bits for every float); NaNs,
+infinities and larger values (all whole) still go to fmod */
+__inline real fraction_of(
+	real x)
+{
+	if (__builtin_fabsf(x) < 8388608.f)
+	{
+		real whole = (real)(long)x;
+
+		return __builtin_copysignf(__builtin_fabsf(x) - __builtin_fabsf(whole), x);
+	}
+
+	return (real)fmod((double)x, 1.0);
+}
+#endif
 
 __inline real power(
 	real a, 

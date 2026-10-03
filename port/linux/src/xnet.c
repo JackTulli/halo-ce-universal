@@ -512,6 +512,9 @@ int WSAAPI halo_ws_sendto(SOCKET socket, const char *buffer, int length, int fla
 		{
 			result = posix_socket_sendto((int)socket, buffer, length, flags, address, address_length);
 		}
+		/* (the broadcast's own error: the sends below set the last error
+		again, and a failure then read as error 0) */
+		int broadcast_error = result < 0 ? posix_socket_last_error() : 0;
 		/* and to every internet play peer (after the send above, which binds
 		the socket if it was not) */
 		peer_count = p2p_broadcast_targets(((const struct sockaddr_in *)address)->sin_port, targets, ports,
@@ -530,6 +533,11 @@ int WSAAPI halo_ws_sendto(SOCKET socket, const char *buffer, int length, int fla
 		search) or searchers (a hosting game's answer) */
 		if (length > 0)
 			p2p_broadcast_sent((int)socket, ((const struct sockaddr_in *)address)->sin_port, buffer, length);
+		if (result < 0 && broadcast_error)
+		{
+			WSASetLastError(broadcast_error);
+			return SOCKET_ERROR;
+		}
 		return winsock_result(result);
 	}
 	{
@@ -947,7 +955,7 @@ comes up, and answering "ethernet, no address" at once left it sending
 from 0.0.0.0 */
 DWORD WSAAPI XNetGetTitleXnAddr(XNADDR *address)
 {
-	static int reported;
+	static unsigned long reported;
 	unsigned long ip = title_address();
 
 	memset(address, 0, sizeof(*address));
@@ -965,8 +973,12 @@ DWORD WSAAPI XNetGetTitleXnAddr(XNADDR *address)
 		return XNET_GET_XNADDR_ETHERNET;
 #endif
 	}
-	if (!reported++)
+	/* (each change: a late DHCP answer replacing an AutoIP address) */
+	if (ip != reported)
+	{
+		reported = ip;
 		platform_log("network address %lu.%lu.%lu.%lu", ip & 0xff, (ip >> 8) & 0xff, (ip >> 16) & 0xff, (ip >> 24) & 0xff);
+	}
 	return XNET_GET_XNADDR_ETHERNET | XNET_GET_XNADDR_DHCP;
 }
 

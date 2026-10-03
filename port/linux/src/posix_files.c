@@ -2,11 +2,13 @@
 POSIX_FILES.C
 
 glibc file system helpers for the platform layer (see posix.h). Built with
-the host ABI and _FILE_OFFSET_BITS=64.
+the host ABI and _FILE_OFFSET_BITS=64. Also the description of this
+process's mappings, which comes from /proc/self/maps.
 */
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -229,5 +231,48 @@ int posix_find_entry_case_insensitive(const char *directory, const char *name,
 		}
 	}
 	closedir(handle);
+	return found;
+}
+
+/* ---------- memory */
+
+int posix_describe_address_range(posix_ulong address, posix_ulong size,
+	char *buffer, posix_ulong buffer_size)
+{
+	unsigned long long start = address;
+	unsigned long long end = (unsigned long long)address + size;
+	FILE *maps;
+	char line[512];
+	posix_ulong used = 0;
+	int continued = 0;
+	int found = 0;
+
+	if (!buffer_size)
+		return 0;
+	buffer[0] = 0;
+	maps = fopen("/proc/self/maps", "r");
+	if (!maps)
+		return 0;
+	while (fgets(line, sizeof(line), maps))
+	{
+		/* a line longer than the buffer comes in pieces: only the first
+		begins with the range */
+		int complete = strchr(line, '\n') != NULL;
+		unsigned long long first, last;
+
+		if (!continued && sscanf(line, "%llx-%llx", &first, &last) == 2 && first < end && last > start)
+		{
+			int written;
+
+			line[strcspn(line, "\n")] = 0;
+			written = snprintf(buffer + used, buffer_size - used, "%s%s", found ? "; " : "", line);
+			found = 1;
+			if (written < 0 || (posix_ulong)written >= buffer_size - used)
+				break;
+			used += (posix_ulong)written;
+		}
+		continued = !complete;
+	}
+	fclose(maps);
 	return found;
 }

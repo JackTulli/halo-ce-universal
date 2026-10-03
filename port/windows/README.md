@@ -18,6 +18,11 @@ You do not need the Xbox SDK.
   SDK. It does not use the MSVC compiler.
 - LLVM (clang and lld), Python 3 and ninja in the `PATH`. For example,
   enter `scoop install llvm python ninja`.
+- clang reads the `INCLUDE` and `LIB` environment variables before it looks
+  for Visual Studio itself. If another toolchain sets them (Open Watcom
+  does, for every program), build in the environment that
+  `vcvarsall.bat x86` of the Build Tools sets instead. MSYS2's clang,
+  lld and ninja (the Xbox build's, port/xbox/README.md) serve as well.
 - A network connection for the first build. `configure.py` downloads the
   Visual C++ development package of SDL 3.4.16 to
   `build/windows/third_party`.
@@ -53,6 +58,25 @@ The game finds the game data as on Linux. Refer to "Start the game" in
 | Saved games | `%APPDATA%\halo`, or `paths.saves` in `config.toml` |
 | Log | `debug.txt` in the data root (the folder that contains `maps\`) |
 
+### The settings window
+
+When the game starts, a window of the settings comes up before anything
+else: the renderer, fullscreen, the field of view and the rest of
+`[display]` and `[graphics]` on pages of their own, sound and input on
+theirs, and every other setting of `config.toml` in a list under
+Advanced, each with its description. Play writes the file (keeping its
+comments and anything else in it) and starts the game with the new
+values; Quit ends the program; Defaults puts every setting shown back to
+its default. The window is a plain Win32 dialog
+(`port/windows/src/win32_launcher.c`, the Windows 98 build's
+`port/win9x/platform/w9x_launcher.c` as it is), so it needs nothing of
+SDL.
+
+The checkbox at the bottom (`launcher.show` in the file) decides whether
+it comes up next time. `halo.exe -nolauncher` starts without it, and
+`halo.exe -launcher` brings it back whatever the file says. A copy
+started to open an invite link (`halo://...`) skips it.
+
 ## How the port operates
 
 The game is 32-bit code, as on Linux, because its data contains 32-bit
@@ -61,7 +85,23 @@ the structure layout, the 16-bit `wchar_t` and the calling conventions.
 Thus the Windows build needs fewer changes than the Linux build.
 
 The executable is large-address-aware, because the platform layer reserves
-the Xbox memory at `0x80000000`.
+the Xbox memory at `0x80000000`, in the upper 2 GB of the address space.
+
+`python configure.py --window-base=0x40000000` puts the Xbox memory at
+`0x40000000` instead (`port/include/halo_memory_window.h`). Windows 9x needs
+this, because its addresses from `0x80000000` are shared by all programs.
+Such a build:
+
+- Moves the addresses in each map when it reads the map, because the maps
+  contain addresses at `0x80000000` (`port/linux/src/xbox_map_rebase.h`).
+- Reserves `0x80000000` to `0x87FFFFFF` with no access, so that an address
+  of a map that was not moved causes a crash at that address. The log
+  (`halo.log`) shows the two ranges.
+- Does not load the saved checkpoints of a build with a different address,
+  and the other builds do not load its checkpoints.
+
+The executable stays large-address-aware: the drivers and the heaps can then
+use the upper 2 GB.
 
 ### Headers
 

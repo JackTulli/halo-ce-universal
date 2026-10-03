@@ -1271,6 +1271,17 @@ short connect_endpoint(
 			SET_FLAG(ep->flags, _transport_endpoint_nonblocking_bit, FALSE);
 			SET_FLAG(ep->flags, _transport_endpoint_connected_bit, TRUE);
 			SET_FLAG(ep->flags, _transport_endpoint_client_bit, TRUE);
+#ifdef HALO_LINUX
+			/* the game's reliable messages go out at once: with Nagle's
+			algorithm each small one waited for the last one's delayed
+			acknowledgement (to internet play's stand-in on 127.0.0.1 too) */
+			if (socket_type == SOCK_STREAM)
+			{
+				int one = 1;
+
+				setsockopt(ep->socket, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */, (const char *)&one, sizeof(one));
+			}
+#endif
 		}
 	}
 
@@ -1479,6 +1490,14 @@ struct transport_endpoint *accept_endpoint(
 		{
 			ep->socket = socket;
 			ep->flags |= 1;
+#ifdef HALO_LINUX
+			/* (as a connection the game opens: no Nagle delay) */
+			{
+				int one = 1;
+
+				setsockopt(socket, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */, (const char *)&one, sizeof(one));
+			}
+#endif
 		}
 		else
 			listening_endpoint->error = _transport_error_out_of_memory;

@@ -57,6 +57,30 @@ void data_initialize(struct data_array *data, const char *name, short maximum_co
 void *datum_try_and_get(struct data_array *data, long index);
 void data_verify(struct data_array *data);
 void *datum_get(struct data_array *data, long index);
+#ifdef HALO_XBOX
+/* (HALO_XBOX) a datum that datum_get would return without a word, without
+the call: objects, actors, effects and the rest are found this way
+thousands of times a tick. Any other index still goes to datum_get, which
+asserts as before. (data.c itself defines the real one.) */
+static __inline__ __attribute__((always_inline)) void *datum_get_inline(struct data_array *data, long index)
+{
+	short identifier = (short)(index >> 16);
+	short absolute_index = (short)index;
+
+	if (data->valid && (identifier || !data->identifier_zero_invalid) &&
+		absolute_index >= 0 && absolute_index < data->count)
+	{
+		struct datum_header *header = (struct datum_header *)((char *)data->data + data->size * absolute_index);
+
+		if (header->identifier && (!identifier || identifier == header->identifier))
+			return header;
+	}
+	return datum_get(data, index);
+}
+#ifndef HALO_DATA_C
+#define datum_get datum_get_inline
+#endif
+#endif
 struct data_array *data_new(const char *name, short maximum_count, short size);
 void data_dispose(struct data_array *data);
 void data_make_invalid(struct data_array *data);

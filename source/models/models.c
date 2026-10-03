@@ -599,10 +599,81 @@ void model_node_matrices_from_orientations(
 	return;
 }
 
+#ifdef HALO_XBOX
+/* The console's marker search, for the heads and bodies the AI looks up by
+name every tick: the markers' base is taken once (the search only visits
+[0, count)), and names compare with MSVC's _stricmp ordering inline (A-Z
+folded, unsigned bytes), where nxdk's _stricmp makes two out-of-line
+tolower calls a character. model_get_marker_by_name passes its model in. */
+static long model_marker_name_compare(
+	char const *name,
+	char const *marker_name)
+{
+	unsigned char a;
+	unsigned char b;
+
+	do
+	{
+		a = (unsigned char)*name++;
+		b = (unsigned char)*marker_name++;
+		if (a>='A' && a<='Z')
+			a += 'a'-'A';
+		if (b>='A' && b<='Z')
+			b += 'a'-'A';
+	}
+	while (a && a==b);
+
+	return (long)a-(long)b;
+}
+
+static short model_find_marker_in_model(
+	struct model *model,
+	char const *name)
+{
+	short lower_bound = 0;
+	short upper_bound = (short)model->markers.count - 1;
+
+	if (lower_bound <= upper_bound)
+	{
+		struct model_marker *markers = TAG_BLOCK_GET_ELEMENT(
+			&model->markers,
+			0,
+			struct model_marker);
+
+		while (lower_bound <= upper_bound)
+		{
+			short marker_index = (short)((lower_bound + upper_bound) / 2);
+			long comparison = model_marker_name_compare(name, markers[marker_index].name);
+
+			if (comparison == 0)
+			{
+				return marker_index;
+			}
+			if (comparison < 0)
+			{
+				upper_bound = marker_index - 1;
+			}
+			else
+			{
+				lower_bound = marker_index + 1;
+			}
+		}
+	}
+
+	return NONE;
+}
+
+#endif
 short model_find_marker(
 	long model_index,
 	char const *name)
 {
+#ifdef HALO_XBOX
+	if (model_index != NONE && name && *name)
+	{
+		return model_find_marker_in_model(model_definition_get(model_index), name);
+	}
+#else
 	if (model_index != NONE && name && *name)
 	{
 		struct model *model = model_definition_get(model_index);
@@ -632,6 +703,7 @@ short model_find_marker(
 			}
 		}
 	}
+#endif
 
 	return NONE;
 }
@@ -680,7 +752,12 @@ short model_get_marker_by_name(
 	short maximum_marker_count)
 {
 	short result = 0;
+#ifdef HALO_XBOX
+	struct model *model = model_index != NONE && name && *name ? model_definition_get(model_index) : NULL;
+	short marker_index = model ? model_find_marker_in_model(model, name) : NONE;
+#else
 	short marker_index = model_find_marker(model_index, name);
+#endif
 
 	match_assert("c:\\halo\\SOURCE\\models\\models.c", 760, node_matrices);
 	match_assert("c:\\halo\\SOURCE\\models\\models.c", 761, markers);
@@ -689,7 +766,9 @@ short model_get_marker_by_name(
 	{
 		short i;
 
+#ifndef HALO_XBOX
 		struct model *model = model_definition_get(model_index);
+#endif
 		struct model_marker* marker = TAG_BLOCK_GET_ELEMENT(&model->markers, marker_index, struct model_marker);
 
 		for (i =0; i<marker->instances.count; i++)

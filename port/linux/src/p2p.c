@@ -61,8 +61,9 @@ enum
 
 	/* a host needs a UDP stand-in for two or three ports of every other
 	machine, and a stream for each one's connection (the console: its games
-	have 16 players, and lwIP's sockets are fewer) */
-#ifdef HALO_XBOX
+	have 16 players, and lwIP's sockets are fewer; Windows 98/ME's TCP/IP
+	takes about a hundred connections, MaxConnections) */
+#if defined(HALO_XBOX) || defined(HALO_WIN9X)
 	MAXIMUM_PROXIES = 96,
 	MAXIMUM_LISTENERS = 16,
 	MAXIMUM_STREAMS = 40,
@@ -160,6 +161,14 @@ struct peer
 	unsigned long endpoint_heard_time;
 	unsigned long sent_time;
 	unsigned long round_trip;
+	/* for the five-second line about a connected peer (peer_statistics):
+	round trips seen, datagrams each way, the longest silence from it */
+	unsigned long statistics_time;
+	unsigned long round_trip_least;
+	unsigned long round_trip_most;
+	long datagrams_in;
+	long datagrams_out;
+	unsigned long longest_silence;
 };
 
 /* a UDP stand-in for one port of a peer */
@@ -199,6 +208,8 @@ struct stream
 	unsigned long closed_time;
 	unsigned char pending[STREAM_BUFFER_SIZE];
 	int pending_size;
+	/* KCP's segments sent so far when the peer's line last counted them */
+	IUINT32 xmit_logged;
 };
 
 struct stun_server
@@ -765,6 +776,9 @@ static void peer_heard(struct peer *peer, unsigned long address, unsigned short 
 	unsigned long now = p2p_now();
 	int same = peer->endpoint.address == address && peer->endpoint.port == port;
 
+	if (peer->connected && peer->heard_time && now - peer->heard_time > peer->longest_silence)
+		peer->longest_silence = now - peer->heard_time;
+
 	peer->heard_time = now;
 	if (!peer->connected)
 	{
@@ -799,6 +813,54 @@ static void peer_heard(struct peer *peer, unsigned long address, unsigned short 
 	}
 }
 
+/* every five seconds, a line about a connected peer: the tunnel's round
+trips (the pings), its datagrams each way, the longest it was silent, and
+its reliable streams (KCP's smoothed round trip and retransmission timeout,
+the segments waiting to go, and how many it sent again): what a player far
+away sees as lag or rubberbanding shows here first */
+static void peer_statistics(struct peer *peer)
+{
+	unsigned long now = p2p_now();
+	int peer_index = (int)(peer - p2p.peers);
+	int index, streams = 0;
+	long srtt = 0, rto = 0, waiting = 0, resent = 0;
+
+	if (!peer->statistics_time)
+	{
+		peer->statistics_time = now;
+		return;
+	}
+	if (!elapsed(peer->statistics_time, 5000))
+		return;
+	for (index = 0; index < MAXIMUM_STREAMS; index++)
+	{
+		struct stream *stream = &p2p.streams[index];
+		IUINT32 transmitted;
+
+		if (!stream->used || stream->peer != peer_index || !stream->kcp)
+			continue;
+		streams++;
+		if ((long)stream->kcp->rx_srtt > srtt)
+			srtt = (long)stream->kcp->rx_srtt;
+		if ((long)stream->kcp->rx_rto > rto)
+			rto = (long)stream->kcp->rx_rto;
+		waiting += ikcp_waitsnd(stream->kcp);
+		/* (xmit counts every segment sent, the first time and again) */
+		transmitted = stream->kcp->xmit;
+		resent += (long)(transmitted - stream->xmit_logged);
+		stream->xmit_logged = transmitted;
+	}
+	platform_log("Internet play: %s %s: round trip %lu ms (%lu-%lu), datagrams %ld in, %ld out, longest silence %lu ms; "
+		"%d stream%s: round trip %ld ms, timeout %ld ms, %ld waiting, %ld segments sent",
+		peer->is_host ? "host" : "player", peer->name, peer->round_trip, peer->round_trip_least, peer->round_trip_most,
+		peer->datagrams_in, peer->datagrams_out, peer->longest_silence, streams, streams == 1 ? "" : "s", srtt, rto,
+		waiting, resent);
+	peer->statistics_time = now;
+	peer->round_trip_least = peer->round_trip_most = 0;
+	peer->datagrams_in = peer->datagrams_out = 0;
+	peer->longest_silence = 0;
+}
+
 static void update_peers(void)
 {
 	int index;
@@ -824,10 +886,14 @@ static void update_peers(void)
 		{
 			if (elapsed(peer->heard_time, PEER_TIMEOUT))
 				drop_peer(peer, "lost the connection");
-			else if (elapsed(peer->sent_time, PING_INTERVAL))
+			else
 			{
-				peer_ping(peer, &peer->endpoint);
-				peer->sent_time = p2p_now();
+				if (elapsed(peer->sent_time, PING_INTERVAL))
+				{
+					peer_ping(peer, &peer->endpoint);
+					peer->sent_time = p2p_now();
+				}
+				peer_statistics(peer);
 			}
 		}
 		else if (elapsed(peer->offered_time, PUNCH_TIMEOUT))
@@ -1291,6 +1357,7 @@ static void proxy_readable(struct proxy *proxy)
 		inner[0] = _packet_datagram;
 		put_short(inner + 1, from.sin_port);
 		put_short(inner + 3, proxy->remote_port);
+		p2p.peers[proxy->peer].datagrams_out++;
 		peer_send(&p2p.peers[proxy->peer], inner, size + 5);
 	}
 }
@@ -1407,6 +1474,8 @@ static void stream_local_closed(struct stream *stream)
 	}
 }
 
+static void stream_no_delay(int socket);
+
 /* the game connected to a stand-in listener */
 static void listener_readable(struct listener *listener)
 {
@@ -1429,6 +1498,7 @@ static void listener_readable(struct listener *listener)
 			continue;
 		}
 		posix_socket_set_nonblocking(socket, 1);
+		stream_no_delay(socket);
 		posix_random_bytes(&conversation, sizeof(conversation));
 		stream = stream_new(listener->peer, conversation | 1);
 		if (!stream)
@@ -1442,6 +1512,19 @@ static void listener_readable(struct listener *listener)
 		put_short(open + 2, from.sin_port);
 		stream_message(stream, _stream_open, open, sizeof(open));
 	}
+}
+
+/* a stand-in's TCP socket sends what it is given at once: with Nagle's
+algorithm a small message waited for the last one's acknowledgement, which
+the other end delays (up to 200 ms on Windows, 250 on lwIP), and the game's
+messages are small and one a tick (IPPROTO_TCP and TCP_NODELAY have the
+same numbers on Winsock, POSIX and lwIP, and pass through every platform's
+setsockopt) */
+static void stream_no_delay(int socket)
+{
+	int one = 1;
+
+	posix_socket_setsockopt(socket, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */, &one, sizeof(one));
 }
 
 /* a peer's connection opened: connect to the game for it */
@@ -1460,6 +1543,8 @@ static void stream_opened(struct stream *stream, const unsigned char *data, int 
 	}
 	stream->remote_port = get_short(data + 2);
 	stream->socket = open_socket(SOCK_STREAM, p2p.local_address, 0, &stream->local_port);
+	if (stream->socket >= 0)
+		stream_no_delay(stream->socket);
 	make_address(&to, p2p.local_address, get_short(data));
 	if (stream->socket < 0 || (posix_socket_connect(stream->socket, &to, sizeof(to)) < 0 && !would_block()))
 	{
@@ -1632,7 +1717,9 @@ static void tunnel_received(const unsigned char *packet, int size, const struct 
 		size - TUNNEL_HEADER_SIZE > (int)sizeof(inner))
 		return;
 	peer = find_peer(packet + 1);
-	if (!peer)
+	/* (not a peer only listed by the master server: its key is all zeros
+	until signalling offers one, and anyone could seal with that) */
+	if (!peer || !peer->offered)
 		return;
 	inner_size = p2p_open(peer->key, packet + TUNNEL_HEADER_SIZE, size - TUNNEL_HEADER_SIZE, inner);
 	if (inner_size < 1)
@@ -1658,9 +1745,14 @@ static void tunnel_received(const unsigned char *packet, int size, const struct 
 
 			memcpy(&sent, inner + 1, 4);
 			peer->round_trip = p2p_now() - sent;
+			if (!peer->round_trip_least || peer->round_trip < peer->round_trip_least)
+				peer->round_trip_least = peer->round_trip;
+			if (peer->round_trip > peer->round_trip_most)
+				peer->round_trip_most = peer->round_trip;
 		}
 		break;
 	case _packet_datagram:
+		peer->datagrams_in++;
 		datagram_received(peer, inner, inner_size);
 		break;
 	case _packet_stream:
@@ -1919,11 +2011,13 @@ static void update_hosting(void)
 	{
 		p2p.hosting = 0;
 		p2p_master_stop_hosting();
-#ifndef HALO_XBOX
+#if !defined(HALO_XBOX) && !defined(HALO_WIN9X)
 		p2p_discord_set_hosting(NULL, 0, 0);
 #endif
 	}
-#ifndef HALO_XBOX
+	/* (Discord: not on the console, nor on Windows 98/ME, which no Discord
+	client runs on) */
+#if !defined(HALO_XBOX) && !defined(HALO_WIN9X)
 	if (p2p.hosting && p2p.reported_peer_count != connected_player_count())
 	{
 		p2p.reported_peer_count = connected_player_count();
@@ -2195,7 +2289,7 @@ static void *p2p_thread(void *unused)
 		stun_update();
 		update_hosting();
 		update_joining();
-#ifndef HALO_XBOX
+#if !defined(HALO_XBOX) && !defined(HALO_WIN9X)
 		p2p_discord_update();
 #endif
 #ifdef HALO_ANDROID

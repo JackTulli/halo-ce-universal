@@ -128,27 +128,36 @@ symbols in this file:
 enum
 {
 #ifdef HALO_XBOX
-	/* 12 MB of 16 KB pages (XBOX_TEXTURE_CACHE_SIZE below); the stealable
-	pages are counted from here, so this must match */
-	XBOX_TEXTURE_CACHE_PAGE_COUNT = 0x300,
+	/* the console's cache is 12 MB of 16 KB pages, or the retail 22 MB at
+	720p, where it is in the top 64 MB of a 128 MB console: its size, page
+	count and stealable pages are the console's (the macros below,
+	halo_xbox_texture_cache_size), the tables are sized for the larger */
+	XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT = 0x580,
 #else
 	XBOX_TEXTURE_CACHE_PAGE_COUNT = 0x580,
+	XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT = XBOX_TEXTURE_CACHE_PAGE_COUNT,
 #endif
 	XBOX_TEXTURE_CACHE_PAGE_SIZE_BITS = 14,
 	XBOX_TEXTURE_CACHE_PAGE_SIZE = 1 << XBOX_TEXTURE_CACHE_PAGE_SIZE_BITS,
 	XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE = 0x104000,
+#ifndef HALO_XBOX
 	XBOX_TEXTURE_CACHE_STEALABLE_PAGE_COUNT =
 		XBOX_TEXTURE_CACHE_PAGE_COUNT -
 		2 * (XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE / XBOX_TEXTURE_CACHE_PAGE_SIZE),
+#endif
 	XBOX_TEXTURE_CACHE_ENTRY_SIZE = 0x20,
-#ifdef HALO_XBOX
-	/* 12 MB on the console (physical_memory_map.c) */
-	XBOX_TEXTURE_CACHE_SIZE = 0xC00000,
-#else
+#ifndef HALO_XBOX
 	XBOX_TEXTURE_CACHE_SIZE = 0x1600000,
 #endif
 	XBOX_TEXTURE_CACHE_PROTECTION = 0x404,
 };
+
+#ifdef HALO_XBOX
+#define XBOX_TEXTURE_CACHE_SIZE ((long)halo_xbox_texture_cache_size())
+#define XBOX_TEXTURE_CACHE_PAGE_COUNT (XBOX_TEXTURE_CACHE_SIZE / XBOX_TEXTURE_CACHE_PAGE_SIZE)
+#define XBOX_TEXTURE_CACHE_STEALABLE_PAGE_COUNT \
+	(XBOX_TEXTURE_CACHE_PAGE_COUNT - 2 * (XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE / XBOX_TEXTURE_CACHE_PAGE_SIZE))
+#endif
 
 enum
 {
@@ -335,7 +344,7 @@ static const long bitmap_d3d_format_tables
 };
 /* provisional name: the January map leaves this .bss array unnamed; it holds the debug
  * listing's cached bitmaps */
-static struct bitmap_data *texture_cache_debug_bitmaps[XBOX_TEXTURE_CACHE_PAGE_COUNT];
+static struct bitmap_data *texture_cache_debug_bitmaps[XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT];
 static struct xbox_texture_cache_globals xbox_texture_cache_globals;
 struct texture_cache_debug_options texture_cache_debug_options = {0};
 boolean debug_texture_cache = FALSE;
@@ -562,8 +571,19 @@ static boolean texture_cache_locked_block_proc(
 		xbox_texture_cache_globals.textures,
 		block_index);
 
+#ifdef HALO_XBOX
+	/* A texture the GPU may still be drawing from can go: deleting it waits
+	for the GPU (texture_cache_delete_block_proc). With the frame rate
+	unlocked the CPU runs a frame ahead of the GPU, so every texture of the
+	frame before was busy; taken as locked, they split the cache into holes
+	too small for the next texture, which then drew as the default (white)
+	bitmap. (Those of this frame stay locked: lruv_block_new locks a block
+	used in the cache's current tick.) */
+	return !texture->loaded;
+#else
 	return !texture->loaded ||
 		IDirect3DBaseTexture8_IsBusy(&texture->hardware_format);
+#endif
 }
 
 static void texture_cache_delete_block_proc(
@@ -786,7 +806,7 @@ void texture_cache_debug_render(
 {
 	if (texture_cache_debug_options.graph)
 	{
-		byte page_usage[XBOX_TEXTURE_CACHE_PAGE_COUNT];
+		byte page_usage[XBOX_TEXTURE_CACHE_MAXIMUM_PAGE_COUNT];
 		real_point3d world_positions[2];
 		real_point2d screen_positions[2];
 		real_point3d *world_position;

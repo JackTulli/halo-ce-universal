@@ -456,6 +456,12 @@ static void light_get_bounding_sphere(
 	long light_index,
 	real_point3d *position,
 	real *radius);
+#ifdef HALO_LINUX
+boolean rasterizer_environment_diffuse_lights_drawn(
+	void);
+boolean rasterizer_environment_specular_lights_drawn(
+	void);
+#endif
 
 /* ---------- globals */
 
@@ -1626,7 +1632,14 @@ void lights_render_diffuse(
 	short light_index;
 
 	rasterizer_environment_diffuse_lights_begin();
+#ifdef HALO_LINUX
+	/* each light's surface query and triangles only when the rasterizer
+	draws the pass (performance mode and graphics.dynamic_lights=false turn
+	it off): otherwise every callback below returns without drawing */
+	if (should_render_lights() && rasterizer_environment_diffuse_lights_drawn())
+#else
 	if (should_render_lights())
+#endif
 	{
 		for (light_index = 0;
 			light_index < lights_globals.scene_point_light_count;
@@ -1681,7 +1694,13 @@ void lights_render_specular(
 	short light_index;
 
 	rasterizer_environment_specular_lights_begin();
+#ifdef HALO_LINUX
+	/* the same for the specular pass (performance mode,
+	graphics.specular=false) */
+	if (should_render_lights() && rasterizer_environment_specular_lights_drawn())
+#else
 	if (should_render_lights())
+#endif
 	{
 		for (light_index = 0;
 			light_index < lights_globals.scene_point_light_count;

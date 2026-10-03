@@ -319,11 +319,66 @@ BOOL platform_screen_mode(long *width, long *height)
 	return TRUE;
 }
 
+/* ---------- the context of the renderers before OpenGL 4.5
+
+display.renderer (port_config.c; d3d8_gl.c chooses among them once the
+context exists): gl4 runs on an OpenGL 4.5 core context, which is asked for
+first unless gl2 or gl1 is named. Where there is none, or one of those is
+named, the context is a compatibility one: OpenGL 2.0's profile, for which
+drivers give the highest version they have, or, from drivers that know no
+profiles, whatever a plain request gets. Those renderers may have to draw
+straight into the window, so its pixel format then gets a depth buffer,
+stencil and alpha, which the window of the 4.5 renderer does without. */
+
+/* the context is the OpenGL 4.5 core one */
+static BOOL platform_gl_core;
+
+static BOOL platform_legacy_renderer_setting(void)
+{
+	const char *renderer = config_string("display.renderer");
+
+	return !strcmp(renderer, "gl2") || !strcmp(renderer, "gl1");
+}
+
+static void platform_window_buffers_for_legacy(void)
+{
+	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+}
+
+static void platform_legacy_context_attributes(BOOL plain)
+{
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, plain ? 0 : SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, plain ? 1 : 2);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, plain ? 1 : 0);
+	/* (a context with flags is one made with attributes, which a plain
+	request is to avoid) */
+	if (plain)
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+	platform_window_buffers_for_legacy();
+}
+
+BOOL platform_video_core_context(void)
+{
+	return platform_gl_core;
+}
+
+void platform_video_window_bits(int *depth, int *stencil)
+{
+	*depth = *stencil = 0;
+	SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, depth);
+	SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, stencil);
+}
+
 #endif
 BOOL platform_video_initialize(unsigned long width, unsigned long height)
 {
 	int scale = (int)config_integer("display.window_scale");
 	int version;
+#ifndef HALO_ANDROID
+	BOOL legacy = platform_legacy_renderer_setting();
+#endif
 
 	if (platform_window)
 		return TRUE;
@@ -346,6 +401,13 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
 	if (config_boolean("debug.gl_debug"))
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+#ifndef HALO_ANDROID
+	if (legacy)
+		platform_legacy_context_attributes(FALSE);
+	/* debug.gl_disable can send the 4.5 renderer into the window too */
+	else if (*config_string("debug.gl_disable"))
+		platform_window_buffers_for_legacy();
+#endif
 #if !defined(HALO_ANDROID) && !defined(_WIN32)
 	/* Mesa's GL thread: the renderer makes thousands of GL calls a frame
 	and never waits for their results, so handing them to a thread of
@@ -381,6 +443,33 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 		platform_gl_context = SDL_GL_CreateContext(platform_window);
 	}
+#else
+	if (!platform_gl_context && !legacy)
+	{
+		/* no OpenGL 4.5: the older renderers' context, in a window made
+		again, since its pixel format was chosen when it was made */
+		platform_log("no OpenGL 4.5 core context (%s): asking for a compatibility context", SDL_GetError());
+		legacy = TRUE;
+		SDL_DestroyWindow(platform_window);
+		platform_legacy_context_attributes(FALSE);
+		platform_window = SDL_CreateWindow("Halo", (int)(width * scale), (int)(height * scale),
+			SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+			(config_boolean("debug.hidden_window") ? SDL_WINDOW_HIDDEN : 0) |
+			(platform_fullscreen_setting() ? SDL_WINDOW_FULLSCREEN : 0));
+		if (!platform_window)
+		{
+			platform_log("SDL_CreateWindow failed: %s", SDL_GetError());
+			return FALSE;
+		}
+		platform_gl_context = SDL_GL_CreateContext(platform_window);
+	}
+	if (!platform_gl_context && legacy)
+	{
+		/* a driver that knows no profiles */
+		platform_legacy_context_attributes(TRUE);
+		platform_gl_context = SDL_GL_CreateContext(platform_window);
+	}
+	platform_gl_core = platform_gl_context && !legacy;
 #endif
 	if (!platform_gl_context)
 	{
