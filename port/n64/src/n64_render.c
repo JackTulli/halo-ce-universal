@@ -86,6 +86,55 @@ static struct
 	sprite_t **sprites;
 } level;
 
+/* ---------- the models file (tools/n64/models.py) */
+
+#define MODEL_SCALE 1024.0f
+#define MATRICES_PER_FRAME 640
+#define FRAMES_IN_FLIGHT 3
+
+struct models_header
+{
+	char magic[4];
+	uint32_t version;
+	uint16_t texture_count, model_count, region_count, permutation_count;
+	uint16_t geometry_count, batch_count, segment_count, pad;
+	uint32_t textures_offset, models_offset, regions_offset, permutations_offset;
+	uint32_t geometries_offset, batches_offset, segments_offset;
+	uint32_t vertices_offset, indices_offset;
+};
+
+struct model_record { uint16_t tag_index; uint8_t node_count, region_count; uint16_t first_region, pad; };
+struct region_record { uint16_t permutation_count, first_permutation; };
+struct geometry_record { uint16_t first_batch, batch_count; };
+struct model_batch
+{
+	int16_t texture;
+	uint16_t flags;
+	uint8_t segment_count, triangle_count;
+	uint16_t first_segment;
+	uint32_t index_offset;
+};
+struct model_segment { uint8_t node, slot, count, pad; uint32_t vertex_pair_offset; };
+
+static struct
+{
+	uint8_t *data;
+	struct models_header *header;
+	struct level_texture *textures;
+	struct model_record *models;
+	struct region_record *regions;
+	int16_t *permutations;
+	struct geometry_record *geometries;
+	struct model_batch *batches;
+	struct model_segment *segments;
+	T3DVertPacked *vertices;
+	uint8_t *indices;
+	sprite_t **sprites;
+	/* tag index -> model record, or NULL */
+	struct model_record **by_tag;
+	int tag_count;
+} models;
+
 /* debug switches: files on the cartridge (port.json "flags") */
 static int debug_overview;
 static int debug_untextured;
@@ -97,8 +146,19 @@ static struct
 	int view_count;
 	surface_t *surface;
 	unsigned long frame_index;
-	unsigned long triangles, batches, clusters;
+	unsigned long triangles, batches, clusters, objects;
+	T3DMat4FP *matrices[FRAMES_IN_FLIGHT];
+	int matrix_count;
+	T3DViewport *viewport;
+	int current_texture;
+	/* the FPS counter: frames shown in the last second */
+	unsigned long long fps_window_start;
+	int fps_frames;
+	int fps;
 } renderer;
+
+/* the game's last tick, in microseconds (n64_game.c), for the counter */
+unsigned long n64_last_tick_us;
 
 void n64_render_initialize(void)
 {
@@ -108,6 +168,9 @@ void n64_render_initialize(void)
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
 		renderer.viewports[i] = t3d_viewport_create();
 	renderer.identity = malloc_uncached(sizeof(T3DMat4FP));
+	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
+		renderer.matrices[i] = malloc_uncached(sizeof(T3DMat4FP) * MATRICES_PER_FRAME);
+	rdpq_text_register_font(FONT_BUILTIN_DEBUG_MONO, rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
 	{
 		FILE *flag;
 
@@ -120,6 +183,68 @@ void n64_render_initialize(void)
 		t3d_mat4_identity(&identity);
 		t3d_mat4_to_fixed(renderer.identity, &identity);
 	}
+}
+
+static void load_models(const char *map_name)
+{
+	char path[64];
+	FILE *file;
+	long size;
+
+	if (models.data)
+	{
+		for (int i = 0; i < models.header->texture_count; i++)
+		{
+			if (models.sprites[i])
+				sprite_free(models.sprites[i]);
+		}
+		free(models.sprites);
+		free(models.by_tag);
+		free(models.data);
+		memset(&models, 0, sizeof(models));
+	}
+	snprintf(path, sizeof(path), "rom:/levels/%s.mdl", map_name);
+	file = fopen(path, "rb");
+	if (!file)
+	{
+		debugf("n64: no models %s\n", path);
+		return;
+	}
+	fseek(file, 0, SEEK_END);
+	size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	models.data = memalign(16, size);
+	fread(models.data, 1, size, file);
+	fclose(file);
+	data_cache_hit_writeback_invalidate(models.data, size);
+	models.header = (struct models_header *)models.data;
+	assertf(!memcmp(models.header->magic, "H64O", 4) && models.header->version == 1,
+		"%s was converted for another build", path);
+	models.textures = (struct level_texture *)(models.data + models.header->textures_offset);
+	models.models = (struct model_record *)(models.data + models.header->models_offset);
+	models.regions = (struct region_record *)(models.data + models.header->regions_offset);
+	models.permutations = (int16_t *)(models.data + models.header->permutations_offset);
+	models.geometries = (struct geometry_record *)(models.data + models.header->geometries_offset);
+	models.batches = (struct model_batch *)(models.data + models.header->batches_offset);
+	models.segments = (struct model_segment *)(models.data + models.header->segments_offset);
+	models.vertices = (T3DVertPacked *)(models.data + models.header->vertices_offset);
+	models.indices = models.data + models.header->indices_offset;
+	models.sprites = calloc(models.header->texture_count, sizeof(sprite_t *));
+	for (int i = 0; i < models.header->texture_count; i++)
+	{
+		snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", map_name, models.textures[i].name);
+		models.sprites[i] = sprite_load(path);
+	}
+	models.tag_count = 0;
+	for (int i = 0; i < models.header->model_count; i++)
+	{
+		if (models.models[i].tag_index + 1 > models.tag_count)
+			models.tag_count = models.models[i].tag_index + 1;
+	}
+	models.by_tag = calloc(models.tag_count, sizeof(struct model_record *));
+	for (int i = 0; i < models.header->model_count; i++)
+		models.by_tag[models.models[i].tag_index] = &models.models[i];
+	debugf("n64: %d models, %ld KB\n", models.header->model_count, size / 1024);
 }
 
 int n64_render_load_level(const char *map_name)
@@ -170,6 +295,7 @@ int n64_render_load_level(const char *map_name)
 		snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", map_name, level.textures[i].name);
 		level.sprites[i] = sprite_load(path);
 	}
+	load_models(map_name);
 	debugf("n64: level %s: %d clusters, %d batches, %lu KB, %lu KB of heap left\n", map_name,
 		level.header->cluster_count, level.header->batch_count, (unsigned long)size / 1024,
 		n64_heap_free() / 1024);
@@ -185,6 +311,7 @@ void n64_render_frame_begin(void)
 	t3d_screen_clear_depth();
 	renderer.view_count = 0;
 	renderer.frame_index++;
+	renderer.matrix_count = 0;
 }
 
 static void set_material(int index)
@@ -304,15 +431,134 @@ void n64_render_view(const struct n64_view *view)
 	t3d_light_set_ambient(white);
 	t3d_light_set_count(0);
 	draw_level(viewport);
+	renderer.viewport = viewport;
+	renderer.current_texture = -2;
+}
+
+/* models: textured, shaded by their baked sky light, one cycle */
+static void set_model_texture(int texture)
+{
+	int textured = texture >= 0 && models.sprites[texture] && !debug_untextured;
+
+	if (texture == renderer.current_texture)
+		return;
+	renderer.current_texture = texture;
+	rdpq_sync_pipe();
+	rdpq_sync_tile();
+	rdpq_mode_begin();
+	rdpq_set_mode_standard();
+	rdpq_mode_zbuf(true, true);
+	rdpq_mode_persp(true);
+	rdpq_mode_filter(FILTER_BILINEAR);
+	rdpq_mode_combiner(textured ? RDPQ_COMBINER_TEX_SHADE : RDPQ_COMBINER_SHADE);
+	rdpq_mode_end();
+	if (textured)
+	{
+		rdpq_sprite_upload(TILE0, models.sprites[texture], &(rdpq_texparms_t){
+			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
+		});
+	}
+	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_CULL_BACK |
+		(textured ? T3D_FLAG_TEXTURED : 0));
+}
+
+void n64_render_object(const struct n64_object *object)
+{
+	struct model_record *model;
+	T3DMat4FP *matrices;
+	T3DVec3 center;
+	int node_count;
+
+	if (!models.data || !renderer.viewport || object->model_tag_index < 0 ||
+		object->model_tag_index >= models.tag_count || !(model = models.by_tag[object->model_tag_index]))
+		return;
+	center = (T3DVec3){{object->center[0] * WORLD_SCALE, object->center[1] * WORLD_SCALE, object->center[2] * WORLD_SCALE}};
+	if (!t3d_frustum_vs_sphere(&renderer.viewport->viewFrustum, &center, object->radius * WORLD_SCALE + 8.0f))
+		return;
+	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
+	if (renderer.matrix_count + node_count > MATRICES_PER_FRAME)
+		return;
+	matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
+	renderer.matrix_count += node_count;
+	for (int n = 0; n < node_count; n++)
+	{
+		const float *m = object->node_matrices + n * 13;
+		float axes = m[0] * (WORLD_SCALE / MODEL_SCALE);
+		T3DMat4 matrix = {{
+			{m[1] * axes, m[2] * axes, m[3] * axes, 0.0f},
+			{m[4] * axes, m[5] * axes, m[6] * axes, 0.0f},
+			{m[7] * axes, m[8] * axes, m[9] * axes, 0.0f},
+			{m[10] * WORLD_SCALE, m[11] * WORLD_SCALE, m[12] * WORLD_SCALE, 1.0f},
+		}};
+
+		t3d_mat4_to_fixed(&matrices[n], &matrix);
+	}
+	renderer.objects++;
+	for (int r = 0; r < model->region_count; r++)
+	{
+		struct region_record *region = &models.regions[model->first_region + r];
+		int permutation = r < object->region_count ? object->region_permutations[r] : 0;
+		int geometry_index;
+		struct geometry_record *geometry;
+
+		if (!region->permutation_count)
+			continue;
+		if (permutation >= region->permutation_count)
+			permutation = 0;
+		geometry_index = models.permutations[region->first_permutation + permutation];
+		if (geometry_index < 0)
+			continue;
+		geometry = &models.geometries[geometry_index];
+		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b++)
+		{
+			struct model_batch *batch = &models.batches[b];
+			uint8_t *index = models.indices + batch->index_offset;
+
+			set_model_texture(batch->texture);
+			for (int g = 0; g < batch->segment_count; g++)
+			{
+				struct model_segment *segment = &models.segments[batch->first_segment + g];
+				int node = segment->node < node_count ? segment->node : 0;
+
+				t3d_matrix_push(&matrices[node]);
+				t3d_vert_load(models.vertices + segment->vertex_pair_offset, segment->slot, segment->count);
+				t3d_matrix_pop(1);
+			}
+			for (int t = 0; t < batch->triangle_count; t++, index += 3)
+				t3d_tri_draw(index[0], index[1], index[2]);
+			t3d_tri_sync();
+			renderer.triangles += batch->triangle_count;
+		}
+	}
+}
+
+static void draw_counter(void)
+{
+	unsigned long long now = get_ticks();
+
+	if (!renderer.fps_window_start)
+		renderer.fps_window_start = now;
+	renderer.fps_frames++;
+	if (now - renderer.fps_window_start >= TICKS_PER_SECOND)
+	{
+		renderer.fps = (int)((unsigned long long)renderer.fps_frames * TICKS_PER_SECOND * 10 / (now - renderer.fps_window_start));
+		renderer.fps_frames = 0;
+		renderer.fps_window_start = now;
+	}
+	rdpq_sync_pipe();
+	rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+	rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 12, "%d.%d FPS  tick %lu.%lu ms",
+		renderer.fps / 10, renderer.fps % 10, n64_last_tick_us / 1000, (n64_last_tick_us % 1000) / 100);
 }
 
 void n64_render_frame_end(void)
 {
+	draw_counter();
 	rdpq_detach_show();
 	if (!(renderer.frame_index % 120))
 	{
-		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu triangles\n", renderer.frame_index,
-			renderer.clusters / 120, renderer.batches / 120, renderer.triangles / 120);
-		renderer.clusters = renderer.batches = renderer.triangles = 0;
+		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles\n", renderer.frame_index,
+			renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120, renderer.triangles / 120);
+		renderer.clusters = renderer.batches = renderer.triangles = renderer.objects = 0;
 	}
 }

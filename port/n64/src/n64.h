@@ -93,11 +93,29 @@ struct n64_view
 	short pad;
 };
 
+/* an object to draw in the current view: its model (the model tag's index),
+its node matrices as the game keeps them (real_matrix4x3: scale, forward,
+left, up, position; world units), the permutation of each region, and its
+bounding sphere */
+struct n64_object
+{
+	short model_tag_index;
+	short node_count;
+	const float *node_matrices;
+	const unsigned char *region_permutations;
+	short region_count;
+	short pad;
+	float center[3];
+	float radius;
+};
+
 void n64_render_initialize(void);
 /* loads rom:/levels/<map>.lvl and its textures; FALSE if there is none */
 int n64_render_load_level(const char *map_name);
 void n64_render_frame_begin(void);
 void n64_render_view(const struct n64_view *view);
+/* after n64_render_view: objects in that view */
+void n64_render_object(const struct n64_object *object);
 void n64_render_frame_end(void);
 
 #ifdef __cplusplus

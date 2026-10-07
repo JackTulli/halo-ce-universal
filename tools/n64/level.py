@@ -82,6 +82,7 @@ class LevelBuilder:
         self.texture_by_bitmap = {}
         self.materials = []
         self.material_by_shader = {}
+        self.texture_prefix = ""
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -115,7 +116,7 @@ class LevelBuilder:
         h2 = max(4, 1 << int(math.log2(max(1, int(h * scale)))))
         img = img.resize((w2, h2), Image.LANCZOS)
         index = len(self.textures)
-        name = f"{index:02d}"
+        name = f"{self.texture_prefix}{index:02d}"
         tex_dir = self.out_dir / "tex" / self.map_name
         tex_dir.mkdir(parents=True, exist_ok=True)
         png = tex_dir / f"{name}.png"

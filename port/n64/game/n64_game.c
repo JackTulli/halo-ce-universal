@@ -393,6 +393,11 @@ void __wrap_game_tick(
 		n64_tick_profile.window_start = n64_ticks64();
 	__real_game_tick();
 	elapsed = n64_ticks() - start;
+	{
+		extern unsigned long n64_last_tick_us;
+
+		n64_last_tick_us = (unsigned long)((unsigned long long)elapsed * 1000000 / N64_TICKS_PER_SECOND);
+	}
 	n64_tick_profile.total += elapsed;
 	if (elapsed > n64_tick_profile.worst)
 		n64_tick_profile.worst = elapsed;

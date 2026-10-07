@@ -180,6 +180,10 @@ def main():
         builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)
         stats = builder.write(args.filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        from .models import ModelConverter
+        models = ModelConverter(xmap, repacker.defs, xmap.name, args.filesystem)
+        stats = models.write(args.filesystem / "levels" / f"{xmap.name}.mdl")
+        print(f"{xmap.name} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
     if args.stats:
         for g, s in sorted(repacker.stats.items(), key=lambda x: -x[1])[:25]:
             print(f"  {g} {s / 1024:8.1f} KB")

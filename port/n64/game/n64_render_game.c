@@ -12,11 +12,15 @@ renderer's (port/n64/src/n64_render.c).
 
 #include "game/game.h"
 #include "game/players.h"
+#include "game/local_players.h"
 #include "interface/first_person_weapons.h"
 #include "main/main.h"
 #include "rasterizer/rasterizer.h"
 #include "rasterizer/rasterizer_debug_options.h"
 #include "render/render.h"
+#include "objects/objects.h"
+#include "objects/object_definitions.h"
+#include "models/model_definitions.h"
 
 #include "../src/n64.h"
 
@@ -132,6 +136,45 @@ void render_initialize_for_new_map(
 	return;
 }
 
+/* ---------- objects */
+
+/* every visible object but the viewer's own body (the view is first person) */
+static void render_objects_for_view(
+	short local_player_index)
+{
+	long viewer_unit = NONE;
+	long player_index = local_player_get_player_index(local_player_index);
+	struct object_iterator iterator;
+	struct object_datum *object;
+
+	if (player_index != NONE)
+		viewer_unit = player_get(player_index)->unit_index;
+	object_iterator_new(&iterator, _object_mask_all, FLAG(_object_header_visible_bit));
+	while ((object = object_iterator_next(&iterator)) != NULL)
+	{
+		struct object_definition *definition;
+		struct n64_object n64;
+
+		if (TEST_FLAG(object->object.flags, _object_invisible_bit))
+			continue;
+		if (viewer_unit != NONE && object_get_ultimate_parent(iterator.index) == viewer_unit)
+			continue;
+		definition = object_definition_get(object->definition_index);
+		if (definition->object.model.index == NONE)
+			continue;
+		n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
+		n64.node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
+		n64.node_matrices = (const float *)object_get_node_matrices(iterator.index);
+		n64.region_permutations = object->object.region_permutations;
+		n64.region_count = MAXIMUM_REGIONS_PER_OBJECT;
+		n64.center[0] = object->object.bounding_sphere_center.x;
+		n64.center[1] = object->object.bounding_sphere_center.y;
+		n64.center[2] = object->object.bounding_sphere_center.z;
+		n64.radius = object->object.bounding_sphere_radius;
+		n64_render_object(&n64);
+	}
+}
+
 /* ---------- frames */
 
 static boolean frame_begun;
@@ -192,6 +235,7 @@ void render_frame(
 		render.window_index = window_index;
 		render.camera = *camera;
 		n64_render_view(&view);
+		render_objects_for_view(window->local_player_index);
 	}
 	return;
 }
