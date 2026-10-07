@@ -15,6 +15,7 @@ main (source/shell/shell_xbox.c, compiled as halo_shell_main).
 #include "n64.h"
 
 int halo_shell_main(void);
+void n64_profile_start(void);
 void n64_exceptions_install(void);
 
 void n64_log(const char *text)
@@ -85,6 +86,7 @@ int main(void)
 			debugf("halo-n64: test mode, scripted controllers\n");
 		}
 	}
+	n64_profile_start();
 	halo_shell_main();
 	debugf("halo-n64: the game returned\n");
 	for (;;)

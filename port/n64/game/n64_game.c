@@ -221,6 +221,7 @@ static void *n64_map_load(
 	n64_file_close(file);
 
 	csstrncpy(n64_map.name, name, sizeof(n64_map.name) - 1);
+	n64_animation_open(name);
 	n64_memory.tag_cache = n64_map.image;
 	{
 		char line[128];
@@ -360,10 +361,13 @@ static void n64_log_players(
 				weapon_name = tag_name_strip_path(tag_get_name(object_get(weapon_index)->definition_index));
 				rounds = weapon->weapon.magazines[0].rounds_loaded;
 			}
-			snprintf(line, sizeof(line), "player %d: alive at %.1f %.1f %.1f, %s (%d rounds), kills %d, deaths %d",
+			snprintf(line, sizeof(line), "player %d: alive at %.1f %.1f %.1f, %s (%d rounds), kills %d, deaths %d, colour %.2f %.2f %.2f / base %.2f %.2f %.2f",
 				(int)iterator.absolute_index,
 				unit->object.position.x, unit->object.position.y, unit->object.position.z,
-				weapon_name, rounds, player->statistics.kills[0], player->statistics.deaths);
+				weapon_name, rounds, player->statistics.kills[0], player->statistics.deaths,
+				unit->object.outgoing_change_colors[0].red, unit->object.outgoing_change_colors[0].green,
+				unit->object.outgoing_change_colors[0].blue, unit->object.base_change_colors[0].red,
+				unit->object.base_change_colors[0].green, unit->object.base_change_colors[0].blue);
 		}
 		else
 		{
@@ -417,3 +421,28 @@ void __wrap_game_tick(
 		n64_tick_profile.window_start = now;
 	}
 }
+
+/* ---------- player colours (saved games/player_profile.c is left out) */
+
+static long const n64_profile_color_table[18] =
+{
+	0x00FFFFFF, 0x00000000, 0x00FE0000, 0x000201E3, 0x00707E71, 0x00FFFF01,
+	0x0000FF01, 0x00FF56B9, 0x00AB10F4, 0x0001FFFF, 0x006493ED, 0x00FF7F00,
+	0x001ECC91, 0x00006401, 0x00603814, 0x00C69C6C, 0x009D0B0E, 0x00F5999E,
+};
+
+real_rgb_color player_profile_get_rgb_color(
+	long color_index)
+{
+	real_rgb_color rgb_color;
+	long color;
+
+	color_index = PIN(color_index, 0, NUMBEROF(n64_profile_color_table) - 1);
+	color = n64_profile_color_table[color_index];
+	rgb_color.red = ((color >> 16) & 0xFF) / 255.f;
+	rgb_color.green = ((color >> 8) & 0xFF) / 255.f;
+	rgb_color.blue = (color & 0xFF) / 255.f;
+	return rgb_color;
+}
+
+word player_profile_number_of_available_primary_colors(void) { return NUMBEROF(n64_profile_color_table); }

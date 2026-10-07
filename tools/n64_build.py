@@ -226,7 +226,7 @@ def main():
     tool_sources = sorted(str(p) for p in Path("tools/n64").glob("*.py"))
     for name in port.get("maps", []):
         out_map = fsdir / "maps" / f"{name}.map"
-        n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl")], "convert_map",
+        n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "maps" / f"{name}.anim")], "convert_map",
                 f"build/xbox/disc/maps/{name}.map", implicit=tool_sources, variables={"fsdir": str(fsdir), "map": str(out_map)})
         fs_files.append(str(out_map))
     for flag in port.get("flags", []):

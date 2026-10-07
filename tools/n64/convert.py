@@ -21,14 +21,15 @@ import struct
 import sys
 from pathlib import Path
 
-from .repack import NONE, Policy, Repacker, swap_array
+from .repack import NONE, External, Policy, Repacker, swap_array
 from .xboxmap import XboxMap
 
 MAGIC = b"H64M"
 VERSION = 1
 
-# tag groups the N64 game never loads: the Xbox menus and input devices
-DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr"}
+# tag groups the N64 game never loads: the Xbox menus and input devices,
+# and sound (the N64 build has none yet: its code is left out)
+DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snd!", b"lsnd", b"snde"}
 
 
 def fourcc(text):
@@ -52,14 +53,22 @@ class N64Policy(Policy):
         self.defs = defs
         offs = {f.name: o for o, f in defs.fields("ModelAnimationsAnimation")}
         self.anim = offs
+        # animation frames stream from the cartridge (maps/<map>.anim)
+        self.stream = bytearray()
 
     def keep_tag(self, tag):
         return tag.group not in DROPPED
 
     def data(self, tag, path, parent, raw):
         address, struct_name, struct_raw = parent
-        if path.endswith("animations[].frame data") or path.endswith("animations[].default data"):
-            return self.animation_data(struct_raw, raw, path.endswith("default data"))
+        if path.endswith("animations[].frame data"):
+            data = self.animation_data(struct_raw, raw, False)
+            self.stream += b"\0" * ((-len(self.stream)) % 8)
+            offset = len(self.stream)
+            self.stream += data
+            return External(offset, len(data))
+        if path.endswith("animations[].default data"):
+            return self.animation_data(struct_raw, raw, True)
         if path.endswith("animations[].frame info"):
             return swap_array(raw, 4)
         if path.endswith("UnicodeStringList.strings[].string") or path.endswith("HUDMessageText.text data"):
@@ -161,6 +170,7 @@ def convert(path, output):
     out += struct.pack(f">{len(relocs)}I", *relocs)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     Path(output).write_bytes(out)
+    Path(output).with_suffix(".anim").write_bytes(bytes(repacker.policy.stream))
     return xmap, repacker, len(out), relocs
 
 
@@ -174,7 +184,8 @@ def main():
                         "levels/<map>.lvl and its textures to tex/<map>/")
     args = parser.parse_args()
     xmap, repacker, size, relocs = convert(args.map, args.output)
-    print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations")
+    print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations, "
+          f"{len(repacker.policy.stream) / 1e6:.2f} MB of animation frames streamed")
     if args.filesystem:
         from .level import LevelBuilder
         builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)

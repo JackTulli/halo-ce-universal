@@ -41,6 +41,12 @@ void predicted_resources_precache(
 {
 	short predicted_resource_index;
 
+#ifdef HALO_N64
+	/* nothing to warm up: the N64 has no texture or sound cache to fill
+	ahead of time (and no sound tags) */
+	return;
+#endif
+
 	for (predicted_resource_index = 0;
 		predicted_resource_index < predicted_resources->count;
 		predicted_resource_index++)

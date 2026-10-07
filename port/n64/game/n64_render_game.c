@@ -140,14 +140,15 @@ void render_initialize_for_new_map(
 
 /* every visible object but the viewer's own body (the view is first person) */
 static void render_objects_for_view(
-	short local_player_index)
+	short local_player_index,
+	boolean third_person)
 {
 	long viewer_unit = NONE;
 	long player_index = local_player_get_player_index(local_player_index);
 	struct object_iterator iterator;
 	struct object_datum *object;
 
-	if (player_index != NONE)
+	if (player_index != NONE && !third_person)
 		viewer_unit = player_get(player_index)->unit_index;
 	object_iterator_new(&iterator, _object_mask_all, FLAG(_object_header_visible_bit));
 	while ((object = object_iterator_next(&iterator)) != NULL)
@@ -171,8 +172,58 @@ static void render_objects_for_view(
 		n64.center[1] = object->object.bounding_sphere_center.y;
 		n64.center[2] = object->object.bounding_sphere_center.z;
 		n64.radius = object->object.bounding_sphere_radius;
+		n64.tint[0] = n64.tint[1] = n64.tint[2] = n64.tint[3] = 0xFF;
+		if (TEST_FLAG(_object_mask_unit, object->object.type) || TEST_FLAG(_object_mask_unit, object_get(object_get_ultimate_parent(iterator.index))->object.type))
+		{
+			/* a player (or what a player holds): the armour colour, kept light */
+			struct object_datum *owner = object_get(object_get_ultimate_parent(iterator.index));
+			real_rgb_color const *color = &owner->object.base_change_colors[_object_change_color_a];
+
+			n64.tint[0] = (unsigned char)PIN(color->red * 200.f + 55.f, 0.f, 255.f);
+			n64.tint[1] = (unsigned char)PIN(color->green * 200.f + 55.f, 0.f, 255.f);
+			n64.tint[2] = (unsigned char)PIN(color->blue * 200.f + 55.f, 0.f, 255.f);
+		}
 		n64_render_object(&n64);
 	}
+}
+
+/* ---------- the first-person weapon (interface/first_person_weapons.c poses
+it; its draw hands each model here) */
+
+static boolean first_person_begun;
+
+void n64_first_person_model_draw(
+	long model_index,
+	struct real_matrix4x3 const *node_matrices,
+	real_rgb_color const *tint)
+{
+	static unsigned char const no_permutations[MAXIMUM_REGIONS_PER_OBJECT] = { 0 };
+	struct n64_object n64;
+
+	if (model_index == NONE)
+		return;
+	if (!first_person_begun)
+	{
+		n64_render_first_person_begin();
+		first_person_begun = TRUE;
+	}
+	n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(model_index);
+	n64.node_count = (short)model_definition_get(model_index)->nodes.count;
+	n64.node_matrices = (const float *)node_matrices;
+	n64.region_permutations = no_permutations;
+	n64.region_count = 0;
+	n64.center[0] = render.camera.position.x;
+	n64.center[1] = render.camera.position.y;
+	n64.center[2] = render.camera.position.z;
+	n64.radius = 4.f;
+	n64.tint[0] = n64.tint[1] = n64.tint[2] = n64.tint[3] = 0xFF;
+	if (tint)
+	{
+		n64.tint[0] = (unsigned char)PIN(tint->red * 200.f + 55.f, 0.f, 255.f);
+		n64.tint[1] = (unsigned char)PIN(tint->green * 200.f + 55.f, 0.f, 255.f);
+		n64.tint[2] = (unsigned char)PIN(tint->blue * 200.f + 55.f, 0.f, 255.f);
+	}
+	n64_render_object(&n64);
 }
 
 /* ---------- frames */
@@ -231,11 +282,38 @@ void render_frame(
 		view.x1 = camera->viewport_bounds.x1 / 2;
 		view.y1 = camera->viewport_bounds.y1 / 2;
 		view.local_player_index = window->local_player_index;
+		if (window_index == 0 && n64_debug_flag("debug_chase"))
+		{
+			/* debugging: the first view follows its player from behind */
+			long player_index = local_player_get_player_index(window->local_player_index);
+
+			if (player_index != NONE && player_get(player_index)->unit_index != NONE)
+			{
+				struct object_datum *unit = object_get(player_get(player_index)->unit_index);
+				real_vector3d forward = unit->object.forward;
+
+				view.position[0] = unit->object.position.x - forward.i * 1.6f;
+				view.position[1] = unit->object.position.y - forward.j * 1.6f;
+				view.position[2] = unit->object.position.z + 0.9f;
+				view.forward[0] = forward.i * 0.94f;
+				view.forward[1] = forward.j * 0.94f;
+				view.forward[2] = -0.34f;
+				view.up[0] = 0.f;
+				view.up[1] = 0.f;
+				view.up[2] = 1.f;
+			}
+		}
 		render.local_player_index = window->local_player_index;
 		render.window_index = window_index;
 		render.camera = *camera;
 		n64_render_view(&view);
-		render_objects_for_view(window->local_player_index);
+		render_objects_for_view(window->local_player_index, window_index == 0 && n64_debug_flag("debug_chase"));
+		if (!(window_index == 0 && n64_debug_flag("debug_chase")))
+		{
+			first_person_begun = FALSE;
+			first_person_weapon_render_update();
+			first_person_weapon_draw();
+		}
 	}
 	return;
 }

@@ -35,6 +35,10 @@ void n64_wait_microseconds(unsigned long microseconds);
 /* memory left on the heap, and the largest free block */
 unsigned long n64_heap_free(void);
 
+/* TRUE when the cartridge carries the file rom:/<name> (debug switches,
+port.json "flags"); looked up once per name */
+int n64_debug_flag(const char *name);
+
 /* ---------- cartridge files (n64_files.c): DragonFS, read-only */
 
 /* returns a handle (>= 0) or -1 */
@@ -43,6 +47,11 @@ long n64_file_size(long handle);
 long n64_file_read(long handle, void *buffer, long size);
 long n64_file_seek(long handle, long offset);
 void n64_file_close(long handle);
+
+/* ---------- animation frames streamed from the cartridge (n64_anim.c) */
+
+void n64_animation_open(const char *map_name);
+void *n64_animation_frame(long data_offset, long data_size, short frame_index, short frame_size);
 
 /* ---------- controllers (n64_input.c) */
 
@@ -107,6 +116,9 @@ struct n64_object
 	short pad;
 	float center[3];
 	float radius;
+	/* the colour the model's light is doubled by: white for most objects,
+	a player's armour colour for players */
+	unsigned char tint[4];
 };
 
 void n64_render_initialize(void);
@@ -116,6 +128,8 @@ void n64_render_frame_begin(void);
 void n64_render_view(const struct n64_view *view);
 /* after n64_render_view: objects in that view */
 void n64_render_object(const struct n64_object *object);
+/* then the first-person weapon: its own near plane, drawn over the world */
+void n64_render_first_person_begin(void);
 void n64_render_frame_end(void);
 
 #ifdef __cplusplus

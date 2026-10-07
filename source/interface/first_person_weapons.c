@@ -469,6 +469,11 @@ long first_person_weapon_get_local_index(
 	return (local_player_index==MAXIMUM_NUMBER_OF_LOCAL_PLAYERS) ? NONE : local_player_index;
 }
 
+#ifdef HALO_N64
+void n64_first_person_model_draw(long model_index, struct real_matrix4x3 const *node_matrices,
+	real_rgb_color const *tint);
+#endif
+
 void first_person_weapon_draw(
 	void)
 {
@@ -527,6 +532,13 @@ void first_person_weapon_draw(
 							weapon_definition->weapon.interface_definition.first_person_animations.index,
 							first_person_weapon->node_matrices,
 							first_person_weapon->weapon_node_remapping_table);
+#ifdef HALO_N64
+						/* the N64 renderer (port/n64/game/n64_render_game.c) */
+						n64_first_person_model_draw(
+							weapon_definition->weapon.interface_definition.first_person_model.index,
+							model_node_matrices,
+							NULL);
+#else
 						render_model(
 							weapon_definition->weapon.interface_definition.first_person_model.index,
 							0.0f,
@@ -541,6 +553,7 @@ void first_person_weapon_draw(
 							first_person_weapon->weapon_index,
 							0,
 							FLAG(_render_model_first_person_bit));
+#endif
 					}
 
 					if (first_person_weapon->hands_node_remapping_table_valid &&
@@ -552,6 +565,12 @@ void first_person_weapon_draw(
 							weapon_definition->weapon.interface_definition.first_person_animations.index,
 							first_person_weapon->node_matrices,
 							first_person_weapon->hands_node_remapping_table);
+#ifdef HALO_N64
+						n64_first_person_model_draw(
+							first_person_interface->hands.index,
+							model_node_matrices,
+							&unit->object.base_change_colors[0]);
+#else
 						render_model(
 							first_person_interface->hands.index,
 							0.0f,
@@ -566,6 +585,7 @@ void first_person_weapon_draw(
 							first_person_weapon->weapon_index,
 							0,
 							FLAG(_render_model_first_person_bit));
+#endif
 					}
 				}
 			}

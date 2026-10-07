@@ -501,6 +501,15 @@ byte *animation_get_frame_data(struct animation const *animation, short frame_in
 	boolean compressed;
 
 	compressed = TEST_FLAG(animation->flags, _animation_compressed_bit) && hs_model_animation_compression_enabled;
+#ifdef HALO_N64
+	/* frames stream from the cartridge (port/n64/src/n64_anim.c) */
+	if (animation->data.pad & 1)
+	{
+		extern void *n64_animation_frame(long data_offset, long data_size, short frame_index, short frame_size);
+
+		return n64_animation_frame(animation->data.file_offset, animation->data.size, frame_index, animation->frame_size);
+	}
+#endif
 	frame_data = tag_data_get_pointer(&animation->data, 0, 0);
 
 	match_assert("c:\\halo\\SOURCE\\models\\model_animation_definitions.c", 1147, frame_index>=0 && frame_index<animation->frame_count);

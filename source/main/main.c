@@ -826,7 +826,28 @@ static void create_local_players(
 				"c:\\halo\\SOURCE\\main\\main.c",
 				784,
 				(gamepad_index>=0) && (gamepad_index<MAXIMUM_GAMEPADS));
+#ifdef HALO_N64
+			/* no menus to name the players or pick their colours: Player 1-4
+			in red, blue, green and yellow */
+			{
+				static short const colors[4] = {2, 3, 6, 5};
+				struct network_player n64_player;
+				short c;
+
+				csmemset(&n64_player, 0, sizeof(n64_player));
+				for (c = 0; c < 8; c++)
+					n64_player.name[c] = (wchar_t)"Player 1"[c];
+				n64_player.name[7] = (wchar_t)('1' + i);
+				n64_player.primary_color_index = colors[i & 3];
+				n64_player.machine_index = 0;
+				n64_player.controller_index = (char)gamepad_index;
+				n64_player.team_index = (char)i;
+				n64_player.player_list_index = (char)i;
+				player = player_new(0, NONE, gamepad_index, &n64_player);
+			}
+#else
 			player = player_new(0, NONE, gamepad_index, NULL);
+#endif
 			local_player_set_player_index(
 				gamepad_index,
 				player);

@@ -32,6 +32,7 @@
 #include "rasterizer/rasterizer_models.h"
 #include "rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h"
 #include "render/render_debug.h"
+#include "render/render_objects.h"
 #include "render/render_sprite.h"
 #include "saved games/game_state.h"
 #include "saved games/player_profile.h"
@@ -176,9 +177,9 @@ boolean network_objects_may_delete(long object_index) { return TRUE; } /* source
 long network_objects_new_object_index(void) { return NONE; } /* source/objects/objects.c */
 void network_objects_placed(void) {  } /* source/game/game.c */
 void network_test_update(boolean main_menu_loaded, real seconds) {  } /* source/main/main.c */
+struct render_lighting * object_get_cached_render_lighting(long object_index, real level_of_detail_pixels) { struct render_lighting * result; memset(&result, 0, sizeof(result)); return result; } /* source/render/render_objects.h */
 long object_impulse_sound_new(long object_index, long definition_index, short node_index, real_point3d const *position, real_vector3d const *forward, real scale) { return NONE; } /* source/sound/game_sound.h */
 boolean player_profile_get_enclosing_directory_path(long profile, char *full_path) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/player_profile.h */
-real_rgb_color player_profile_get_rgb_color(long color_index) { real_rgb_color result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/player_profile.h */
 void player_profile_save_last_level_played(short local_player_index) {  } /* source/saved games/player_profile.h */
 void player_profile_save_level_completed(short local_player_index) {  } /* source/saved games/player_profile.h */
 void process_ui_widgets(void) {  } /* source/interface/ui_widget.h */

@@ -92,6 +92,23 @@ class ModelConverter:
             model = self.map.tag(datum)
             if model is not None and model.group_name == "mode" and model not in found:
                 found.append(model)
+        # the first-person views: each weapon's model, and the hands
+        wf = self.f("Weapon")
+        for tag in self.map.tags:
+            if tag.group_name == "weap":
+                datum = struct.unpack("<I", self.map.read(tag.address + wf["first person model"] + 12, 4))[0]
+                model = self.map.tag(datum)
+                if model is not None and model.group_name == "mode" and model not in found:
+                    found.append(model)
+        gf = self.f("Globals")
+        for tag in self.map.tags:
+            if tag.group_name == "matg":
+                count, pointer = self.block(tag.address + gf["first person interface"])
+                if count > 0:
+                    datum = struct.unpack("<I", self.map.read(pointer + 12, 4))[0]
+                    model = self.map.tag(datum)
+                    if model is not None and model.group_name == "mode" and model not in found:
+                        found.append(model)
         return found
 
     def shader_texture(self, shader_datum):

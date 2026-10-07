@@ -65,6 +65,14 @@ class Image:
             self.relocs.append(offset)
 
 
+class External:
+    """a data blob the policy put in a file of its own: the tag data keeps
+    its size, flag 1 in its pad field and the offset in that file"""
+
+    def __init__(self, offset, size):
+        self.offset, self.size = offset, size
+
+
 class Policy:
     """what the repacker keeps; convert.py subclasses it"""
 
@@ -156,6 +164,9 @@ class Repacker:
                     if source is not None:
                         blob = self.policy.data(tag, sub, (address, name, raw), source)
                 target = None
+                if isinstance(blob, External):
+                    self.image.put(dst, struct.pack(">iIIII", blob.size, 1, blob.offset, 0, 0))
+                    continue
                 if blob is not None:
                     target = self.image.alloc(len(blob), 8)
                     self.image.put(target, blob)

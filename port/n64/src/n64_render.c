@@ -151,6 +151,9 @@ static struct
 	int matrix_count;
 	T3DViewport *viewport;
 	int current_texture;
+	float fov;
+	/* each view's rectangle, for the crosshairs drawn after the 3D */
+	short rects[MAXIMUM_VIEWS][4];
 	/* the FPS counter: frames shown in the last second */
 	unsigned long long fps_window_start;
 	int fps_frames;
@@ -401,6 +404,10 @@ void n64_render_view(const struct n64_view *view)
 
 	if (renderer.view_count >= MAXIMUM_VIEWS)
 		return;
+	renderer.rects[renderer.view_count][0] = view->x0;
+	renderer.rects[renderer.view_count][1] = view->y0;
+	renderer.rects[renderer.view_count][2] = view->x1;
+	renderer.rects[renderer.view_count][3] = view->y1;
 	viewport = &renderer.viewports[renderer.view_count++];
 	if (!(renderer.frame_index % 30))
 	{
@@ -412,6 +419,7 @@ void n64_render_view(const struct n64_view *view)
 	t3d_viewport_set_area(viewport, view->x0, view->y0, view->x1 - view->x0, view->y1 - view->y0);
 	t3d_viewport_set_projection(viewport, view->vertical_field_of_view,
 		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
+	renderer.fov = view->vertical_field_of_view;
 	eye = (T3DVec3){{view->position[0] * WORLD_SCALE, view->position[1] * WORLD_SCALE, view->position[2] * WORLD_SCALE}};
 	target = (T3DVec3){{eye.v[0] + view->forward[0] * WORLD_SCALE, eye.v[1] + view->forward[1] * WORLD_SCALE,
 		eye.v[2] + view->forward[2] * WORLD_SCALE}};
@@ -450,7 +458,13 @@ static void set_model_texture(int texture)
 	rdpq_mode_zbuf(true, true);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
-	rdpq_mode_combiner(textured ? RDPQ_COMBINER_TEX_SHADE : RDPQ_COMBINER_SHADE);
+	/* (texture x shade) x (1 + tint): the environment's doubling, with a
+	player's colour in it */
+	if (textured)
+		rdpq_mode_combiner(RDPQ_COMBINER2((TEX0, 0, SHADE, 0), (TEX0, 0, SHADE, 0),
+			(COMBINED, 0, PRIM, COMBINED), (0, 0, 0, COMBINED)));
+	else
+		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
 	rdpq_mode_end();
 	if (textured)
 	{
@@ -460,6 +474,20 @@ static void set_model_texture(int texture)
 	}
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_CULL_BACK |
 		(textured ? T3D_FLAG_TEXTURED : 0));
+}
+
+void n64_render_first_person_begin(void)
+{
+	T3DViewport *viewport = renderer.viewport;
+
+	if (!viewport)
+		return;
+	/* the game's first-person near and far planes (rasterizer.c), and the
+	weapon in front of whatever the world put in this view's depth */
+	t3d_viewport_set_projection(viewport, renderer.fov, 0.01171875f * WORLD_SCALE, 16.0f * WORLD_SCALE);
+	t3d_viewport_attach(viewport);
+	t3d_screen_clear_depth();
+	renderer.current_texture = -2;
 }
 
 void n64_render_object(const struct n64_object *object)
@@ -494,6 +522,7 @@ void n64_render_object(const struct n64_object *object)
 		t3d_mat4_to_fixed(&matrices[n], &matrix);
 	}
 	renderer.objects++;
+	rdpq_set_prim_color(RGBA32(object->tint[0], object->tint[1], object->tint[2], 0xFF));
 	for (int r = 0; r < model->region_count; r++)
 	{
 		struct region_record *region = &models.regions[model->first_region + r];
@@ -532,6 +561,30 @@ void n64_render_object(const struct n64_object *object)
 	}
 }
 
+/* a crosshair in the middle of each view (the weapon HUD comes later) */
+static void draw_crosshairs(void)
+{
+	rdpq_sync_pipe();
+	rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+	rdpq_set_mode_fill(RGBA32(0x60, 0xD0, 0xFF, 0xFF));
+	for (int i = 0; i < renderer.view_count; i++)
+	{
+		int x = (renderer.rects[i][0] + renderer.rects[i][2]) / 2;
+		int y = (renderer.rects[i][1] + renderer.rects[i][3]) / 2;
+
+		rdpq_fill_rectangle(x - 6, y, x - 2, y + 1);
+		rdpq_fill_rectangle(x + 2, y, x + 6, y + 1);
+		rdpq_fill_rectangle(x, y - 5, x + 1, y - 1);
+		rdpq_fill_rectangle(x, y + 2, x + 1, y + 6);
+	}
+	if (renderer.view_count == 2)
+	{
+		/* the line between the two views */
+		rdpq_set_mode_fill(RGBA32(0, 0, 0, 0xFF));
+		rdpq_fill_rectangle(0, renderer.rects[1][1] - 1, SCREEN_WIDTH, renderer.rects[1][1] + 1);
+	}
+}
+
 static void draw_counter(void)
 {
 	unsigned long long now = get_ticks();
@@ -551,8 +604,12 @@ static void draw_counter(void)
 		renderer.fps / 10, renderer.fps % 10, n64_last_tick_us / 1000, (n64_last_tick_us % 1000) / 100);
 }
 
+void n64_profile_poll(void);
+
 void n64_render_frame_end(void)
 {
+	n64_profile_poll();
+	draw_crosshairs();
 	draw_counter();
 	rdpq_detach_show();
 	if (!(renderer.frame_index % 120))
