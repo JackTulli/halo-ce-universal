@@ -85,6 +85,8 @@ static struct
 	T3DVertPacked *vertices;
 	uint8_t *indices;
 	sprite_t **sprites;
+	/* each batch's vertex load and triangles, recorded once */
+	rspq_block_t **blocks;
 } level;
 
 /* ---------- the models file (tools/n64/models.py) */
@@ -134,7 +136,12 @@ static struct
 	/* tag index -> model record, or NULL */
 	struct model_record **by_tag;
 	int tag_count;
+	/* each batch's loads (node matrices from the segment the object sets)
+	and triangles, recorded once */
+	rspq_block_t **blocks;
 } models;
+
+#define SEGMENT_NODE_MATRICES T3D_SEGMENT_1
 
 /* debug switches: files on the cartridge (port.json "flags") */
 static int debug_overview;
@@ -200,6 +207,10 @@ static void load_models(const char *map_name)
 
 	if (models.data)
 	{
+		rspq_wait();
+		for (int i = 0; i < models.header->batch_count; i++)
+			rspq_block_free(models.blocks[i]);
+		free(models.blocks);
 		for (int i = 0; i < models.header->texture_count; i++)
 		{
 			if (models.sprites[i])
@@ -251,6 +262,26 @@ static void load_models(const char *map_name)
 	models.by_tag = calloc(models.tag_count, sizeof(struct model_record *));
 	for (int i = 0; i < models.header->model_count; i++)
 		models.by_tag[models.models[i].tag_index] = &models.models[i];
+	models.blocks = calloc(models.header->batch_count, sizeof(rspq_block_t *));
+	for (int b = 0; b < models.header->batch_count; b++)
+	{
+		struct model_batch *batch = &models.batches[b];
+		uint8_t *index = models.indices + batch->index_offset;
+
+		rspq_block_begin();
+		for (int g = 0; g < batch->segment_count; g++)
+		{
+			struct model_segment *segment = &models.segments[batch->first_segment + g];
+
+			t3d_matrix_push(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))));
+			t3d_vert_load(models.vertices + segment->vertex_pair_offset, segment->slot, segment->count);
+			t3d_matrix_pop(1);
+		}
+		for (int t = 0; t < batch->triangle_count; t++, index += 3)
+			t3d_tri_draw(index[0], index[1], index[2]);
+		t3d_tri_sync();
+		models.blocks[b] = rspq_block_end();
+	}
 	debugf("n64: %d models, %ld KB\n", models.header->model_count, size / 1024);
 }
 
@@ -262,6 +293,10 @@ int n64_render_load_level(const char *map_name)
 
 	if (level.data)
 	{
+		rspq_wait();
+		for (int i = 0; i < level.header->batch_count; i++)
+			rspq_block_free(level.blocks[i]);
+		free(level.blocks);
 		for (int i = 0; i < level.header->texture_count; i++)
 		{
 			if (level.sprites[i])
@@ -296,6 +331,19 @@ int n64_render_load_level(const char *map_name)
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
 	level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
 	level.indices = level.data + level.header->indices_offset;
+	level.blocks = calloc(level.header->batch_count, sizeof(rspq_block_t *));
+	for (int b = 0; b < level.header->batch_count; b++)
+	{
+		struct level_batch *batch = &level.batches[b];
+		uint8_t *index = level.indices + batch->index_offset;
+
+		rspq_block_begin();
+		t3d_vert_load(level.vertices + batch->vertex_pair_offset, 0, batch->vertex_count);
+		for (int t = 0; t < batch->triangle_count; t++, index += 3)
+			t3d_tri_draw(index[0], index[1], index[2]);
+		t3d_tri_sync();
+		level.blocks[b] = rspq_block_end();
+	}
 	level.sprites = calloc(level.header->texture_count, sizeof(sprite_t *));
 	for (int i = 0; i < level.header->texture_count; i++)
 	{
@@ -393,10 +441,7 @@ static void draw_level(T3DViewport *viewport)
 				current_material = batch->material;
 				set_material(current_material);
 			}
-			t3d_vert_load(level.vertices + batch->vertex_pair_offset, 0, batch->vertex_count);
-			for (int t = 0; t < batch->triangle_count; t++, index += 3)
-				t3d_tri_draw(index[0], index[1], index[2]);
-			t3d_tri_sync();
+			rspq_block_run(level.blocks[b]);
 			renderer.triangles += batch->triangle_count;
 			renderer.batches++;
 		}
@@ -518,10 +563,10 @@ void n64_render_object(const struct n64_object *object)
 	if (!t3d_frustum_vs_sphere(&renderer.viewport->viewFrustum, &center, object->radius * WORLD_SCALE + 8.0f))
 		return;
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
-	if (renderer.matrix_count + node_count > MATRICES_PER_FRAME)
+	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
 	matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
-	renderer.matrix_count += node_count;
+	renderer.matrix_count += model->node_count;
 	for (int n = 0; n < node_count; n++)
 	{
 		const float *m = object->node_matrices + n * 13;
@@ -535,6 +580,11 @@ void n64_render_object(const struct n64_object *object)
 
 		t3d_mat4_to_fixed(&matrices[n], &matrix);
 	}
+	/* nodes the game does not have (a model with more nodes than its
+	animation drives) keep the first node's matrix */
+	for (int n = node_count; n < model->node_count; n++)
+		matrices[n] = matrices[0];
+	t3d_segment_set(SEGMENT_NODE_MATRICES, matrices);
 	renderer.objects++;
 	int tinted = object->tint[0] != 0xFF || object->tint[1] != 0xFF || object->tint[2] != 0xFF;
 
@@ -561,18 +611,7 @@ void n64_render_object(const struct n64_object *object)
 			uint8_t *index = models.indices + batch->index_offset;
 
 			set_model_texture(batch->texture, tinted);
-			for (int g = 0; g < batch->segment_count; g++)
-			{
-				struct model_segment *segment = &models.segments[batch->first_segment + g];
-				int node = segment->node < node_count ? segment->node : 0;
-
-				t3d_matrix_push(&matrices[node]);
-				t3d_vert_load(models.vertices + segment->vertex_pair_offset, segment->slot, segment->count);
-				t3d_matrix_pop(1);
-			}
-			for (int t = 0; t < batch->triangle_count; t++, index += 3)
-				t3d_tri_draw(index[0], index[1], index[2]);
-			t3d_tri_sync();
+			rspq_block_run(models.blocks[b]);
 			renderer.triangles += batch->triangle_count;
 		}
 	}
