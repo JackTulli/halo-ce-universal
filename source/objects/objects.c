@@ -3652,6 +3652,42 @@ static boolean object_update(
 			}
 		}
 
+#ifdef HALO_N64
+		{
+			/* each stage timed (port/n64/game/n64_game.c logs the sums) */
+			extern unsigned long n64_ticks(void);
+			extern unsigned long n64_object_stage_time[8];
+			unsigned long t0 = n64_ticks(), t1;
+
+			object_type_update(object_index);
+			t1 = n64_ticks(); n64_object_stage_time[0] += t1 - t0; t0 = t1;
+			if (object_definition->object.collision_model.index!=NONE)
+			{
+				object_damage_update(object_index);
+			}
+			object_type_export_function_values(object_index);
+			t1 = n64_ticks(); n64_object_stage_time[1] += t1 - t0; t0 = t1;
+			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
+			{
+				object_compute_node_matrices(object_index);
+			}
+			t1 = n64_ticks(); n64_object_stage_time[2] += t1 - t0; t0 = t1;
+			object_compute_function_values(object_index);
+			object_compute_change_colors(object_index);
+			t1 = n64_ticks(); n64_object_stage_time[3] += t1 - t0; t0 = t1;
+			if (
+				TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&
+				(
+					!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
+					object_definition_get(object->definition_index)->object.model.index==NONE
+				)
+			)
+			{
+				object_connect_lights(object_index, TRUE, TRUE);
+			}
+			t1 = n64_ticks(); n64_object_stage_time[4] += t1 - t0;
+		}
+#else
 		object_type_update(object_index);
 		if (object_definition->object.collision_model.index!=NONE)
 		{
@@ -3679,6 +3715,7 @@ static boolean object_update(
 			object_connect_lights(object_index, TRUE, TRUE);
 		}
 
+#endif
 		// Update children (if we have any)
 		if (object->object.first_child_object_index!=NONE)
 		{
@@ -4283,7 +4320,18 @@ void objects_update(
 					TEST_FLAG(_object_mask_unit, object_header->type) &&
 					unit_get(object_index)->unit.player_index!=NONE)
 				{
+#ifdef HALO_N64
+					/* timed by type (port/n64/game/n64_game.c logs the sums) */
+					extern unsigned long n64_ticks(void);
+					extern unsigned long n64_object_type_time[16], n64_object_type_count[16];
+					unsigned long n64_start = n64_ticks();
+
 					object_update(object_index);
+					n64_object_type_time[object_header->type & 15] += n64_ticks() - n64_start;
+					n64_object_type_count[object_header->type & 15]++;
+#else
+					object_update(object_index);
+#endif
 				}
 			}
 		}
@@ -4339,6 +4387,12 @@ static void object_connect_lights(
 	boolean disconnect,
 	boolean reconnect)
 {
+#ifdef HALO_N64
+	/* the N64 draws no dynamic lights: an object's lights are never made,
+	which saved 40% of every tick (their cluster lists were recomputed for
+	every object that carries one) */
+	return;
+#endif
 	struct object_datum *object = object_get(object_index);
 
 	if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))

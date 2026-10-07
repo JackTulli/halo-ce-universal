@@ -451,14 +451,18 @@ void n64_render_view(const struct n64_view *view)
 	renderer.current_texture = -2;
 }
 
-/* models: textured, shaded by their baked sky light, one cycle */
-static void set_model_texture(int texture)
+/* models: textured (the doubling is in the texture), shaded by their baked
+sky light; one RDP cycle, or two with a player's tint */
+static int current_tinted;
+
+static void set_model_texture(int texture, int tinted)
 {
 	int textured = texture >= 0 && models.sprites[texture] && !debug_untextured;
 
-	if (texture == renderer.current_texture)
+	if (texture == renderer.current_texture && tinted == current_tinted)
 		return;
 	renderer.current_texture = texture;
+	current_tinted = tinted;
 	rdpq_sync_pipe();
 	rdpq_sync_tile();
 	rdpq_mode_begin();
@@ -466,11 +470,11 @@ static void set_model_texture(int texture)
 	rdpq_mode_zbuf(true, true);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
-	/* (texture x shade) x (1 + tint): the environment's doubling, with a
-	player's colour in it */
-	if (textured)
+	if (textured && tinted)
 		rdpq_mode_combiner(RDPQ_COMBINER2((TEX0, 0, SHADE, 0), (TEX0, 0, SHADE, 0),
-			(COMBINED, 0, PRIM, COMBINED), (0, 0, 0, COMBINED)));
+			(COMBINED, 0, PRIM, 0), (0, 0, 0, COMBINED)));
+	else if (textured)
+		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
 	else
 		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
 	rdpq_mode_end();
@@ -532,7 +536,10 @@ void n64_render_object(const struct n64_object *object)
 		t3d_mat4_to_fixed(&matrices[n], &matrix);
 	}
 	renderer.objects++;
-	rdpq_set_prim_color(RGBA32(object->tint[0], object->tint[1], object->tint[2], 0xFF));
+	int tinted = object->tint[0] != 0xFF || object->tint[1] != 0xFF || object->tint[2] != 0xFF;
+
+	if (tinted)
+		rdpq_set_prim_color(RGBA32(object->tint[0], object->tint[1], object->tint[2], 0xFF));
 	for (int r = 0; r < model->region_count; r++)
 	{
 		struct region_record *region = &models.regions[model->first_region + r];
@@ -553,7 +560,7 @@ void n64_render_object(const struct n64_object *object)
 			struct model_batch *batch = &models.batches[b];
 			uint8_t *index = models.indices + batch->index_offset;
 
-			set_model_texture(batch->texture);
+			set_model_texture(batch->texture, tinted);
 			for (int g = 0; g < batch->segment_count; g++)
 			{
 				struct model_segment *segment = &models.segments[batch->first_segment + g];

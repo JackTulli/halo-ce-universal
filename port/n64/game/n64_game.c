@@ -334,6 +334,27 @@ the average and the worst, and how far game time keeps up with real time. */
 
 void __real_game_tick(void);
 
+/* game.c's phases of a tick (HALO_N64), in CPU ticks, summed over the log
+window */
+unsigned long n64_tick_phases[8];
+/* objects.c's objects_update, by object type (HALO_N64) */
+unsigned long n64_object_type_time[16], n64_object_type_count[16];
+/* objects.c's object_update, by stage */
+unsigned long n64_object_stage_time[8];
+static char const *const n64_object_stage_names[5] =
+{
+	"type update", "damage/export", "node matrices", "functions/colours", "lights",
+};
+static char const *const n64_object_type_names[12] =
+{
+	"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery", "machine", "control",
+	"light fixture", "placeholder", "sound scenery",
+};
+static char const *const n64_tick_phase_names[8] =
+{
+	"quit/allegiance", "units", "players before", "effects", "first person", "engine", "objects", "players after/hud",
+};
+
 /* one line per player: where, whether alive, kills, deaths, shots */
 static void n64_log_players(
 	void)
@@ -416,6 +437,42 @@ void __wrap_game_tick(
 		snprintf(line, sizeof(line), "tick: %lu.%02lu ms average, %lu.%02lu ms worst; 150 ticks (5 s of game) took %lu ms",
 			average_us / 1000, (average_us % 1000) / 10, worst_us / 1000, (worst_us % 1000) / 10, window_ms);
 		n64_log(line);
+		{
+			char phases[200];
+			int length = 0;
+			int i;
+
+			for (i = 0; i < 8; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%lu ", n64_tick_phase_names[i],
+					(unsigned long)((unsigned long long)n64_tick_phases[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_tick_phases[i] * 10000 / N64_TICKS_PER_SECOND / 150 % 10));
+				n64_tick_phases[i] = 0;
+			}
+			n64_log(phases);
+			length = 0;
+			for (i = 0; i < 12; i++)
+			{
+				if (!n64_object_type_count[i])
+					continue;
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ms x%lu ", n64_object_type_names[i],
+					(unsigned long)((unsigned long long)n64_object_type_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_object_type_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100),
+					n64_object_type_count[i] / 150);
+			}
+			for (i = 0; i < 16; i++)
+				n64_object_type_time[i] = n64_object_type_count[i] = 0;
+			n64_log(phases);
+			length = 0;
+			for (i = 0; i < 5; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
+					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				n64_object_stage_time[i] = 0;
+			}
+			n64_log(phases);
+		}
 		n64_log_players();
 		memset(&n64_tick_profile, 0, sizeof(n64_tick_profile));
 		n64_tick_profile.window_start = now;

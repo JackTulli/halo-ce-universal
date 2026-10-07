@@ -445,6 +445,28 @@ void game_tick(
 		0x28D,
 		game_globals->active);
 
+#ifdef HALO_N64
+	/* each phase timed (port/n64/game/n64_game.c logs the sums) */
+#define N64_PHASE(index, call) { unsigned long n64_start = n64_ticks(); call; n64_tick_phases[index] += n64_ticks() - n64_start; }
+	{
+		extern unsigned long n64_ticks(void);
+		extern unsigned long n64_tick_phases[];
+
+		N64_PHASE(0, remove_quitting_players_from_game(); game_allegiance_update());
+		N64_PHASE(1, units_update());
+		N64_PHASE(2, ai_update(); players_update_before_game());
+		seconds_per_tick = game_globals->players_are_double_speed
+			? 1.0f / (2 * TICKS_PER_SECOND)
+			: 1.0f / TICKS_PER_SECOND;
+		N64_PHASE(3, effects_update(seconds_per_tick));
+		lock_global_random_seed();
+		N64_PHASE(4, rumble_update(); first_person_weapons_update());
+		unlock_global_random_seed();
+		N64_PHASE(5, game_engine_update(); editor_update(); hs_update(); recorded_animations_update());
+		N64_PHASE(6, objects_update());
+		N64_PHASE(7, players_update_after_game(); hud_update(); player_effect_update());
+	}
+#else
 	remove_quitting_players_from_game();
 	game_allegiance_update();
 	units_update();
@@ -468,6 +490,7 @@ void game_tick(
 	hud_update();
 	player_effect_update();
 
+#endif
 	profile_exit(game_update_section);
 	collision_log_end_period();
 	profile_tick_end();

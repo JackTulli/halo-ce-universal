@@ -22,6 +22,7 @@ ticks') are already there.
 struct chunk
 {
 	long start; /* file offset of the chunk's first byte, or -1 */
+	long length; /* bytes read: a chunk stops where its animation ends */
 	unsigned long last_used;
 	uint8_t *data;
 };
@@ -76,7 +77,9 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 	{
 		struct chunk *c = &anim.chunks[i];
 
-		if (c->start >= 0 && offset >= c->start && offset + frame_size <= c->start + CHUNK_SIZE)
+		/* only what was read counts: the next animation's frames follow in
+		the file, and a chunk read for this one stopped at its end */
+		if (c->start >= 0 && offset >= c->start && offset + frame_size <= c->start + c->length)
 		{
 			chunk = c;
 			break;
@@ -100,6 +103,7 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 		data_cache_hit_writeback_invalidate(chunk->data, CHUNK_SIZE);
 		dma_read(chunk->data, anim.rom_address + start, (length + 1) & ~1L);
 		chunk->start = start;
+		chunk->length = length;
 	}
 	chunk->last_used = anim.clock;
 	if ((anim.requests & 4095) == 0)

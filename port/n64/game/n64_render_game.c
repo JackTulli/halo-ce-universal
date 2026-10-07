@@ -179,9 +179,9 @@ static void render_objects_for_view(
 			struct object_datum *owner = object_get(object_get_ultimate_parent(iterator.index));
 			real_rgb_color const *color = &owner->object.base_change_colors[_object_change_color_a];
 
-			n64.tint[0] = (unsigned char)PIN(color->red * 200.f + 55.f, 0.f, 255.f);
-			n64.tint[1] = (unsigned char)PIN(color->green * 200.f + 55.f, 0.f, 255.f);
-			n64.tint[2] = (unsigned char)PIN(color->blue * 200.f + 55.f, 0.f, 255.f);
+			n64.tint[0] = (unsigned char)PIN(color->red * 160.f + 95.f, 0.f, 255.f);
+			n64.tint[1] = (unsigned char)PIN(color->green * 160.f + 95.f, 0.f, 255.f);
+			n64.tint[2] = (unsigned char)PIN(color->blue * 160.f + 95.f, 0.f, 255.f);
 		}
 		n64_render_object(&n64);
 	}
@@ -217,12 +217,7 @@ void n64_first_person_model_draw(
 	n64.center[2] = render.camera.position.z;
 	n64.radius = 4.f;
 	n64.tint[0] = n64.tint[1] = n64.tint[2] = n64.tint[3] = 0xFF;
-	if (tint)
-	{
-		n64.tint[0] = (unsigned char)PIN(tint->red * 200.f + 55.f, 0.f, 255.f);
-		n64.tint[1] = (unsigned char)PIN(tint->green * 200.f + 55.f, 0.f, 255.f);
-		n64.tint[2] = (unsigned char)PIN(tint->blue * 200.f + 55.f, 0.f, 255.f);
-	}
+	(void)tint; /* first person: one RDP cycle, no tint */
 	n64_render_object(&n64);
 }
 

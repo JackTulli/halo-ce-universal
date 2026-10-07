@@ -31,6 +31,7 @@ import math
 import struct
 from pathlib import Path
 
+from .decimate import decimate
 from .level import LevelBuilder, pack_normal, unpack_normal
 
 MODEL_SCALE = 1024.0
@@ -39,6 +40,10 @@ VERSION = 1
 LOD_PREFERENCE = ("low", "super low", "medium", "high", "super high")
 OBJECT_GROUPS = ("bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach", "ctrl", "lifi", "plac", "ssce")
 SKY_LIGHT = (0.3, 0.2, 0.93)
+# triangles a model may keep (tools/n64/decimate.py): the first-person
+# models are drawn in every view
+FIRST_PERSON_BUDGET = 500
+MODEL_BUDGET = 800
 
 
 def matrix4x3(values):
@@ -73,8 +78,9 @@ class ModelConverter:
         # textures go through the level builder's writer, named m00...
         self.textures = LevelBuilder(xmap, defs, map_name, out_dir)
         self.textures.texture_prefix = "m"
-        # models keep their doubling in the combiner, with the player's tint
-        self.textures.texture_brightness = 1.0
+        # the shader's doubling in the texture too (one RDP cycle); a
+        # player's tint is the only second cycle
+        self.textures.texture_brightness = 2.0
         self.models = []
 
     def f(self, name):
@@ -94,6 +100,7 @@ class ModelConverter:
             model = self.map.tag(datum)
             if model is not None and model.group_name == "mode" and model not in found:
                 found.append(model)
+        self.budgets = {m.index: MODEL_BUDGET for m in found}
         # the first-person views: each weapon's model, and the hands
         wf = self.f("Weapon")
         for tag in self.map.tags:
@@ -102,6 +109,8 @@ class ModelConverter:
                 model = self.map.tag(datum)
                 if model is not None and model.group_name == "mode" and model not in found:
                     found.append(model)
+                if model is not None:
+                    self.budgets[model.index] = FIRST_PERSON_BUDGET
         gf = self.f("Globals")
         for tag in self.map.tags:
             if tag.group_name == "matg":
@@ -111,6 +120,8 @@ class ModelConverter:
                     model = self.map.tag(datum)
                     if model is not None and model.group_name == "mode" and model not in found:
                         found.append(model)
+                    if model is not None:
+                        self.budgets[model.index] = FIRST_PERSON_BUDGET
         return found
 
     def shader_texture(self, shader_datum):
@@ -127,7 +138,18 @@ class ModelConverter:
             return self.textures.texture(base), 0
         return self.textures.first_map(tag), 4
 
-    def convert_part(self, part_address, nodes_inverse, u_scale, v_scale, shaders, batches, vertex_data, index_data):
+    def part_triangle_count(self, part_address):
+        pf = self.f("ModelGeometryPart")
+        raw = self.map.read(part_address, self.defs.size("ModelGeometryPart"))
+        triangle_count = struct.unpack_from("<I", raw, pf["triangle count"])[0]
+        triangle_pointer = struct.unpack_from("<I", raw, pf["triangle offset"])[0]
+        if not triangle_pointer:
+            return 0
+        indices = struct.unpack(f"<{triangle_count + 2}H", self.map.read(triangle_pointer, 2 * (triangle_count + 2)))
+        return len(strip_triangles(indices))
+
+    def convert_part(self, part_address, nodes_inverse, u_scale, v_scale, shaders, batches, vertex_data, index_data,
+                     keep=1.0):
         pf = self.f("ModelGeometryPart")
         raw = self.map.read(part_address, self.defs.size("ModelGeometryPart"))
         shader_index = struct.unpack_from("<h", raw, pf["shader index"])[0]
@@ -160,6 +182,10 @@ class ModelConverter:
         # tiny3d winds front faces counter-clockwise
         triangles = [(a, c, b) for a, b, c in strip_triangles(indices)
                      if a < vertex_count and b < vertex_count and c < vertex_count]
+        if keep < 1.0:
+            triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)))
+        # triangles of the same nodes together: fewer segments per batch
+        triangles.sort(key=lambda t: tuple(sorted({vertices[i][0] for i in t})))
 
         tw, th = (self.textures.textures[texture].width, self.textures.textures[texture].height) if texture >= 0 else (32, 32)
         while triangles:
@@ -245,14 +271,19 @@ class ModelConverter:
             gc, gp = self.block(a + mf["geometries"])
             geometry_map = {}
 
+            budget = self.budgets.get(tag.index, MODEL_BUDGET)
+
             def geometry(gi):
                 if gi in geometry_map:
                     return geometry_map[gi]
                 first = len(batches)
                 pc, pp = self.block(gp + gi * gsize + gf["parts"])
+                part_size = self.defs.size("ModelGeometryPart")
+                total = sum(self.part_triangle_count(pp + p * part_size) for p in range(pc))
+                keep = min(1.0, budget / total) if total else 1.0
                 for p in range(pc):
-                    self.convert_part(pp + p * self.defs.size("ModelGeometryPart"), nodes_inverse, u_scale, v_scale,
-                                      shaders, batches, vertex_data, index_data)
+                    self.convert_part(pp + p * part_size, nodes_inverse, u_scale, v_scale,
+                                      shaders, batches, vertex_data, index_data, keep)
                 geometry_map[gi] = len(geometry_records)
                 geometry_records.append((first, len(batches) - first))
                 return geometry_map[gi]
