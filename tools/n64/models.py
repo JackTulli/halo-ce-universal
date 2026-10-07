@@ -73,6 +73,8 @@ class ModelConverter:
         # textures go through the level builder's writer, named m00...
         self.textures = LevelBuilder(xmap, defs, map_name, out_dir)
         self.textures.texture_prefix = "m"
+        # models keep their doubling in the combiner, with the player's tint
+        self.textures.texture_brightness = 1.0
         self.models = []
 
     def f(self, name):

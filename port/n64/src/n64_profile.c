@@ -16,7 +16,7 @@ display's own interrupt does the sampling.)
 
 #define SAMPLE_COUNT 8000
 #define START_SECONDS 20
-#define STOP_SECONDS 140
+#define STOP_SECONDS 80
 
 extern void *interrupt_exception_frame;
 

@@ -220,7 +220,7 @@ def main():
     n.rule("convert_map", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.convert $in -o $map --filesystem $fsdir",
            description="N64 MAP $out")
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
-    n.rule("mkdfs", command="cd $root && $bin/mkdfs $out $fsdir > /dev/null && : $in", description="N64 DFS $out")
+    n.rule("mkdfs", command="cd $root && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags", description="N64 DFS $out")
     fsdir = BUILD_DIR / "filesystem"
     fs_files = []
     tool_sources = sorted(str(p) for p in Path("tools/n64").glob("*.py"))
@@ -229,12 +229,19 @@ def main():
         n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "maps" / f"{name}.anim")], "convert_map",
                 f"build/xbox/disc/maps/{name}.map", implicit=tool_sources, variables={"fsdir": str(fsdir), "map": str(out_map)})
         fs_files.append(str(out_map))
+    # every debug switch the cartridge can carry (n64_debug_flag): the ones
+    # port.json does not ask for are removed, so none lingers in a build
+    known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile",
+                   "debug_no_level", "debug_no_objects", "debug_no_first_person")
+    for flag in known_flags:
+        if flag not in port.get("flags", []) and (fsdir / flag).exists():
+            (fsdir / flag).unlink()
     for flag in port.get("flags", []):
         out_flag = fsdir / flag
         n.build(str(out_flag), "touch")
         fs_files.append(str(out_flag))
     dfs = BUILD_DIR / "halo.dfs"
-    n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir)})
+    n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(port.get("flags", []))})
     n.build(str(BUILD_DIR / "halo.z64"), "z64", str(elf), implicit=[str(dfs)], variables={"extra": str(dfs)})
     n.default([str(BUILD_DIR / "halo.z64")])
     out.close()

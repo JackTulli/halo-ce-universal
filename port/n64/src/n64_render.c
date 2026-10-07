@@ -71,6 +71,7 @@ struct level_batch
 	uint8_t vertex_count, triangle_count;
 	uint32_t vertex_pair_offset;
 	uint32_t index_offset;
+	int16_t minimum[3], maximum[3];
 } __attribute__((packed));
 
 static struct
@@ -162,6 +163,9 @@ static struct
 
 /* the game's last tick, in microseconds (n64_game.c), for the counter */
 unsigned long n64_last_tick_us;
+/* the CPU's time in the last frame's drawing, from the frame's start to its
+end, and the RSP/RDP queue's wait inside n64_render_frame_end */
+static unsigned long render_start_ticks, render_cpu_us, render_wait_us;
 
 void n64_render_initialize(void)
 {
@@ -284,7 +288,7 @@ int n64_render_load_level(const char *map_name)
 	data_cache_hit_writeback_invalidate(level.data, size);
 
 	level.header = (struct level_header *)level.data;
-	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 1,
+	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 2,
 		"%s was converted for another build", path);
 	level.textures = (struct level_texture *)(level.data + level.header->textures_offset);
 	level.materials = (struct level_material *)(level.data + level.header->materials_offset);
@@ -307,7 +311,11 @@ int n64_render_load_level(const char *map_name)
 
 void n64_render_frame_begin(void)
 {
+	unsigned long before_display = TICKS_READ();
+
 	renderer.surface = display_get();
+	render_wait_us = TICKS_TO_US(TICKS_READ() - before_display);
+	render_start_ticks = TICKS_READ();
 	rdpq_attach(renderer.surface, display_get_zbuf());
 	t3d_frame_start();
 	t3d_screen_clear_color(RGBA32(96, 112, 140, 0xFF));
@@ -330,12 +338,10 @@ static void set_material(int index)
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_mode_dithering(DITHER_SQUARE_SQUARE);
-	/* Halo's environment shader doubles texture x light (its lightmaps and
-	detail maps are stored at half brightness); a second combiner cycle
-	does the same: (texture x shade) + (texture x shade) x env (white) */
+	/* Halo's environment shader doubles texture x light; the converter
+	doubled the textures, so one combiner cycle does */
 	if (textured)
-		rdpq_mode_combiner(RDPQ_COMBINER2((TEX0, 0, SHADE, 0), (TEX0, 0, SHADE, 0),
-			(COMBINED, 0, ENV, COMBINED), (0, 0, 0, COMBINED)));
+		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
 	else
 		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
 	if (material->flags & MATERIAL_TRANSPARENT)
@@ -363,7 +369,7 @@ static void draw_level(T3DViewport *viewport)
 {
 	int current_material = -1;
 
-	if (!level.data)
+	if (!level.data || n64_debug_flag("debug_no_level"))
 		return;
 	t3d_matrix_push(renderer.identity);
 	for (int c = 0; c < level.header->cluster_count; c++)
@@ -380,6 +386,8 @@ static void draw_level(T3DViewport *viewport)
 			struct level_batch *batch = &level.batches[b];
 			uint8_t *index = level.indices + batch->index_offset;
 
+			if (!t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum))
+				continue;
 			if (batch->material != current_material)
 			{
 				current_material = batch->material;
@@ -497,6 +505,8 @@ void n64_render_object(const struct n64_object *object)
 	T3DVec3 center;
 	int node_count;
 
+	if (n64_debug_flag("debug_no_objects"))
+		return;
 	if (!models.data || !renderer.viewport || object->model_tag_index < 0 ||
 		object->model_tag_index >= models.tag_count || !(model = models.by_tag[object->model_tag_index]))
 		return;
@@ -600,8 +610,9 @@ static void draw_counter(void)
 	}
 	rdpq_sync_pipe();
 	rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-	rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 12, "%d.%d FPS  tick %lu.%lu ms",
-		renderer.fps / 10, renderer.fps % 10, n64_last_tick_us / 1000, (n64_last_tick_us % 1000) / 100);
+	rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 12, "%d.%d FPS tick %lu.%lu draw %lu.%lu wait %lu.%lu",
+		renderer.fps / 10, renderer.fps % 10, n64_last_tick_us / 1000, (n64_last_tick_us % 1000) / 100,
+		render_cpu_us / 1000, (render_cpu_us % 1000) / 100, render_wait_us / 1000, (render_wait_us % 1000) / 100);
 }
 
 void n64_profile_poll(void);
@@ -612,6 +623,7 @@ void n64_render_frame_end(void)
 	draw_crosshairs();
 	draw_counter();
 	rdpq_detach_show();
+	render_cpu_us = TICKS_TO_US(TICKS_READ() - render_start_ticks);
 	if (!(renderer.frame_index % 120))
 	{
 		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles\n", renderer.frame_index,

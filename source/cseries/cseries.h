@@ -104,7 +104,15 @@ enum
 
 #define match_halt(file, line) do { display_assert(NULL, MATCH_FILE(file), MATCH_LINE(line), TRUE); halt_and_catch_fire(); } while (FALSE);
 #define match_vhalt(file, line, string) do { display_assert(string, MATCH_FILE(file), MATCH_LINE(line), TRUE); halt_and_catch_fire(); } while (FALSE);
-#ifdef HALO_RELEASE
+#ifdef HALO_N64
+/* the N64: nothing is checked and nothing is evaluated (the two checks
+whose expressions do work, in path_obstacle_avoidance.c and hs_compile.c,
+are in code the N64 build leaves out) */
+#define match_assert(file, line, expr) { }
+#define match_vassert(file, line, expr, string) { }
+#define match_warn(file, line, expr) { }
+#define match_vwarn(file, line, expr, string) { }
+#elif defined(HALO_RELEASE)
 /* release builds of the native ports (configure.py --release): like the
 retail game, nothing is checked; the expressions are still evaluated, since a
 few do work the game relies on (heap_insert in path_obstacle_avoidance.c,

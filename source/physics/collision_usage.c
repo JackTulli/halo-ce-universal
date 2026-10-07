@@ -264,6 +264,10 @@ static void collision_log_store_period(
 	short time_period,
 	boolean unused)
 {
+#ifdef HALO_N64
+	/* the collision log feeds only a debug display: off on the N64 */
+	return;
+#endif
 	match_assert("c:\\halo\\SOURCE\\physics\\collision_usage.c", 167, collision_usage_current_period == NONE);
 	match_assert("c:\\halo\\SOURCE\\physics\\collision_usage.c", 168, (time_period >= 0) && (time_period < NUMBER_OF_COLLISION_TIME_PERIODS));
 
@@ -292,6 +296,9 @@ void collision_log_continue_period(
 void collision_log_end_period(
 	void)
 {
+#ifdef HALO_N64
+	return;
+#endif
 	match_assert("c:\\halo\\SOURCE\\physics\\collision_usage.c", 198,
 		(collision_usage_current_period >= 0) && (collision_usage_current_period < NUMBER_OF_COLLISION_TIME_PERIODS));
 
@@ -574,7 +581,7 @@ static short collision_log_get_current_user(
 void collision_log_start_time(
 	LARGE_INTEGER *start_time)
 {
-#ifdef HALO_XBOX
+#if defined(HALO_XBOX) || defined(HALO_N64)
 	/* the console: the counts and timings feed only the collision display
 	(a debug key), and cost two clock reads around every collision query */
 	if (!collision_log_render_enable)
@@ -595,7 +602,7 @@ void collision_log_end_time(
 	LARGE_INTEGER end_time;
 	short user;
 
-#ifdef HALO_XBOX
+#if defined(HALO_XBOX) || defined(HALO_N64)
 	if (!collision_log_render_enable)
 		return;
 #endif
@@ -617,6 +624,9 @@ void collision_log_end_time(
 void collision_log_usage(
 	short collision_function)
 {
+#ifdef HALO_N64
+	return;
+#endif
 	short user;
 
 #ifdef HALO_XBOX

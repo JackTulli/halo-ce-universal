@@ -10,3 +10,4 @@ the user's other projects are not included.
 - [Halo CE universal port study](halo-ce-universal-study.md) — the Xbox port with nxdk, the test loop, the master server, the audits and the lessons learned
 - [Never touch the live display](never-touch-the-live-display.md) — no tests or process kills against the user's own displays (:0 and nested ones)
 - [Isolate Wine test prefixes](isolate-wine-test-prefixes.md) — fresh Wine prefixes link Documents to the real home folder; unlink them before running a game
+- [Halo CE N64 port](halo-n64-port.md) — multiplayer split-screen port to the N64 (branch n64-port): libdragon + tiny3d, map converter, state and gotchas

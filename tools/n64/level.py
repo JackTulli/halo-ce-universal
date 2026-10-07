@@ -15,7 +15,8 @@ The output file (big-endian):
     textures[]     name[24] (rom:/tex/<map>/<name>.sprite), width, height
     materials[]    texture index, flags
     clusters[]     bounds min[3], max[3] (floats, world units), first batch, batch count
-    batches[]      material, vertex count, triangle count, vertex pair offset, index offset
+    batches[]      material, vertex count, triangle count, vertex pair offset, index offset,
+                   bounds min[3], max[3] (s16, N64 units)
     vertices       tiny3d T3DVertPacked, two vertices per 32 bytes
     indices        three u8 per triangle (vertex numbers within the batch)
 
@@ -36,7 +37,7 @@ POSITION_SCALE = 64.0
 TEXTURE_FORMAT = os.environ.get("N64_TEXTURE_FORMAT", "CI4")
 MAXIMUM_BATCH_VERTICES = 70
 MAXIMUM_UV_EXTENT = 512.0  # texels; s10.5 holds +-1024, keep well inside it
-VERSION = 1
+VERSION = 2
 
 MATERIAL_ALPHA_TEST = 1
 MATERIAL_TWO_SIDED = 2
@@ -83,6 +84,9 @@ class LevelBuilder:
         self.materials = []
         self.material_by_shader = {}
         self.texture_prefix = ""
+        # Halo's environment shader doubles texture x light; the N64 draws
+        # the level in one RDP cycle, so the doubling is in the texture
+        self.texture_brightness = 2.0
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -115,6 +119,11 @@ class LevelBuilder:
         w2 = max(4, 1 << int(math.log2(max(1, int(w * scale)))))
         h2 = max(4, 1 << int(math.log2(max(1, int(h * scale)))))
         img = img.resize((w2, h2), Image.LANCZOS)
+        if self.texture_brightness != 1.0:
+            k = self.texture_brightness
+            r, g, b, a = img.split()
+            r, g, b = (ch.point(lambda v: min(255, int(v * k))) for ch in (r, g, b))
+            img = Image.merge("RGBA", (r, g, b, a))
         index = len(self.textures)
         name = f"{self.texture_prefix}{index:02d}"
         tex_dir = self.out_dir / "tex" / self.map_name
@@ -332,13 +341,15 @@ class LevelBuilder:
             index_offset = len(index_data)
             for t in tris:
                 index_data += bytes(t)
-            batch_records.append((material, len(verts), len(tris), pair_offset, index_offset))
+            lo = [max(-32768, min(32767, int(math.floor(min(v[0][k] for v in verts) * POSITION_SCALE)))) for k in range(3)]
+            hi = [max(-32768, min(32767, int(math.ceil(max(v[0][k] for v in verts) * POSITION_SCALE)))) for k in range(3)]
+            batch_records.append((material, len(verts), len(tris), pair_offset, index_offset, lo, hi))
 
         header_size = 64
         textures_size = len(self.textures) * 28
         materials_size = len(self.materials) * 4
         clusters_size = len(out_clusters) * 28
-        batches_size = len(batch_records) * 12
+        batches_size = len(batch_records) * 24
         offset = header_size
         textures_offset = offset; offset += textures_size
         materials_offset = offset; offset += materials_size
@@ -361,8 +372,8 @@ class LevelBuilder:
             out += struct.pack(">hH", texture, flags)
         for lo, hi, first, count in out_clusters:
             out += struct.pack(">3f3fHH", *lo, *hi, first, count)
-        for material, nv, nt, pair_offset, index_offset in batch_records:
-            out += struct.pack(">HBBII", material, nv, nt, pair_offset, index_offset)
+        for material, nv, nt, pair_offset, index_offset, lo, hi in batch_records:
+            out += struct.pack(">HBBII3h3h", material, nv, nt, pair_offset, index_offset, *lo, *hi)
         out += b"\0" * (vertices_offset - len(out))
         out += vertex_data
         out += index_data

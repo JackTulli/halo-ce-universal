@@ -60,9 +60,7 @@
   "maps": [
     "wizard"
   ],
-  "flags": [
-    "autotest"
-  ],
+  "flags": [],
   "ldflags": [
     "-Wl,--wrap=game_tick"
   ]

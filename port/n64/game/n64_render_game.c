@@ -308,7 +308,7 @@ void render_frame(
 		render.camera = *camera;
 		n64_render_view(&view);
 		render_objects_for_view(window->local_player_index, window_index == 0 && n64_debug_flag("debug_chase"));
-		if (!(window_index == 0 && n64_debug_flag("debug_chase")))
+		if (!(window_index == 0 && n64_debug_flag("debug_chase")) && !n64_debug_flag("debug_no_first_person"))
 		{
 			first_person_begun = FALSE;
 			first_person_weapon_render_update();
