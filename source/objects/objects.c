@@ -3627,6 +3627,52 @@ boolean object_force_inside_bsp(
 	return result;
 }
 
+#ifdef HALO_N64
+/* An item at rest with no animation and no parent keeps the node matrices it
+had while its position, orientation and scale stay as they were (the
+N64's netgame equipment, two dozen items, recomputed them every tick) */
+static boolean n64_object_unmoved(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	static struct
+	{
+		long object_index;
+		real_point3d position;
+		real_vector3d forward, up;
+		real scale;
+	} last[256];
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & 255);
+
+	if (!TEST_FLAG(_object_mask_item, object->object.type) ||
+		!TEST_FLAG(object->object.flags, _object_at_rest_bit) ||
+		object->object.parent_object_index != NONE ||
+		object->object.animation.animation_graph_index != NONE ||
+		object_definition->object.animation_graph.index != NONE ||
+		object->object.animation.interpolation_frame_count)
+	{
+		if (last[slot].object_index == object_index)
+			last[slot].object_index = NONE;
+		return FALSE;
+	}
+	if (last[slot].object_index == object_index &&
+		!csmemcmp(&last[slot].position, &object->object.position, sizeof(real_point3d)) &&
+		!csmemcmp(&last[slot].forward, &object->object.forward, sizeof(real_vector3d)) &&
+		!csmemcmp(&last[slot].up, &object->object.up, sizeof(real_vector3d)) &&
+		last[slot].scale == object->object.scale)
+	{
+		return TRUE;
+	}
+	last[slot].object_index = object_index;
+	last[slot].position = object->object.position;
+	last[slot].forward = object->object.forward;
+	last[slot].up = object->object.up;
+	last[slot].scale = object->object.scale;
+	return FALSE;
+}
+#endif
+
 static boolean object_update(
 	long object_index)
 {
@@ -3656,25 +3702,27 @@ static boolean object_update(
 		{
 			/* each stage timed (port/n64/game/n64_game.c logs the sums) */
 			extern unsigned long n64_ticks(void);
-			extern unsigned long n64_object_stage_time[8];
+			extern unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
+			unsigned long *n64_equipment = object->object.type == _object_type_biped ? n64_equipment_stage_time : NULL;
 			unsigned long t0 = n64_ticks(), t1;
 
 			object_type_update(object_index);
-			t1 = n64_ticks(); n64_object_stage_time[0] += t1 - t0; t0 = t1;
+			t1 = n64_ticks(); n64_object_stage_time[0] += t1 - t0; if (n64_equipment) n64_equipment[0] += t1 - t0; t0 = t1;
 			if (object_definition->object.collision_model.index!=NONE)
 			{
 				object_damage_update(object_index);
 			}
 			object_type_export_function_values(object_index);
-			t1 = n64_ticks(); n64_object_stage_time[1] += t1 - t0; t0 = t1;
-			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
+			t1 = n64_ticks(); n64_object_stage_time[1] += t1 - t0; if (n64_equipment) n64_equipment[1] += t1 - t0; t0 = t1;
+			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) &&
+				!n64_object_unmoved(object_index, object, object_definition))
 			{
 				object_compute_node_matrices(object_index);
 			}
-			t1 = n64_ticks(); n64_object_stage_time[2] += t1 - t0; t0 = t1;
+			t1 = n64_ticks(); n64_object_stage_time[2] += t1 - t0; if (n64_equipment) n64_equipment[2] += t1 - t0; t0 = t1;
 			object_compute_function_values(object_index);
 			object_compute_change_colors(object_index);
-			t1 = n64_ticks(); n64_object_stage_time[3] += t1 - t0; t0 = t1;
+			t1 = n64_ticks(); n64_object_stage_time[3] += t1 - t0; if (n64_equipment) n64_equipment[3] += t1 - t0; t0 = t1;
 			if (
 				TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&
 				(
@@ -3685,7 +3733,7 @@ static boolean object_update(
 			{
 				object_connect_lights(object_index, TRUE, TRUE);
 			}
-			t1 = n64_ticks(); n64_object_stage_time[4] += t1 - t0;
+			t1 = n64_ticks(); n64_object_stage_time[4] += t1 - t0; if (n64_equipment) n64_equipment[4] += t1 - t0;
 		}
 #else
 		object_type_update(object_index);

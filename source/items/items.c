@@ -757,6 +757,8 @@ boolean item_update(
 			definition->item.flags,
 			_item_definition_antigravity_bit))
 		{
+#ifndef HALO_N64
+			/* (its answer is never used; the N64 skips the search) */
 			struct object_marker marker;
 
 			object_get_marker_by_name(
@@ -764,6 +766,7 @@ boolean item_update(
 				"ground point",
 				&marker,
 				1);
+#endif
 
 			if (TEST_FLAG(item->item.flags, _item_on_structure_bit) &&
 				item->item.rested_surface_index != NONE &&

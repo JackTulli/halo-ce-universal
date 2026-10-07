@@ -340,7 +340,7 @@ unsigned long n64_tick_phases[8];
 /* objects.c's objects_update, by object type (HALO_N64) */
 unsigned long n64_object_type_time[16], n64_object_type_count[16];
 /* objects.c's object_update, by stage */
-unsigned long n64_object_stage_time[8];
+unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
 static char const *const n64_object_stage_names[5] =
 {
 	"type update", "damage/export", "node matrices", "functions/colours", "lights",
@@ -471,6 +471,16 @@ void __wrap_game_tick(
 					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
 				n64_object_stage_time[i] = 0;
 			}
+			n64_log(phases);
+			length = snprintf(phases, sizeof(phases), "bipeds: ");
+			for (i = 0; i < 5; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
+					(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				n64_equipment_stage_time[i] = 0;
+			}
+			snprintf(phases + length, sizeof(phases) - length, "\n");
 			n64_log(phases);
 		}
 		n64_log_players();
