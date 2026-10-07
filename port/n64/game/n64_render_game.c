@@ -14,6 +14,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "game/players.h"
 #include "game/local_players.h"
 #include "interface/first_person_weapons.h"
+#include "interface/interface.h"
 #include "main/main.h"
 #include "rasterizer/rasterizer.h"
 #include "rasterizer/rasterizer_debug_options.h"
@@ -133,6 +134,7 @@ void render_initialize_for_new_map(
 	void)
 {
 	n64_render_load_level(n64_loaded_map_name());
+	n64_hud_set_map(n64_loaded_map_name());
 	return;
 }
 
@@ -308,6 +310,13 @@ void render_frame(
 			first_person_begun = FALSE;
 			first_person_weapon_render_update();
 			first_person_weapon_draw();
+		}
+		if (!n64_debug_flag("debug_no_hud"))
+		{
+			/* the game's own HUD (port/n64/game/n64_hud_game.c) */
+			if (n64_hud_begin(window_index, view.x0, view.y0, view.x1, view.y1))
+				interface_draw_screen();
+			n64_hud_end();
 		}
 	}
 	return;

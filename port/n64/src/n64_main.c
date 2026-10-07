@@ -65,6 +65,59 @@ unsigned long n64_heap_free(void)
 	return (unsigned long)(get_memory_size() - info.uordblks);
 }
 
+/* Halo's deepest calls (collision, physics under the game tick) need more
+than the 64 KB libdragon keeps for main's stack at the top of RAM, and the
+heap grows up to it: the game runs on a stack of its own, filled with a
+pattern so that its deepest use can be reported (n64_stack_used) */
+#define GAME_STACK_SIZE (256 * 1024)
+#define GAME_STACK_FILL 0xA5A5A5A5u
+
+static uint32_t *game_stack;
+
+__asm__(
+	".text\n"
+	".align 3\n"
+	".globl n64_call_on_stack\n"
+	".type n64_call_on_stack, @function\n"
+	".set push\n"
+	".set noreorder\n"
+	"n64_call_on_stack:\n"
+	"	addiu $sp, $sp, -16\n"
+	"	sd $ra, 8($sp)\n"
+	"	sd $s0, 0($sp)\n"
+	"	move $s0, $sp\n"
+	"	jalr $a0\n"
+	"	move $sp, $a1\n"
+	"	move $sp, $s0\n"
+	"	ld $s0, 0($sp)\n"
+	"	ld $ra, 8($sp)\n"
+	"	jr $ra\n"
+	"	addiu $sp, $sp, 16\n"
+	".set pop\n"
+	".size n64_call_on_stack, .-n64_call_on_stack\n");
+
+/* calls function with the stack pointer at top */
+void n64_call_on_stack(void (*function)(void), void *top);
+
+unsigned long n64_stack_used(void)
+{
+	unsigned long words = GAME_STACK_SIZE / 4, i;
+
+	if (!game_stack)
+		return 0;
+	for (i = 0; i < words && game_stack[i] == GAME_STACK_FILL; i++)
+		;
+	return (words - i) * 4;
+}
+
+static void game_main(void)
+{
+	halo_shell_main();
+	debugf("halo-n64: the game returned\n");
+	for (;;)
+		;
+}
+
 int main(void)
 {
 	debug_init_isviewer();
@@ -87,8 +140,15 @@ int main(void)
 		}
 	}
 	n64_profile_start();
-	halo_shell_main();
-	debugf("halo-n64: the game returned\n");
-	for (;;)
-		;
+	game_stack = memalign(16, GAME_STACK_SIZE);
+	if (!game_stack)
+	{
+		game_main();
+		return 0;
+	}
+	for (unsigned long i = 0; i < GAME_STACK_SIZE / 4; i++)
+		game_stack[i] = GAME_STACK_FILL;
+	/* the top, less the argument area the ABI lets a callee use */
+	n64_call_on_stack(game_main, (uint8_t *)game_stack + GAME_STACK_SIZE - 64);
+	return 0;
 }

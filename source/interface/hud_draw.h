@@ -15,7 +15,13 @@ Narrow cross-translation-unit interface owned by HUD_DRAW.C.
 
 enum
 {
+#ifdef HALO_N64
+	/* the sentinel's 512-byte fill and check on every HUD call cost the
+	N64 most of a millisecond a view */
+	STACK_BUFFER_LENGTH = 1,
+#else
 	STACK_BUFFER_LENGTH = 0x80,
+#endif
 	STACK_BUFFER_FILL = 0x62626262,
 };
 

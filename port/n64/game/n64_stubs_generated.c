@@ -12,7 +12,6 @@
 #include "bitmaps/tiff_file.h"
 #include "bungie_net/network/transport.h"
 #include "cache/sound_cache.h"
-#include "cache/texture_cache.h"
 #include "cutscene/cinematics.h"
 #include "cutscene/recorded_animations.h"
 #include "editor/editor_stubs.h"
@@ -28,6 +27,7 @@
 #include "networking/telnet_console.h"
 #include "rasterizer/common/rasterizer_common.h"
 #include "rasterizer/rasterizer.h"
+#include "rasterizer/rasterizer_cinematics.h"
 #include "rasterizer/rasterizer_debug.h"
 #include "rasterizer/rasterizer_models.h"
 #include "rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h"
@@ -117,6 +117,8 @@ void display_error_deferred(short error_code, short local_player_index, boolean 
 void display_error_when_main_menu_loaded(short error_code) {  } /* source/interface/ui_widget.h */
 void dispose_global_network_game_client(void) {  } /* source/networking/network_game_globals.h */
 void dispose_global_network_game_server(void) {  } /* source/networking/network_game_globals.h */
+void draw_bitmap_in_rect(struct bitmap_data *bitmap, rectangle2d *rect, rectangle2d *bitmap_rect, rectangle2d *clip_rect, pixel32 argb, struct rasterizer_dynamic_screen_geometry_parameters *multitexture_params, boolean no_plasma) {  } /* source/interface/ui_widget.h */
+void draw_string_and_hack_in_icons(rectangle2d *bounds, rectangle2d *clip, point2d *cursor_reference, short height_adjust, wchar_t const *instring, boolean ignore_icon_color) {  } /* source/interface/ui_widget.h */
 void editor_dispose(void) {  } /* source/editor/editor_stubs.h */
 void editor_dispose_from_old_map(void) {  } /* source/editor/editor_stubs.h */
 void editor_initialize(void) {  } /* source/editor/editor_stubs.h */
@@ -189,6 +191,7 @@ void progress_bar_end(void) {  } /* source/interface/progress_bar.h */
 void progress_bar_initialize(void) {  } /* source/interface/progress_bar.h */
 void rasterizer_bitmap_delete(struct bitmap_data *bitmap) {  } /* source/rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h */
 void rasterizer_debug_draw(void) {  } /* source/rasterizer/rasterizer_debug.h */
+void rasterizer_debug_line(real_point3d const *p0, real_point3d const *p1, real_argb_color const *color) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_decals_dispose(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_decals_dispose_from_old_map(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_decals_initialize(void) {  } /* source/rasterizer/rasterizer.h */
@@ -199,7 +202,6 @@ void * rasterizer_decal_vertices_lock(short cache_index, unsigned long cache_siz
 long rasterizer_decal_vertices_new(long size) { return NONE; } /* source/rasterizer/rasterizer.h */
 void rasterizer_decal_vertices_unlock(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_dispose_from_old_map(void) {  } /* source/rasterizer/common/rasterizer_common.h */
-void rasterizer_draw_string(rectangle2d const *bounds, rectangle2d const *clip, point2d *cursor_reference, short height_adjust, char const *string) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_dynamic_triangles_delete(long triangle_buffer_index) {  } /* source/rasterizer/rasterizer.h */
 short * rasterizer_dynamic_triangles_lock(long triangle_buffer_index) { short * result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer.h */
 long rasterizer_dynamic_triangles_new(long triangle_count) { return NONE; } /* source/rasterizer/rasterizer.h */
@@ -222,6 +224,8 @@ void rasterizer_model_transparent_geometry_submit(struct shader *shader, short s
 void rasterizer_present(struct bitmap_data *screenshot_bitmap, const point2d *screenshot_index) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_profile_enable(boolean enable) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_reset_state(void) {  } /* source/rasterizer/rasterizer.h */
+void rasterizer_screen_effect(struct rasterizer_cinematic_screen_effect_parameters *parameters) {  } /* source/rasterizer/rasterizer.h */
+real rasterizer_script_screen_effect_get_value(short effect_index) { real result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer_cinematics.h */
 void rasterizer_transparent_geometry_draw(boolean water) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_widget_begin(short type, word flags) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_widget_draw_sprite3d(real_point3d const *point, real radius, real_vector2d const *scale, real rotation, unsigned long color) {  } /* source/rasterizer/rasterizer.h */
@@ -239,6 +243,7 @@ void recorded_animations_dispose_from_old_map(void) {  } /* source/cutscene/reco
 void recorded_animations_initialize(void) {  } /* source/cutscene/recorded_animations.h */
 void recorded_animations_initialize_for_new_map(void) {  } /* source/cutscene/recorded_animations.h */
 void recorded_animations_update(void) {  } /* source/cutscene/recorded_animations.h */
+short remap_sticks_for_local_player(short icon, short local_player_index) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/interface/ui_widget.h */
 void render_debug_line(boolean immediate, real_point3d const *point0, real_point3d const *point1, real_argb_color const *color) {  } /* source/render/render_debug.h */
 void render_debug_matrix(boolean immediate, struct real_matrix4x3 const *matrix, real size) {  } /* source/render/render_debug.h */
 void render_debug_pill(boolean immediate, real_point3d const *base, real_vector3d const *height, real width, real_argb_color const *color) {  } /* source/render/render_debug.h */
@@ -251,7 +256,6 @@ void saved_game_file_remember_player1_last_used_profile_directory(char const *di
 void saved_game_files_dispose(void) {  } /* source/saved games/saved_game_files.h */
 void saved_game_files_initialize(void) {  } /* source/saved games/saved_game_files.h */
 void sound_cache_close(void) {  } /* source/cache/sound_cache.h */
-boolean _sound_cache_sound_request(struct sound_permutation *sound, boolean block, boolean load, boolean reference) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/cache/sound_cache.h */
 void sound_classes_dispose(void) {  } /* source/sound/sound_classes.h */
 void sound_classes_dispose_from_old_map(void) {  } /* source/sound/sound_classes.h */
 void sound_classes_initialize(void) {  } /* source/sound/sound_classes.h */
@@ -279,7 +283,6 @@ void telnet_console_dispose(void) {  } /* source/networking/telnet_console.h */
 void telnet_console_initialize(void) {  } /* source/networking/telnet_console.h */
 void telnet_console_print(char *string) {  } /* source/networking/telnet_console.h */
 void telnet_console_process(void) {  } /* source/networking/telnet_console.h */
-void * _texture_cache_bitmap_get_hardware_format(struct bitmap_data *bitmap, boolean block, boolean load) { void * result; memset(&result, 0, sizeof(result)); return result; } /* source/cache/texture_cache.h */
 void texture_cache_close(void) {  } /* source/cache/cache_files.c */
 char const * tiff_export(struct file_reference *file, struct bitmap_data *bitmap) { char const * result; memset(&result, 0, sizeof(result)); return result; } /* source/bitmaps/tiff_file.h */
 short transport_dispose(void) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/bungie_net/network/transport.h */

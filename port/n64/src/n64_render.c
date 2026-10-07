@@ -617,13 +617,14 @@ void n64_render_object(const struct n64_object *object)
 	}
 }
 
-/* a crosshair in the middle of each view (the weapon HUD comes later) */
+/* without the game's HUD (debug_no_hud), a crosshair in the middle of
+each view; always the line between the views */
 static void draw_crosshairs(void)
 {
 	rdpq_sync_pipe();
 	rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 	rdpq_set_mode_fill(RGBA32(0x60, 0xD0, 0xFF, 0xFF));
-	for (int i = 0; i < renderer.view_count; i++)
+	for (int i = 0; i < renderer.view_count && n64_debug_flag("debug_no_hud"); i++)
 	{
 		int x = (renderer.rects[i][0] + renderer.rects[i][2]) / 2;
 		int y = (renderer.rects[i][1] + renderer.rects[i][3]) / 2;
@@ -672,8 +673,13 @@ void n64_render_frame_end(void)
 	render_cpu_us = TICKS_TO_US(TICKS_READ() - render_start_ticks);
 	if (!(renderer.frame_index % 120))
 	{
-		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles\n", renderer.frame_index,
-			renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120, renderer.triangles / 120);
+		unsigned long n64_stack_used(void);
+		heap_stats_t heap;
+
+		sys_get_heap_stats(&heap);
+		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used\n",
+			renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,
+			renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024);
 		renderer.clusters = renderer.batches = renderer.triangles = renderer.objects = 0;
 	}
 }

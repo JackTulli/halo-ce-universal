@@ -66,24 +66,32 @@ weapon; down: crouch; left: zoom; right: switch grenades).
   streams animation frames to `maps/<map>.anim`; `level.py` converts the
   BSP's render geometry into tiny3d batches lit from each material's
   lighting summary; `models.py` converts the objects' models (and the
-  first-person ones) into skinned batches; `bitmaps.py` decodes the Xbox
-  textures.
+  first-person ones) into skinned batches; `hud.py` exports the HUD's
+  bitmaps as half-size sprites (`hud/<map>/<n>.sprite`, the image's
+  `pixels_offset` = n + 1); `bitmaps.py` decodes the Xbox textures.
 - `port/n64/src/`: the platform layer. `xdk_*.c` implement the Xbox SDK
   calls (files, time, XInput over the N64 pads) with the game's ABI;
   `n64_*.c` are libdragon code: `n64_render.c` (the renderer),
   `n64_anim.c` (animation streaming), `n64_exceptions.c` (x86 behaviour
   the game relies on: unaligned access, NaN arithmetic, float-to-integer
-  overflow), `n64_profile.c` (a sampling profiler).
+  overflow), `n64_hud.c` (the HUD's quads, meters, text and blips, each
+  view's recorded and redrawn by the game every other frame),
+  `n64_profile.c` (a sampling profiler). `n64_main.c` runs the game on a
+  256 KB stack of its own: it needs ~97 KB, libdragon keeps 64 KB.
 - `port/n64/game/`: game-side glue: `n64_game.c` (start of the game, map
-  loading, memory), `n64_render_game.c` (the renderer as the game sees it).
+  loading, memory), `n64_render_game.c` (the renderer as the game sees it),
+  `n64_hud_game.c` (the rasterizer calls Halo's own HUD code makes).
 
 ## Debugging
 
 Cartridge flags (files on the ROM's file system, `port.json` "flags"):
 `autotest` (scripted controllers), `debug_chase` (view 1 follows its
 player), `debug_overview`, `debug_untextured`, `debug_no_level`,
-`debug_no_objects`, `debug_no_first_person`, `profile` (samples at the
-vertical blank from 20 to 80 s; `tools/n64_profile.py <log> build/n64/halo.elf`).
+`debug_no_objects`, `debug_no_first_person`, `debug_no_hud` (a plain
+crosshair instead), `profile` (samples at the vertical blank from 20 to
+80 s; `tools/n64_profile.py <log> build/n64/halo.elf`), `profile_zone` (with
+`profile`: only while the HUD draws, with return addresses).
+`devtools/n64_timing.c` times chosen game functions through `--wrap`.
 
 `devtools/ares-run.sh` and `ares-shots.sh` run a ROM in ares on a hidden
 Xvfb display (`:97`) with the debug log captured; `ares-gdb.sh` + `rsp.py`
@@ -91,6 +99,8 @@ read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
 
-Wizard, 2 players: level, players, weapons, first-person view, crosshair.
-About 9 fps in ares; a game tick costs ~25 ms. The first-person models
-cost ~30 ms of a ~50 ms frame and are the next thing to cut.
+Wizard, 2 players: level, players, weapons, first-person view, Halo's own
+HUD (shields, health, ammo, motion sensor, crosshairs, messages). 13-20 fps
+in ares; a game tick costs ~16 ms. The HUD's own code costs ~7 ms a view
+when it runs (every other frame per view). Text uses libdragon's debug font,
+not Halo's.

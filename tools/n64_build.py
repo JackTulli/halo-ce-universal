@@ -231,8 +231,8 @@ def main():
         fs_files.append(str(out_map))
     # every debug switch the cartridge can carry (n64_debug_flag): the ones
     # port.json does not ask for are removed, so none lingers in a build
-    known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile",
-                   "debug_no_level", "debug_no_objects", "debug_no_first_person")
+    known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
+                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud")
     for flag in known_flags:
         if flag not in port.get("flags", []) and (fsdir / flag).exists():
             (fsdir / flag).unlink()

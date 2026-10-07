@@ -92,6 +92,11 @@ class Policy:
         """an image offset for a raw Pointer field, or None"""
         return None
 
+    def override(self, tag, struct_name, field_name, address):
+        """a value (u32) to store in a 4-byte field instead of the map's,
+        or None; address is the Xbox address of the struct instance"""
+        return None
+
 
 class Repacker:
     def __init__(self, xmap, policy, defs=None):
@@ -135,7 +140,11 @@ class Repacker:
             if f.kind == "pad":
                 self.image.put(dst, src)
             elif f.kind == "prim":
-                self.image.put(dst, swap_array(src, f.swap))
+                value = self.policy.override(tag, name, f.name, address) if f.size == 4 else None
+                if value is not None:
+                    self.image.put_u32(dst, value)
+                else:
+                    self.image.put(dst, swap_array(src, f.swap))
             elif f.kind == "struct":
                 for i in range(f.count):
                     self.struct_into(tag, address + o + i * f.size, src[i * f.size:(i + 1) * f.size],

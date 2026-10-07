@@ -380,6 +380,22 @@ long tag_loaded(
 {
 	short absolute_index;
 	long result = NONE;
+#ifdef HALO_N64
+	/* the HUD and the game engines look tags up by name every frame (the
+	multiplayer strings): remember the last few answers for the loaded map */
+	static struct { void const *header; long group_tag; char const *name; long result; } recent[16];
+	static short next_recent;
+	short recent_index;
+
+	for (recent_index = 0; recent_index < NUMBEROF(recent); recent_index++)
+	{
+		if (recent[recent_index].name == name && recent[recent_index].group_tag == group_tag &&
+			recent[recent_index].header == cache_file_globals.tag_header && cache_file_globals.tags_loaded)
+		{
+			return recent[recent_index].result;
+		}
+	}
+#endif
 
 	if (cache_file_globals.tags_loaded)
 	{
@@ -399,6 +415,13 @@ long tag_loaded(
 				break;
 			}
 		}
+#ifdef HALO_N64
+		recent[next_recent].header = cache_file_globals.tag_header;
+		recent[next_recent].group_tag = group_tag;
+		recent[next_recent].name = name;
+		recent[next_recent].result = result;
+		next_recent = (short)((next_recent + 1) % NUMBEROF(recent));
+#endif
 	}
 
 	return result;

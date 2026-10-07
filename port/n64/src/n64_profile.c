@@ -6,7 +6,9 @@ vertical blank interrupt records where the CPU was, 60 times a second, from
 20 to 140 seconds after boot, then the samples go to the debug output as
 hex ("prof: ..." lines) for tools/n64_profile.py to attribute to functions.
 (A fast timer interrupt corrupted callee-saved registers in ares, so the
-display's own interrupt does the sampling.)
+display's own interrupt does the sampling.) With the flag "profile_zone"
+as well, only the CPU's time inside a zone (n64_profile_zone, e.g. the HUD)
+is sampled, each sample with its return address ("prof: pc ra" pairs).
 */
 
 #include <libdragon.h>
@@ -23,6 +25,8 @@ extern void *interrupt_exception_frame;
 static uint32_t *samples;
 static volatile int sample_count;
 static volatile int dumped;
+static int zone_only;
+volatile int n64_profile_zone;
 
 static void sample(void)
 {
@@ -33,14 +37,20 @@ static void sample(void)
 		return;
 	if (now > STOP_SECONDS * 1000000ULL)
 		return;
+	if (zone_only && (!n64_profile_zone || sample_count + 2 > SAMPLE_COUNT))
+		return;
 	/* the interrupted context's EPC (reg_block_t, 32 bytes above sp) */
 	samples[sample_count++] = *(uint32_t *)(frame + 32 + 280);
+	/* and its return address (the low word of gpr[31]) */
+	if (zone_only)
+		samples[sample_count++] = *(uint32_t *)(frame + 32 + 31 * 8 + 4);
 }
 
 void n64_profile_start(void)
 {
 	if (!n64_debug_flag("profile"))
 		return;
+	zone_only = n64_debug_flag("profile_zone");
 	samples = malloc(SAMPLE_COUNT * sizeof(uint32_t));
 	if (!samples)
 		return;

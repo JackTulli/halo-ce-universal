@@ -38,6 +38,8 @@ unsigned long n64_heap_free(void);
 /* TRUE when the cartridge carries the file rom:/<name> (debug switches,
 port.json "flags"); looked up once per name */
 int n64_debug_flag(const char *name);
+/* the profiler samples only inside a zone with the flag profile_zone */
+extern volatile int n64_profile_zone;
 
 /* ---------- cartridge files (n64_files.c): DragonFS, read-only */
 
@@ -131,6 +133,44 @@ void n64_render_object(const struct n64_object *object);
 /* then the first-person weapon: its own near plane, drawn over the world */
 void n64_render_first_person_begin(void);
 void n64_render_frame_end(void);
+
+/* ---------- the HUD (n64_hud.c): drawn by the game's own HUD code
+(port/n64/game/n64_hud_game.c passes its quads, text and blips on).
+Positions are pixels of the 320x240 frame, texture coordinates texels of
+the half-size HUD sprite. */
+
+struct n64_hud_quad
+{
+	short sprite;
+	short pad;
+	float x[4], y[4];
+	float s[4], t[4];
+	/* ARGB; the sprites are stored straight (not premultiplied): an opaque
+	colour blends over, a transparent one adds (Halo's HUD blends
+	premultiplied, colour + framebuffer * (1 - alpha)) */
+	unsigned long color;
+	/* a meter (Halo's meter shader, rasterizer_xbox_dynavobgeom.c): the
+	sprite's intensity is each texel's fill order f, its alpha the shape.
+	Texels with f under the flash colour's alpha are full, coloured from
+	minimum_color to maximum_color by f (plus the flash colour where f is at
+	least the minimum colour's alpha), the rest background_color; all scaled
+	by the tint's intensity, over the framebuffer times the tint's alpha
+	(full) or the background's (empty) */
+	int meter;
+	unsigned long minimum_color, maximum_color, flash_color, background_color, tint_color;
+};
+
+/* a new map: its sprites are rom:/hud/<map>/<n>.sprite */
+void n64_hud_set_map(const char *map_name);
+/* a view's HUD: 1 when the game should draw it now (it is recorded and
+shown until the view's next one), 0 when the last one is shown again (the
+game's HUD code runs for each view every other frame) */
+int n64_hud_begin(int view, int x0, int y0, int x1, int y1);
+void n64_hud_end(void);
+void n64_hud_quad(const struct n64_hud_quad *quad);
+void n64_hud_text(int x, int y, unsigned long color, const char *text);
+/* a motion sensor blip: centre in pixels, position and size in pixels */
+void n64_hud_blip(float x, float y, float size, unsigned long color);
 
 #ifdef __cplusplus
 }

@@ -55,9 +55,17 @@ class N64Policy(Policy):
         self.anim = offs
         # animation frames stream from the cartridge (maps/<map>.anim)
         self.stream = bytearray()
+        self.hud = None
 
     def keep_tag(self, tag):
         return tag.group not in DROPPED
+
+    def override(self, tag, struct_name, field_name, address):
+        # a HUD image's sprite (tools/n64/hud.py): its number + 1
+        if struct_name == "BitmapData" and field_name == "pixel data offset" and self.hud is not None:
+            number = self.hud.sprite_of.get(address)
+            return number + 1 if number is not None else 0
+        return None
 
     def data(self, tag, path, parent, raw):
         address, struct_name, struct_raw = parent
@@ -121,11 +129,15 @@ class N64Policy(Policy):
         return bytes(out)
 
 
-def convert(path, output):
+def convert(path, output, filesystem=None):
     xmap = XboxMap(path)
     bsp_tag, bsp_base, bsp_size = xmap.load_bsp(0)
     repacker = Repacker(xmap, None)
     repacker.policy = N64Policy(xmap, repacker.defs)
+    if filesystem is not None:
+        from .hud import HudExporter
+        repacker.policy.hud = HudExporter(xmap, repacker.defs, xmap.name, filesystem)
+        print(f"{xmap.name} hud: {repacker.policy.hud.collect()} images")
     image = repacker.image
     image.alloc(0)
 
@@ -183,7 +195,7 @@ def main():
                         help="the cartridge's file tree: the level's render geometry goes to "
                         "levels/<map>.lvl and its textures to tex/<map>/")
     args = parser.parse_args()
-    xmap, repacker, size, relocs = convert(args.map, args.output)
+    xmap, repacker, size, relocs = convert(args.map, args.output, args.filesystem)
     print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations, "
           f"{len(repacker.policy.stream) / 1e6:.2f} MB of animation frames streamed")
     if args.filesystem:

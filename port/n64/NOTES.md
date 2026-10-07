@@ -73,3 +73,27 @@ running notebook. Paths are relative to `source/`.
 - Layouts from Invader's definitions (~/n64/invader, GPL-3, read at run
   time). The sbsp tag instance must have no address and the BSP header
   signature 'sbsp' (cache_files.c asserts).
+
+## The HUD (October 2026)
+
+- The HUD's bitmaps are premultiplied: Halo blends them as colour +
+  framebuffer * (1 - alpha) (`_shader_framebuffer_blend_function_alpha_multiply_add`).
+  The RDP's additive blending wraps around (libdragon says so; it drew dark
+  boxes over bright walls), so the sprites are stored straight and a mostly
+  transparent quad colour (a glow) blends with its brightest channel as
+  alpha.
+- Meter bitmaps hold the fill order in their colour and the shape in alpha.
+  Halo's meter shader (decoded from the register combiner words in
+  `rasterizer_xbox_dynavobgeom.c`): texels with order < flash colour alpha
+  are full, coloured min to max colour by order (+ flash colour where order
+  >= min colour alpha); the rest take the background; alpha kill outside the
+  shape; the framebuffer keeps tint alpha (full) or background alpha
+  (empty).
+- Damage indicators are rotated 128x128 bitmaps: more than TMEM, drawn in
+  strips.
+- Slayer looks up "ui\\multiplayer_game_text" by name every frame:
+  `tag_loaded` remembers recent answers on the N64.
+- The stack: Halo needs ~97 KB of stack; libdragon keeps 64 KB above the
+  heap, so the heap's top was being overwritten (seen as z-buffer values in
+  pointers once the HUD's allocations reached that far). The game now runs
+  on its own 256 KB stack.

@@ -7,6 +7,7 @@ the XDK-facing file layer (xdk_kernel.c) and the map loader.
 
 #include <libdragon.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "n64.h"
 
@@ -67,7 +68,7 @@ int n64_debug_flag(const char *name)
 
 	for (int i = 0; i < count; i++)
 	{
-		if (cache[i].name == name)
+		if (cache[i].name == name || !strcmp(cache[i].name, name))
 			return cache[i].value;
 	}
 	snprintf(path, sizeof(path), "rom:/%s", name);
