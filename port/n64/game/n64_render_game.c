@@ -92,6 +92,7 @@ static void (*vertical_blank_callback)(unsigned long context);
 boolean rasterizer_initialize(
 	void)
 {
+	n64_render_initialize();
 	/* the logical screen the game lays its views and HUD out on; the N64
 	renderer scales it to its 320x240 frame */
 	rasterizer_globals.reserved04.screen_bounds.x0 = 0;
@@ -116,7 +117,34 @@ void rasterizer_set_vblank_callback(
 	return;
 }
 
+/* ---------- maps */
+
+char const *n64_loaded_map_name(void);
+
+void render_initialize(void) { return; }
+void render_dispose(void) { return; }
+void render_dispose_from_old_map(void) { return; }
+
+void render_initialize_for_new_map(
+	void)
+{
+	n64_render_load_level(n64_loaded_map_name());
+	return;
+}
+
 /* ---------- frames */
+
+static boolean frame_begun;
+
+static void render_frame_begin(
+	void)
+{
+	if (!frame_begun)
+	{
+		n64_render_frame_begin();
+		frame_begun = TRUE;
+	}
+}
 
 void render_frame(
 	struct render_window *windows,
@@ -126,13 +154,45 @@ void render_frame(
 	struct bitmap_data *screenshot_bitmap,
 	real time_delta_since_tick_sec)
 {
-	(void)windows;
-	(void)window_count;
+	short window_index;
+
 	(void)screenshot_page_index;
 	(void)screenshot_index;
 	(void)screenshot_bitmap;
 	render.frame_index++;
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	render_frame_begin();
+	for (window_index = 0; window_index < window_count; window_index++)
+	{
+		struct render_window *window = &windows[window_index];
+		struct render_camera const *camera = &window->render_camera;
+		struct n64_view view;
+
+		if (window->console_window)
+			continue;
+		view.position[0] = camera->position.x;
+		view.position[1] = camera->position.y;
+		view.position[2] = camera->position.z;
+		view.forward[0] = camera->forward.i;
+		view.forward[1] = camera->forward.j;
+		view.forward[2] = camera->forward.k;
+		view.up[0] = camera->up.i;
+		view.up[1] = camera->up.j;
+		view.up[2] = camera->up.k;
+		view.vertical_field_of_view = camera->vertical_field_of_view;
+		view.z_near = camera->z_near;
+		view.z_far = 200.f;
+		/* the game lays the views out on a 640x480 screen */
+		view.x0 = camera->viewport_bounds.x0 / 2;
+		view.y0 = camera->viewport_bounds.y0 / 2;
+		view.x1 = camera->viewport_bounds.x1 / 2;
+		view.y1 = camera->viewport_bounds.y1 / 2;
+		view.local_player_index = window->local_player_index;
+		render.local_player_index = window->local_player_index;
+		render.window_index = window_index;
+		render.camera = *camera;
+		n64_render_view(&view);
+	}
 	return;
 }
 
@@ -143,6 +203,7 @@ void render_frame_pregame(
 	(void)window;
 	(void)bitmap;
 	render.frame_index++;
+	render_frame_begin();
 	return;
 }
 
@@ -152,6 +213,9 @@ void render_frame_present(
 {
 	(void)screenshot_index;
 	(void)bitmap;
+	render_frame_begin();
+	n64_render_frame_end();
+	frame_begun = FALSE;
 	if (vertical_blank_callback)
 		vertical_blank_callback(0);
 	return;

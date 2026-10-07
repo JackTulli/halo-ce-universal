@@ -75,6 +75,31 @@ enum
 void n64_input_poll(void);
 void n64_input_get(int port, struct n64_pad *pad);
 
+/* ---------- the renderer (n64_render.c)
+
+A frame is n64_render_frame_begin, one n64_render_view per player's view,
+then n64_render_frame_end, which shows it. Positions are the game's world
+units; the views' rectangles are pixels of the 320x240 frame. */
+
+struct n64_view
+{
+	float position[3];
+	float forward[3];
+	float up[3];
+	float vertical_field_of_view;
+	float z_near, z_far;
+	short x0, y0, x1, y1;
+	short local_player_index;
+	short pad;
+};
+
+void n64_render_initialize(void);
+/* loads rom:/levels/<map>.lvl and its textures; FALSE if there is none */
+int n64_render_load_level(const char *map_name);
+void n64_render_frame_begin(void);
+void n64_render_view(const struct n64_view *view);
+void n64_render_frame_end(void);
+
 #ifdef __cplusplus
 }
 #endif

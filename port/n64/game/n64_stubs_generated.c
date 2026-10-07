@@ -31,7 +31,6 @@
 #include "rasterizer/rasterizer_debug.h"
 #include "rasterizer/rasterizer_models.h"
 #include "rasterizer/xbox/rasterizer_xbox_hardware_bitmaps.h"
-#include "render/render.h"
 #include "render/render_debug.h"
 #include "render/render_sprite.h"
 #include "saved games/game_state.h"
@@ -247,10 +246,6 @@ void render_debug_sphere(boolean immediate, real_point3d const *center, real rad
 void render_debug_string_at_point(boolean immediate, real_point3d const *point, const char *string, real_argb_color const *color) {  } /* source/render/render_debug.h */
 void render_debug_vector(boolean immediate, real_point3d const *point, real_vector3d const *vector, real size, real_argb_color const *color) {  } /* source/render/render_debug.h */
 void render_debug_vectors(boolean immediate, real_point3d const *point, real_vector3d const *forward, real_vector3d const *up, real size) {  } /* source/render/render_debug.h */
-void render_dispose(void) {  } /* source/render/render.h */
-void render_dispose_from_old_map(void) {  } /* source/render/render.h */
-void render_initialize(void) {  } /* source/render/render.h */
-void render_initialize_for_new_map(void) {  } /* source/render/render.h */
 void saved_game_file_remember_player1_last_used_profile_directory(char const *directory_path) {  } /* source/saved games/saved_game_files.h */
 void saved_game_files_dispose(void) {  } /* source/saved games/saved_game_files.h */
 void saved_game_files_initialize(void) {  } /* source/saved games/saved_game_files.h */

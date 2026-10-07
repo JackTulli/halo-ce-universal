@@ -22,6 +22,11 @@ units (it sees the game's headers):
 #include "game/game.h"
 #include "main/main.h"
 #include "saved games/game_state.h"
+#include "game/players.h"
+#include "objects/objects.h"
+#include "memory/data.h"
+#include "units/units.h"
+#include "items/weapons.h"
 
 #include "../src/n64.h"
 #include "errors.h"
@@ -227,6 +232,13 @@ static void *n64_map_load(
 	return n64_map.image + n64_map.header.tag_header_offset;
 }
 
+/* the loaded map's name ("wizard"), for the renderer's level geometry */
+char const *n64_loaded_map_name(
+	void)
+{
+	return n64_map.name;
+}
+
 /* cache_files.c (HALO_N64): the loaded map's tag header */
 void *n64_cache_file_tag_header(
 	char const *scenario_name)
@@ -321,6 +333,48 @@ the average and the worst, and how far game time keeps up with real time. */
 
 void __real_game_tick(void);
 
+/* one line per player: where, whether alive, kills, deaths, shots */
+static void n64_log_players(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		char line[160];
+
+		if (player->unit_index != NONE)
+		{
+			struct unit_datum *unit = unit_get(player->unit_index);
+			long weapon_index = unit->unit.current_weapon_index >= 0 ?
+				unit->unit.weapon_object_indices[unit->unit.current_weapon_index] : NONE;
+			char const *weapon_name = "none";
+			int rounds = -1;
+
+			if (weapon_index != NONE)
+			{
+				struct weapon_datum *weapon = weapon_get(weapon_index);
+
+				weapon_name = tag_name_strip_path(tag_get_name(object_get(weapon_index)->definition_index));
+				rounds = weapon->weapon.magazines[0].rounds_loaded;
+			}
+			snprintf(line, sizeof(line), "player %d: alive at %.1f %.1f %.1f, %s (%d rounds), kills %d, deaths %d",
+				(int)iterator.absolute_index,
+				unit->object.position.x, unit->object.position.y, unit->object.position.z,
+				weapon_name, rounds, player->statistics.kills[0], player->statistics.deaths);
+		}
+		else
+		{
+			snprintf(line, sizeof(line), "player %d: dead (respawn in %ld), kills %d, deaths %d",
+				(int)iterator.absolute_index, player->respawn_timer,
+				player->statistics.kills[0], player->statistics.deaths);
+		}
+		n64_log(line);
+	}
+}
+
 static struct
 {
 	unsigned long count;
@@ -353,6 +407,7 @@ void __wrap_game_tick(
 		snprintf(line, sizeof(line), "tick: %lu.%02lu ms average, %lu.%02lu ms worst; 150 ticks (5 s of game) took %lu ms",
 			average_us / 1000, (average_us % 1000) / 10, worst_us / 1000, (worst_us % 1000) / 10, window_ms);
 		n64_log(line);
+		n64_log_players();
 		memset(&n64_tick_profile, 0, sizeof(n64_tick_profile));
 		n64_tick_profile.window_start = now;
 	}

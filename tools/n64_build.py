@@ -77,7 +77,7 @@ PLATFORM_FLAGS = [
     "-falign-functions=32",
     "-ffunction-sections", "-fdata-sections", "-g",
     "-std=gnu17",
-    "-DN64",
+    "-DN64", "-DLIBDRAGON_PREVIEW=2",
     "-Wall", "-Wno-unused-function", "-Wno-unused-variable",
 ]
 
@@ -217,16 +217,17 @@ def main():
     })
     # the cartridge's files (DragonFS): the converted maps, and the flags
     # port.json asks for (an "autotest" file drives the controllers by script)
-    n.rule("convert_map", command="cd $root && $python -m tools.n64.convert $in -o $out",
+    n.rule("convert_map", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.convert $in -o $map --filesystem $fsdir",
            description="N64 MAP $out")
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
-    n.rule("mkdfs", command="cd $root && $bin/mkdfs $out $fsdir > /dev/null", description="N64 DFS $out")
+    n.rule("mkdfs", command="cd $root && $bin/mkdfs $out $fsdir > /dev/null && : $in", description="N64 DFS $out")
     fsdir = BUILD_DIR / "filesystem"
     fs_files = []
     tool_sources = sorted(str(p) for p in Path("tools/n64").glob("*.py"))
     for name in port.get("maps", []):
         out_map = fsdir / "maps" / f"{name}.map"
-        n.build(str(out_map), "convert_map", f"build/xbox/disc/maps/{name}.map", implicit=tool_sources)
+        n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl")], "convert_map",
+                f"build/xbox/disc/maps/{name}.map", implicit=tool_sources, variables={"fsdir": str(fsdir), "map": str(out_map)})
         fs_files.append(str(out_map))
     for flag in port.get("flags", []):
         out_flag = fsdir / flag

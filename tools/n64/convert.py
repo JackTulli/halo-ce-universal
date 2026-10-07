@@ -169,9 +169,17 @@ def main():
     parser.add_argument("map", type=Path)
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--stats", action="store_true")
+    parser.add_argument("--filesystem", type=Path,
+                        help="the cartridge's file tree: the level's render geometry goes to "
+                        "levels/<map>.lvl and its textures to tex/<map>/")
     args = parser.parse_args()
     xmap, repacker, size, relocs = convert(args.map, args.output)
     print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations")
+    if args.filesystem:
+        from .level import LevelBuilder
+        builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)
+        stats = builder.write(args.filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
+        print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
     if args.stats:
         for g, s in sorted(repacker.stats.items(), key=lambda x: -x[1])[:25]:
             print(f"  {g} {s / 1024:8.1f} KB")
