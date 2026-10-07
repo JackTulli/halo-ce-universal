@@ -1879,6 +1879,14 @@ void lights_illumination_at_point(
 	struct location const *location,
 	real_rgb_color *color)
 {
+#ifdef HALO_N64
+	/* the N64 build carries no lightmaps (tools/n64/convert.py): a neutral
+	light everywhere, and no ray cast into the BSP every tick */
+	(void)point;
+	(void)location;
+	color->red = color->green = color->blue = 0.6f;
+	return;
+#endif
 	*color = *global_real_rgb_black;
 	{
 		short lightmap_index;

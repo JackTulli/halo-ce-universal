@@ -1549,6 +1549,7 @@ static void network_player_log_idle_action(
 		}
 	}
 	{
+		boolean tag_index_is_group(long tag_index, long group_tag);
 		long definition_index = nearest_index != NONE ? object_get(nearest_index)->definition_index : NONE;
 		/* named only when the index is a loaded object tag: a bad one would
 		be read as a tag instance anyway (tag_get_name), and its garbage

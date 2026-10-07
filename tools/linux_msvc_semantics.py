@@ -109,7 +109,7 @@ def scan_tags(files: Iterable[Path]) -> Dict[str, Set[str]]:
     return tags
 
 
-def scan_inline_functions(files: Iterable[Path], all_inlines: bool) -> Set[str]:
+def scan_inline_functions(files: Iterable[Path], all_inlines: bool, exclude_static: bool = False) -> Set[str]:
     """Inline function names that need `#pragma weak`.
 
     With all_inlines, every one: port/linux/game/msvc_comdat.c gives all of
@@ -121,8 +121,16 @@ def scan_inline_functions(files: Iterable[Path], all_inlines: bool) -> Set[str]:
     """
     texts = [read(path) for path in files]
     inline_names: Set[str] = set()
+    static_names: Set[str] = set()
     for text in texts:
-        inline_names.update(INLINE_FUNCTION.findall(text))
+        for match in INLINE_FUNCTION.finditer(text):
+            inline_names.add(match.group(1))
+            # gcc (the N64 build) rejects `#pragma weak` on a function the
+            # source itself declares `static __inline`
+            if re.search(r"\bstatic\s*$", text[max(0, match.start() - 40):match.start()]):
+                static_names.add(match.group(1))
+    if exclude_static:
+        inline_names -= static_names
     if all_inlines:
         return inline_names
     everything = "\n".join(texts)
@@ -171,13 +179,17 @@ def main() -> None:
         "--all-inlines", action="store_true",
         help="mark every inline function weak, not just prototyped ones",
     )
+    parser.add_argument(
+        "--exclude-static", action="store_true",
+        help="leave out inline functions the source declares static (gcc)",
+    )
     args = parser.parse_args()
     for root in args.tags + args.inlines:
         if not root.is_dir():
             sys.exit(f"{root} is not a directory")
     tag_files = source_files(args.tags)
     inline_files = source_files(args.inlines)
-    text = render(scan_tags(tag_files), scan_inline_functions(inline_files, args.all_inlines))
+    text = render(scan_tags(tag_files), scan_inline_functions(inline_files, args.all_inlines, args.exclude_static))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if not args.output.exists() or args.output.read_text(encoding="utf-8") != text:
         args.output.write_text(text, encoding="utf-8")

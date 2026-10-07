@@ -125,6 +125,14 @@ void system_exit(
 		return;
 	}
 #endif
+#ifdef HALO_N64
+	/* the crash screen, with the backtrace (port/n64/src/n64_main.c) */
+	{
+		extern void n64_fatal(const char *text);
+
+		n64_fatal("the game stopped (see the log above)");
+	}
+#endif
 	halt_and_catch_fire();
 	return;
 }

@@ -22,9 +22,17 @@ enum
 	MAXIMUM_AI_DEBUG_IDLE_LOOK_PROPS = 32,
 	NUMBER_OF_AI_DEBUG_COMMUNICATION_TYPES = 57,
 	NUMBER_OF_AI_DEBUG_VOCALIZATION_TYPES = 209,
+#ifdef HALO_N64
+	/* no AI on the N64 build: its debug record keeps its fields, not its
+	525 KB of history */
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_POINTS = 4,
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_PAIRS = 4,
+	NUMBER_OF_AI_DEBUG_ACTOR_RECORDS = 4,
+#else
 	MAXIMUM_AI_DEBUG_LINEOFSIGHT_POINTS = 16384,
 	MAXIMUM_AI_DEBUG_LINEOFSIGHT_PAIRS = 8192,
 	NUMBER_OF_AI_DEBUG_ACTOR_RECORDS = 512,
+#endif
 	MAXIMUM_AI_DEBUG_PATH_STORAGE = 32,
 };
 
@@ -363,32 +371,52 @@ typedef char ai_debug_state_render_offset_assert[
 	offsetof(struct ai_debug_state, render) == 0xA5 ? 1 : -1];
 typedef char ai_debug_state_last_render_id_offset_assert[
 	offsetof(struct ai_debug_state, last_render_id) == 0xF4 ? 1 : -1];
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert[
 	offsetof(struct ai_debug_state, ballistic_lineoffire_valid) == 0x4C2F4 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_ballistic_lineoffire_point_count_offset_assert[
 	offsetof(struct ai_debug_state, ballistic_lineoffire_point_count) == 0x4C4D4 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_field_859F4_offset_assert[
 	offsetof(struct ai_debug_state, field_859F4) == 0x859F4 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_path_state_offset_assert[
 	offsetof(struct ai_debug_state, path_state) == 0x4C81C ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_path_storage_offset_assert[
 	offsetof(struct ai_debug_state, path_storage) == 0x60904 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_field_7D3C7_offset_assert[
 	offsetof(struct ai_debug_state, evaluation_context.find_path_direction_from_target) == 0x7D3C7 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_field_7D980_offset_assert[
 	offsetof(struct ai_debug_state, evaluation_context.has_target) == 0x7D980 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_field_7D988_offset_assert[
 	offsetof(struct ai_debug_state, evaluation_context.target_point) == 0x7D988 ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_actor_record_offset_assert[
 	offsetof(struct ai_debug_state, actor_record) == 0x7D9F4 ? 1 : -1];
+#endif
 typedef char ai_debug_actor_record_size_assert[
 	sizeof(struct ai_debug_actor_record) == 0x40 ? 1 : -1];
 typedef char ai_debug_actor_record_field_24_offset_assert[
 	offsetof(struct ai_debug_actor_record, firing_position.path_direction_from_target) == 0x24 ? 1 : -1];
 typedef char ai_debug_actor_record_field_3C_offset_assert[
 	offsetof(struct ai_debug_actor_record, firing_position.evaluation) == 0x3C ? 1 : -1];
+#ifndef HALO_N64 /* the N64's record is shorter (above) */
 typedef char ai_debug_state_field_7D380_offset_assert[
 	offsetof(struct ai_debug_state, evaluation_context_valid) == 0x7D380 ? 1 : -1];
+#endif
 
 struct actor_debug_info
 {

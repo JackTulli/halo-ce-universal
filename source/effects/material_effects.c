@@ -181,7 +181,13 @@ void material_effect_new_from_point(
 			/* The January build consumes the complete 32-bit material slot here. */
 			material_type = scenario_location_underwater(&collision.location, &collision.point, NULL)
 				? _material_effect_underwater_material_type
+				#ifdef HALO_N64
+				/* the same value on a big-endian machine: the short and the
+				zero padding after it, read as the x86 does */
+				: (long)(unsigned short)collision.material_type;
+#else
 				: *(long *)&collision.material_type;
+#endif
 			material_effect_new(
 				definition_index,
 				effect_index,

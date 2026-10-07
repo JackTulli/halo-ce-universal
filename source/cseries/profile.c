@@ -286,7 +286,7 @@ enum
 {
 	MAXIMUM_PROFILE_SECTIONS = 256,
 	MAXIMUM_GAME_TICKS_PER_FRAME = 150,
-#ifdef HALO_XBOX
+#if defined(HALO_XBOX) || defined(HALO_N64)
 	/* the console's memory: a short history (every index is taken modulo
 	this, and the dump looks three frames back) */
 	MAXIMUM_PROFILE_FRAMES = 8,

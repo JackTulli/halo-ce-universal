@@ -131,6 +131,16 @@ static void write_to_debug_file(
 	FILE *file = debug_file;
 	char prefix[32];
 
+#ifdef HALO_N64
+	/* the N64 has no disk: the log is the debug output (n64_main.c) */
+	{
+		extern void n64_log(const char *text);
+
+		(void)date;
+		n64_log(string);
+		return;
+	}
+#endif
 	if (!file)
 	{
 		FILE *opened = fopen("d:\\debug.txt", "a+b");

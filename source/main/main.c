@@ -3113,6 +3113,14 @@ void main_loop(
 	debug_keys_initialize();
 	game_initialize();
 	console_startup();
+#ifdef HALO_N64
+	/* no menus: straight into a split-screen game (port/n64/game/n64_game.c) */
+	{
+		extern void n64_game_setup(void);
+
+		n64_game_setup();
+	}
+#endif
 	main_setup_connection();
 	main_initialize_time();
 

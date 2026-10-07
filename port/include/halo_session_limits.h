@@ -23,7 +23,7 @@ follow from the limits, whichever they are.
 #ifndef __HALO_SESSION_LIMITS_H
 #define __HALO_SESSION_LIMITS_H
 
-#ifndef HALO_BIG_SESSIONS
+#if !defined(HALO_BIG_SESSIONS) && !defined(HALO_N64)
 
 /* ---------- session limits */
 

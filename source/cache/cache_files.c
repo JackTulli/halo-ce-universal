@@ -658,6 +658,21 @@ long scenario_tags_load(
 
 	stripped_scenario_name = tag_name_strip_path(scenario_name);
 	result = NONE;
+#ifdef HALO_N64
+	/* maps are converted ahead of time and loaded whole from the cartridge
+	(port/n64/game/n64_game.c) */
+	{
+		extern void *n64_cache_file_tag_header(char const *scenario_name);
+
+		cache_file_globals.tag_header = n64_cache_file_tag_header(scenario_name);
+		if (!cache_file_globals.tag_header)
+			return NONE;
+		match_assert(__FILE__, __LINE__, cache_file_globals.tag_header->signature == CACHE_FILE_TAG_HEADER_SIGNATURE);
+		global_tag_instances = cache_file_globals.tag_header->tag_instances;
+		cache_file_globals.tags_loaded = TRUE;
+		return cache_file_globals.tag_header->scenario_tag_index;
+	}
+#endif
 	texture_cache_open();
 	sound_cache_open();
 	if (cache_file_open(stripped_scenario_name, &cache_file_globals.header))
@@ -711,6 +726,14 @@ boolean scenario_structure_bsp_load(
 	byte *tag_cache_base_address;
 
 	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
+#ifdef HALO_N64
+	/* the BSP is part of the loaded map (tools/n64/convert.py): its header
+	is already where the reference points */
+	if (TRUE)
+	{
+	}
+	else
+#endif
 	csmemset(
 		tag_cache_base_address + cache_file_globals.header.tag_data_size,
 		0xCD,

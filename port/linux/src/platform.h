@@ -12,6 +12,9 @@ against the SDK prototype it replaces.
 /* the Xbox build's platform layer (port/xbox/src/platform.h) stands in for
 this header, so the Linux units it compiles again see it */
 #include "../../xbox/src/platform.h"
+#elif defined(HALO_N64)
+/* the N64 build compiles a few Linux units again; they see its header */
+#include "../../n64/src/platform.h"
 #else
 
 #ifndef __HALO_LINUX_PLATFORM_H

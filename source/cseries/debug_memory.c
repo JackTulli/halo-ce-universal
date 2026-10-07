@@ -145,6 +145,22 @@ struct debug_memory_header
 	unsigned long checksum;
 };
 
+/* the trailer after a block (any alignment) */
+#ifdef HALO_N64
+static unsigned long debug_memory_get_trailer(
+	struct debug_memory_header const *header)
+{
+	unsigned long trailer;
+
+	memcpy(&trailer, (byte const *)(header + 1) + header->size, sizeof(trailer));
+	return trailer;
+}
+#define DEBUG_MEMORY_TRAILER(header) debug_memory_get_trailer(header)
+#else
+#define DEBUG_MEMORY_TRAILER(header) (*(unsigned long *)((byte *)((header) + 1) + (header)->size))
+#endif
+
+
 typedef char debug_memory_header_size_must_be_0x20[
 	sizeof(struct debug_memory_header) == 0x20 ? 1 : -1];
 typedef char debug_memory_header_checksum_offset_must_be_0x1c[
@@ -436,7 +452,7 @@ void debug_check_memory(
 		match_vassert(
 			"c:\\halo\\SOURCE\\cseries\\debug_memory.c",
 			199,
-			*(unsigned long *)((byte *)(header + 1) + header->size) ==
+			DEBUG_MEMORY_TRAILER(header) ==
 				debug_memory_trailing_signature,
 			csprintf(
 				temporary,
@@ -477,8 +493,18 @@ void *debug_malloc(
 		header->line = line;
 		header->allocation_id = debug_memory_globals.next_allocation_id++;
 		header->size = size;
+#ifdef HALO_N64
+		/* the trailer follows the block at any alignment: the VR4300 has no
+		unaligned stores */
+		{
+			unsigned long trailer = debug_memory_trailing_signature;
+
+			memcpy((byte *)(header + 1) + size, &trailer, sizeof(trailer));
+		}
+#else
 		*(unsigned long *)((byte *)(header + 1) + size) =
 			debug_memory_trailing_signature;
+#endif
 		debug_memory_add_pointer(header);
 
 		pointer = header + 1;
@@ -571,8 +597,18 @@ void *debug_realloc(
 		header->file = file;
 		header->allocation_id = debug_memory_globals.next_allocation_id++;
 		header->size = size;
+#ifdef HALO_N64
+		/* the trailer follows the block at any alignment: the VR4300 has no
+		unaligned stores */
+		{
+			unsigned long trailer = debug_memory_trailing_signature;
+
+			memcpy((byte *)(header + 1) + size, &trailer, sizeof(trailer));
+		}
+#else
 		*(unsigned long *)((byte *)(header + 1) + size) =
 			debug_memory_trailing_signature;
+#endif
 		debug_memory_add_pointer(header);
 
 		result = header + 1;
@@ -699,7 +735,7 @@ static void debug_check_pointer_overrun(
 	match_vassert(
 		"c:\\halo\\SOURCE\\cseries\\debug_memory.c",
 		199,
-		*(unsigned long *)((byte *)(header + 1) + header->size) ==
+		DEBUG_MEMORY_TRAILER(header) ==
 			debug_memory_trailing_signature,
 		csprintf(
 			temporary,

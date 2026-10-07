@@ -765,6 +765,12 @@ boolean structure_test_vector(
 	boolean done;
 	struct collision_result collision;
 
+#ifdef HALO_N64
+	/* finds the lightmap texel under a point (object and particle lighting);
+	the N64 build carries no lightmaps (tools/n64/convert.py) */
+	return FALSE;
+#endif
+
 	match_assert(
 		"c:\\halo\\SOURCE\\structures\\structures.c",
 		0x188,
