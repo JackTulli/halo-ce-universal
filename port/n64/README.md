@@ -122,6 +122,34 @@ read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
 
+8 October, a deep optimisation round (`devtools/bench-set.sh`: eight
+scenes, scripted players; ares, fps before -> after):
+
+| scene | 1 player | 2 players | 4 players |
+|---|---|---|---|
+| Wizard | 29.9 -> 30.0 | 26.2 -> 29.2 | 10.7 -> 18.3 |
+| Blood Gulch | 29.8 -> 29.9 | 16.6 -> 26.9 | 8.6 -> 14.0 |
+| Firefight, Blood Gulch | 23.4 -> 25.2 | | 5.9 -> 8.4 |
+
+What did it, largest first: the debug flag cache held 16 names and the
+rest opened a cartridge file on every call, one of them per object per
+view; the RSP command queue's buffers at 2048 words (libdragon patched:
+the CPU waited for the RSP mid-frame, now it runs the next ticks while
+the RSP draws); link-time optimisation of the game; single precision
+square root and trigonometry, fmod(x, 1) as an exact float fraction,
+matrix4x3_multiply written out; parked vehicles keep their node matrices,
+far Covenant pose every other tick, swaying plants too; the N64 makes no
+particles, particle systems, contrails or widgets (nothing draws them;
+their point physics cast ~1,500 rays a second in Firefight); the 3-4
+player models' first-person weapons from one 64-texel atlas; the unit and
+biped vector diagnostics off; HUD quads without rdpq_tex_blit where their
+rectangle fits TMEM; tag block element access inline; the drawable
+objects gathered once a frame for all views. At 4 players the game's
+ticks are the limit now (a biped's movement, biped_update_physics, is
+~1 ms of its ~3 ms a tick); Firefight with four players still runs below
+real time. -Os and -O3 do not fit: the bigger code leaves too little
+heap, -Os crashed.
+
 8 October, the game's sounds: weapons (fire, reload, ready, charge,
 overheat), impacts and explosions, footsteps, vehicles (their engines'
 loops follow the vehicle's speed), the shields' and health's HUD sounds,

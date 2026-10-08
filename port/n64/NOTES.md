@@ -183,3 +183,29 @@ running notebook. Paths are relative to `source/`.
 - The Covenant's dialogue tags are 4 KB each (209 vocalization
   references); their animation graphs reference dialogue too (sleeping,
   retreating), which merge.py follows.
+
+## Performance (October 2026, the deep round)
+
+- Measure first: `devtools/bench-set.sh <label> [seconds] [scenes]`;
+  `profile` (+`profile_zone` with `profile_tick`/`profile_sound`, or the
+  HUD alone) and `tools/n64_profile.py`; `profile_stack` adds rough call
+  chains (MIPS stack scanning misses many frames); `debug_stage_type=<n>`
+  splits an object type's update by stage and part; `debug_ray_callers`
+  counts collision_test_vector by caller; `debug_gpu_time` waits for the
+  RSP/RDP after each phase.
+- rspq_next_buffer near the top of a profile means the CPU is waiting for
+  the RSP: the low-priority queue's buffers were 512 words; at 2048 the CPU
+  queues a whole frame and goes on to the ticks.
+- `n64_debug_flag` must be cheap: it is called per object, per ray, per
+  sound. Its cache (64 names, a pointer slot in front) once held 16 and
+  every other flag opened a file each call.
+- The decompiled code's square_root/sine/cosine were double precision
+  (cvt + sqrt.d), its fmod(x, 1) a double library call; on the N64 they are
+  float (no lockstep netplay to keep bit-identical).
+- Halo updates and poses every object every tick: parked vehicles, plants
+  and far AI bipeds now skip what cannot have changed or is not seen.
+- Nothing draws particles, contrails or widgets on the N64: their
+  creators return NONE (Halo's callers already handle a full pool).
+- What is left at four players is the game itself: bipeds (~3 ms each a
+  tick, a third of it biped_update_physics), projectiles (~0.4 ms each:
+  a ray and a map reconnect a tick), Halo's HUD code (~5 ms a recording).
