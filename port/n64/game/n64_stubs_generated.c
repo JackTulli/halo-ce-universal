@@ -126,15 +126,9 @@ void editor_initialize_for_new_map(void) {  } /* source/editor/editor_stubs.h */
 boolean editor_should_exit(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/editor/editor_stubs.h */
 void editor_update(void) {  } /* source/editor/editor_stubs.h */
 boolean game_in_editor(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/editor/editor_stubs.h */
-void game_looping_sound_delete(long looping_sound_index) {  } /* source/sound/game_sound.h */
-long game_looping_sound_new(long object_index, long definition_index, char const *marker_name, short function_index) { return NONE; } /* source/sound/game_sound.h */
 void game_sound_clear(void) {  } /* source/sound/game_sound.h */
 void game_sound_dispose(void) {  } /* source/sound/game_sound.h */
-void game_sound_dispose_from_old_map(void) {  } /* source/sound/game_sound.h */
-void game_sound_initialize(void) {  } /* source/sound/game_sound.h */
-void game_sound_initialize_for_new_map(void) {  } /* source/sound/game_sound.h */
 void game_sound_restore(void) {  } /* source/sound/game_sound.h */
-void game_sound_update(real dt) {  } /* source/sound/game_sound.h */
 boolean game_state_read_from_file(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/game_state.h */
 void game_state_read_from_persistent_storage(void *buffer, long buffer_size) {  } /* source/saved games/game_state.h */
 boolean game_state_read_header_from_persistent_storage(void *header, unsigned long *header_checksum, long header_size, long buffer_size, boolean *corrupted) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/game_state.h */
@@ -180,7 +174,6 @@ long network_objects_new_object_index(void) { return NONE; } /* source/objects/o
 void network_objects_placed(void) {  } /* source/game/game.c */
 void network_test_update(boolean main_menu_loaded, real seconds) {  } /* source/main/main.c */
 struct render_lighting * object_get_cached_render_lighting(long object_index, real level_of_detail_pixels) { struct render_lighting * result; memset(&result, 0, sizeof(result)); return result; } /* source/render/render_objects.h */
-long object_impulse_sound_new(long object_index, long definition_index, short node_index, real_point3d const *position, real_vector3d const *forward, real scale) { return NONE; } /* source/sound/game_sound.h */
 boolean player_profile_get_enclosing_directory_path(long profile, char *full_path) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/player_profile.h */
 void player_profile_save_last_level_played(short local_player_index) {  } /* source/saved games/player_profile.h */
 void player_profile_save_level_completed(short local_player_index) {  } /* source/saved games/player_profile.h */
@@ -261,7 +254,6 @@ void sound_classes_dispose_from_old_map(void) {  } /* source/sound/sound_classes
 void sound_classes_initialize(void) {  } /* source/sound/sound_classes.h */
 void sound_classes_initialize_for_new_map(void) {  } /* source/sound/sound_classes.h */
 void sound_class_set_gain(char const *name, real gain, short interpolation_ticks) {  } /* source/game/game_engine.c */
-real sound_definition_get_maximum_distance(long sound_index) { real result; memset(&result, 0, sizeof(result)); return result; } /* source/sound/sound_definitions.h */
 void sound_dispose(void) {  } /* source/sound/sound_manager.h */
 void sound_dispose_from_old_map(void) {  } /* source/sound/sound_manager.h */
 void sound_idle(void) {  } /* source/sound/sound_manager.h */
@@ -272,8 +264,6 @@ void sound_render(void) {  } /* source/sound/sound_manager.h */
 long sound_render_time(void) { long result; memset(&result, 0, sizeof(result)); return result; } /* source/sound/sound_manager.h */
 void sound_scenery_delete(long object_index) {  } /* source/objects/object_types.c */
 boolean sound_scenery_new(long object_index) { return TRUE; } /* source/objects/object_types.c */
-void sound_stop_all(void) {  } /* source/sound/sound_manager.h */
-void sound_stop_impulse(long sound_index) {  } /* source/sound/sound_manager.h */
 void structure_detail_objects_dispose(void) {  } /* source/structures/structures.h */
 void structure_detail_objects_dispose_from_old_map(void) {  } /* source/structures/structures.h */
 void structure_detail_objects_flush(void) {  } /* source/structures/structures.h */
@@ -298,10 +288,6 @@ void ui_widgets_inhibit_processing(boolean inhibit) {  } /* source/interface/ui_
 void ui_widgets_initialize(void) {  } /* source/interface/ui_widget.h */
 void ui_widgets_safe_to_load(boolean safe) {  } /* source/interface/ui_widget.h */
 void ui_widgets_set_fade_value(real value) {  } /* source/interface/ui_widget.h */
-long unattached_impulse_sound_new(long definition_index, struct sound_location const *location, real scale) { return NONE; } /* source/sound/game_sound.h */
-long unattached_looping_sound_start(long definition_index, long source_object_index, real scale) { return NONE; } /* source/sound/game_sound.h */
-void unattached_looping_sound_stop(long looping_sound_index) {  } /* source/sound/game_sound.h */
-long unspatialized_impulse_sound_new(long definition_index, real scale) { return NONE; } /* source/sound/game_sound.h */
 boolean virtual_keyboard_active(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/interface/virtual_keyboard.h */
 void virtual_keyboard_close(void) {  } /* source/interface/virtual_keyboard.h */
 void xbox_demos_launch(void) {  } /* source/interface/marketing_and_strategic_business_development.h */

@@ -1017,6 +1017,8 @@ void n64_render_view(const struct n64_view *view)
 	T3DVec3 eye, target, up;
 	uint8_t white[4] = {0xFF, 0xFF, 0xFF, 0xFF};
 
+	/* (the audio fed between views: a 4-player frame is long) */
+	n64_sound_poll();
 	if (renderer.view_count >= MAXIMUM_VIEWS)
 		return;
 	flush_draws();

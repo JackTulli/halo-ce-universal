@@ -249,6 +249,16 @@ static void slayer_engine_player_added(
 static void slayer_engine_game_starting(
 	void)
 {
+#ifdef HALO_N64
+	/* (Firefight, port/n64/game/n64_firefight.c, runs on team slayer: the
+	announcer does not call it that) */
+	{
+		int n64_firefight_active(void);
+
+		if (n64_firefight_active())
+			return;
+	}
+#endif
 	game_engine_play_multiplayer_sound(
 		game_engine_has_teams()
 			? _multiplayer_sound_team_slayer

@@ -3,8 +3,9 @@
 A port of the game's multiplayer to the N64 with the Expansion Pak:
 Halo's own simulation (objects, physics, collision, weapons, game types,
 players, first-person weapons) compiled for the VR4300, a new renderer on
-tiny3d, and maps converted from the Xbox game's cache files. No campaign,
-no networking, no sound yet. It starts at a menu of its own over the scene
+tiny3d, and maps converted from the Xbox game's cache files, with Halo's
+music in the menu and its sounds in the game (not the environment's). No
+campaign, no networking. It starts at a menu of its own over the scene
 behind Halo's main menu (the ring in space): 1-4 players join, choose the
 game type, one of the 13 multiplayer maps and the score, and play; after
 the scores, back to the menu. Settings has chunky mode.
@@ -105,7 +106,11 @@ upper case on port 2, `.` none), `debug_players=<1-4>` (with `debug_map`),
 `debug_guard=<n>`, `debug_cull_front`, `debug_level_parts=<1|2>` (level
 measurements: vertices alone, materials alone), `profile` (samples at the vertical blank from 20 to
 80 s; `tools/n64_profile.py <log> build/n64/halo.elf`), `profile_zone` (with
-`profile`: only while the HUD draws, with return addresses).
+`profile`: only while the HUD draws, with return addresses), `debug_sound`
+(each sound started, the first 300, and every five seconds the voices,
+the sounds playing and the mixer's CPU time), `debug_no_sound` (the
+game's sounds off, to measure them), `profile_sound` (with `profile
+profile_zone`: only while the mixer is fed).
 `devtools/n64_timing.c` times chosen game functions through `--wrap`.
 
 `devtools/ares-run.sh` and `ares-shots.sh` run a ROM in ares on a hidden
@@ -113,6 +118,34 @@ Xvfb display (`:97`) with the debug log captured; `ares-gdb.sh` + `rsp.py`
 read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
+
+8 October, the game's sounds: weapons (fire, reload, ready, charge,
+overheat), impacts and explosions, footsteps, vehicles (their engines'
+loops follow the vehicle's speed), the shields' and health's HUD sounds,
+pickups, the announcer, the players' and the Covenant's pain and death
+cries, and the Covenant's lines in Firefight (spotting a player, throwing
+a grenade, taunts, melee, a player killed, a grunt panicking when its
+elite falls). Halo's sound code stays left out: the calls the game makes
+into it are `port/n64/game/n64_sound_game.c`'s, after Halo's sound manager
+(random permutation not played lately, pitch and gain from the scale,
+pitch ranges, skip fractions; the nearest player hears a sound, full
+within its minimum distance, then minimum / distance, nothing past its
+maximum; panned to the camera's left or right; a class's limits of the
+same sound at once and on one object). Sound tags are kept as records of
+the N64's own (`tools/n64/sounds.py`; 27 KB for Blood Gulch), the
+environment's (ambience, devices, music) left out; each choosable
+permutation is decoded from Xbox ADPCM, made mono 22 kHz VADPCM without
+Huffman packing (that was undone by the CPU: a quarter of it) and packed
+with every map's into one bank, `snd/sounds.bank` (`tools/n64/
+soundbank.py`, 12 MB, 1005 sounds; a map's `snd/<map>.ofs` says where its
+sounds are), streamed from the cartridge on 12 voices
+(`port/n64/src/n64_sound.c`; a new sound takes a free voice or the
+cheapest of no higher priority). Firefight's Covenant bring their
+dialogue from a30 (`merge.py`: the vocalizations Firefight plays, three
+lines each at most; not their animations' foley). The mixer is fed between
+ticks and views as well as at the frame's end (150 ms of audio queued).
+ROM 57 MB. In ares sound costs ~8% of the CPU (Blood Gulch Firefight,
+one player); the heap's low point there is ~90 KB (was ~118).
 
 8 October, sound starts: the main menu plays Halo's title music
 (`tools/n64/music.py`: ui.map's title1 looping sound, its chains of Xbox

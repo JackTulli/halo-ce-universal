@@ -104,6 +104,27 @@ static real const pause_scale[4] = { 1.6f, 1.f, 0.75f, 0.55f };
 static short const starting_lives[4] = { 10, 7, 5, 3 };
 static real const enemy_count_scale[4] = { 0.75f, 1.f, 1.2f, 1.4f };
 
+/* the Covenant's voices: their dialogue's vocalizations (dialogue_
+definitions.c) that tools/n64/merge.py imports, said through unit_dialogue.c
+(unit_vocalize, HALO_N64); their pain and death they voice themselves */
+enum
+{
+	_vocalization_killed_enemy_player = 55,
+	_vocalization_new_combat_alone = 108,
+	_vocalization_unexpected_enemy = 111,
+	_vocalization_grenade_throwing = 115,
+	_vocalization_shooting = 149,
+	_vocalization_taunt = 154,
+	_vocalization_flee_leader_died = 158,
+	_vocalization_melee_attack = 179,
+	_vocalization_celebration = 188,
+};
+
+/* the least time between two Covenant's chatter (spotting, taunts) */
+#define TICKS_BETWEEN_CHATTER (2 * TICKS_PER_SECOND)
+
+boolean unit_vocalize(long unit_index, short vocalization_type, short priority);
+
 /* ---------- state */
 
 struct covenant
@@ -114,8 +135,10 @@ struct covenant
 	short fire_timer; /* > 0 firing, < 0 pausing */
 	short sight_timer, stuck_timer, unstick_timer, jump_timer, melee_timer, grenade_timer;
 	short unseen_ticks;
+	short chatter_timer;
 	boolean target_visible;
 	boolean trigger_down;
+	boolean has_spoken;
 	/* the way to the target (Halo's pathfinding, source/ai/path.c) */
 	boolean path_valid;
 	short path_age;
@@ -156,6 +179,8 @@ static struct
 	/* (the log's: searches, no surface under one end, searches that
 	reached, paths built) */
 	long path_searches, path_no_surface, path_found, path_built;
+	/* when a Covenant last chattered (game time) */
+	long last_chatter;
 } firefight;
 
 /* the AI's meters, which the pathfinder counts in (ai_profile.c is the
@@ -248,6 +273,20 @@ static boolean unit_alive(
 /* ---------- the waves */
 
 /* how many Covenant a wave has, and how many may be up at once */
+/* a line from a Covenant: chatter (spotting, taunts) only now and then
+among them all */
+static void vocalize(
+	struct covenant *enemy,
+	short vocalization_type,
+	short priority,
+	boolean chatter)
+{
+	if (chatter && game_time_get() - firefight.last_chatter < TICKS_BETWEEN_CHATTER)
+		return;
+	if (unit_vocalize(enemy->unit_index, vocalization_type, priority) && chatter)
+		firefight.last_chatter = game_time_get();
+}
+
 static long wave_size(
 	long wave)
 {
@@ -588,6 +627,13 @@ static void think(
 	}
 	if (enemy->target_visible)
 	{
+		/* (a target found, or found again after a while: said aloud) */
+		if (!enemy->has_spoken || enemy->unseen_ticks > 8 * TICKS_PER_SECOND)
+		{
+			enemy->has_spoken = TRUE;
+			vocalize(enemy, horizontal_distance(&unit->object.position, &target_position) < 5.f ?
+				_vocalization_unexpected_enemy : _vocalization_new_combat_alone, _unit_speech_shout, TRUE);
+		}
 		enemy->last_seen = target_eye;
 		enemy->unseen_ticks = 0;
 	}
@@ -738,6 +784,14 @@ static void think(
 			}
 			if (enemy->fire_timer <= 0)
 				enemy->fire_timer = -(short)(kind->pause_ticks * pause_scale[firefight.difficulty] + ff_random() % 12);
+			/* a taunt or a battle cry now and then */
+			enemy->chatter_timer -= THINK_INTERVAL;
+			if (enemy->chatter_timer <= 0)
+			{
+				enemy->chatter_timer = (short)((8 + ff_random() % 10) * TICKS_PER_SECOND);
+				vocalize(enemy, ff_random() & 1 ? _vocalization_taunt : _vocalization_shooting,
+					_unit_speech_shout, TRUE);
+			}
 		}
 		else
 		{
@@ -753,6 +807,7 @@ static void think(
 	{
 		flags |= FLAG(_unit_control_use_equipment_bit);
 		enemy->melee_timer = 30;
+		vocalize(enemy, _vocalization_melee_attack, _unit_speech_exclamation, FALSE);
 	}
 	/* a plasma grenade now and then */
 	if (enemy->grenade_timer > 0)
@@ -762,6 +817,7 @@ static void think(
 	{
 		flags |= FLAG(_unit_control_throw_grenade_bit);
 		enemy->grenade_timer = 8 * TICKS_PER_SECOND;
+		vocalize(enemy, _vocalization_grenade_throwing, _unit_speech_shout, FALSE);
 	}
 
 	if (forward > 1.f) forward = 1.f;
@@ -815,6 +871,60 @@ static void credit_kill(
 	}
 }
 
+/* a player killed by a Covenant: the killer says so */
+static void covenant_celebrate(
+	long player_unit_index)
+{
+	struct unit_datum *dead = (struct unit_datum *)object_try_and_get(player_unit_index);
+	unsigned long latest = 0;
+	long killer = NONE;
+	short i;
+
+	if (!dead)
+		return;
+	for (i = 0; i < MAXIMUM_ATTACKERS_PER_UNIT; i++)
+	{
+		struct unit_attacker *attacker = &dead->unit.attackers[i];
+
+		if (attacker->object_index != NONE && attacker->game_time_stamp >= latest)
+		{
+			latest = attacker->game_time_stamp;
+			killer = attacker->object_index;
+		}
+	}
+	for (i = 0; i < firefight.enemy_count; i++)
+	{
+		if (firefight.enemies[i].unit_index == killer && unit_alive(killer))
+		{
+			vocalize(&firefight.enemies[i], ff_random() & 1 ? _vocalization_killed_enemy_player :
+				_vocalization_celebration, _unit_speech_shout, FALSE);
+			break;
+		}
+	}
+}
+
+/* an elite down: a grunt near it panics */
+static void covenant_leader_died(
+	struct covenant const *fallen)
+{
+	struct object_datum *body = object_try_and_get(fallen->unit_index);
+	short i;
+
+	if (fallen->kind != _covenant_elite || !body)
+		return;
+	for (i = 0; i < firefight.enemy_count; i++)
+	{
+		struct covenant *enemy = &firefight.enemies[i];
+
+		if (enemy->kind == _covenant_grunt && unit_alive(enemy->unit_index) &&
+			horizontal_distance(&object_get(enemy->unit_index)->object.position, &body->object.position) < 12.f)
+		{
+			vocalize(enemy, _vocalization_flee_leader_died, _unit_speech_shout, FALSE);
+			break;
+		}
+	}
+}
+
 /* deaths cost the team's lives; with none left, the dead stay dead */
 static void count_lives(
 	void)
@@ -829,6 +939,8 @@ static void count_lives(
 		short slot = (short)(iterator.absolute_index & 15);
 		boolean alive = unit_alive(player->unit_index);
 
+		if (firefight.alive[slot] && !alive)
+			covenant_celebrate(player->unit_index);
 		if (firefight.alive[slot] && !alive && !firefight.out[slot])
 		{
 			if (firefight.lives > 0)
@@ -949,6 +1061,7 @@ void n64_firefight_tick(
 		else if (!unit_alive(firefight.enemies[i].unit_index))
 		{
 			credit_kill(&firefight.enemies[i]);
+			covenant_leader_died(&firefight.enemies[i]);
 			firefight.wave_killed++;
 			firefight.enemies[i] = firefight.enemies[--firefight.enemy_count];
 		}

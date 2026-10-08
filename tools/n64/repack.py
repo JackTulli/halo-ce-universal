@@ -97,6 +97,11 @@ class Policy:
         or None; address is the Xbox address of the struct instance"""
         return None
 
+    def custom_tag(self, tag):
+        """the bytes of a kept tag the N64 keeps in a form of its own (no
+        pointers), or None to repack it"""
+        return None
+
 
 class Repacker:
     def __init__(self, xmap, policy, defs=None):
@@ -213,6 +218,12 @@ class Repacker:
         roots = {}
         for tag in tags:
             if not self.policy.keep_tag(tag):
+                continue
+            blob = self.policy.custom_tag(tag)
+            if blob is not None:
+                roots[tag.index] = self.image.alloc(len(blob), 8)
+                self.image.put(roots[tag.index], blob)
+                self.count(tag, len(blob))
                 continue
             root = self.defs.fourcc_struct(tag.group)
             roots[tag.index] = self.struct_array(tag, tag.address, root, 1, root)

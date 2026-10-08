@@ -162,14 +162,31 @@ void n64_render_set_chunky(int on);
 /* the FPS counter in the corner (off in the menu) */
 void n64_render_show_counter(int on);
 
-/* ---------- sound (n64_sound.c): the main menu's music so far */
+/* ---------- sound (n64_sound.c): the main menu's music, the game's
+sounds (port/n64/game/n64_sound_game.c) */
 
 void n64_sound_initialize(void);
-/* the mixer fed (every frame's end) and the music's next track started */
+/* the mixer fed (every frame's end, and between ticks and views) and the
+music's next track started */
 void n64_sound_poll(void);
 /* the title music from its start (not again while it plays), and off */
 void n64_music_start(void);
 void n64_music_stop(void);
+/* the map's sounds: rom:/snd/<map>.ofs, the offsets in the sound bank of
+the files of the map's sound list (FALSE: none) */
+int n64_sound_load_map(const char *map_name);
+void n64_sound_unload_map(void);
+/* plays file `file` of the map's list on a voice (a free one, or the
+cheapest of no higher priority, 0-255): its volume 0-1, pan -1 (left) to 1
+(right), pitch (a rate: 1 as recorded), looping or once; returns the voice
+(>= 0) or -1 */
+long n64_voice_play(int file, float volume, float pan, float pitch, int priority, int loop);
+void n64_voice_set(long voice, float volume, float pan, float pitch);
+void n64_voice_stop(long voice);
+/* FALSE once it has ended, been stopped or been stolen */
+int n64_voice_playing(long voice);
+void n64_voice_stop_all(void);
+void n64_sound_statistics(unsigned long *started, unsigned long *stolen, unsigned long *refused);
 
 /* ---------- Halo's fonts (n64_font.c): rom:/fonts/<name>.* from
 tools/n64/ui.py (large, small, interstate) */

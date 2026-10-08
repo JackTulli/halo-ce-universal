@@ -651,10 +651,20 @@ void unit_speak(
 
 		if (unit->unit.speech.current.sound_definition_index != NONE)
 		{
+#ifdef HALO_N64
+			/* (the N64's sound tags are records of its own:
+			n64_sound_game.c) */
+			long n64_sound_definition_length(long sound_index);
+
+			unit->unit.speech.sound_timer = (short)(
+				n64_sound_definition_length(unit->unit.speech.current.sound_definition_index) *
+				TICKS_PER_SECOND / 1000);
+#else
 			struct sound_definition *sound_definition =
 				sound_definition_get(unit->unit.speech.current.sound_definition_index);
 			unit->unit.speech.sound_timer = (short)(
 				(long)(sound_definition->longest_permutation_length * TICKS_PER_SECOND) / 1000);
+#endif
 		}
 		else
 		{
@@ -967,6 +977,50 @@ boolean unit_scream(
 
 	return FALSE;
 }
+
+#ifdef HALO_N64
+/* a vocalization the N64's Firefight AI asks a unit to say (Halo's AI,
+left out, does it through ai_dialogue.c): TRUE when it speaks */
+boolean unit_vocalize(
+	long unit_index,
+	short vocalization_type,
+	short priority)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	long sound_definition_index = NONE;
+	short play_type;
+
+	if (unit->unit.dialogue_index == NONE ||
+		vocalization_type < 0 ||
+		vocalization_type >= NUMBER_OF_VOCALIZATION_TYPES)
+	{
+		return FALSE;
+	}
+	play_type = unit_test_speech(
+		unit_index,
+		priority,
+		FALSE,
+		FALSE,
+		NULL,
+		&vocalization_type,
+		&sound_definition_index);
+	if (play_type > _unit_play_speech_none && sound_definition_index != NONE)
+	{
+		struct unit_speech_item speech_item;
+
+		csmemset(&speech_item, 0, sizeof(speech_item));
+		speech_item.priority = priority;
+		speech_item.vocalization_type = vocalization_type;
+		speech_item.sound_definition_index = sound_definition_index;
+		speech_item.pause_time = 15;
+		ai_communication_packet_new(&speech_item.ai);
+		unit_speak(unit_index, play_type, &speech_item);
+		return TRUE;
+	}
+
+	return FALSE;
+}
+#endif
 
 void unit_dialogue_update(
 	long unit_index)

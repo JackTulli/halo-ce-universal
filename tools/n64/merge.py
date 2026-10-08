@@ -9,7 +9,9 @@ root tags needs to a map (an XboxMap, changed in place):
 - a tag the map already has (the same group and name: the plasma weapons,
   most effects) is the map's own;
 - groups the N64 does not use are left out (references to them become
-  NONE): sounds, dialogue, unit HUD interfaces, actors;
+  NONE): sound environments, unit HUD interfaces, actors; of a dialogue
+  ('udlg') only the vocalizations Firefight plays are followed (the
+  game's own pain and death sounds, the AI's few lines), the rest NONE;
 - the rest are copied: the source's tag data is mapped at IMPORT_BASE
   instead of TAG_BASE, its block, data and plain pointers moved there, and
   its tag references renumbered to the merged tags.
@@ -27,7 +29,13 @@ IMPORT_BASE = 0x50000000
 NONE = 0xFFFFFFFF
 
 # groups whose tags are not imported (references to them are cleared)
-LEFT_OUT = {b"snd!", b"lsnd", b"snde", b"udlg", b"unhi", b"actv", b"actr", b"DeLa", b"Soul", b"spk!"}
+LEFT_OUT = {b"snde", b"unhi", b"actv", b"actr", b"DeLa", b"Soul", b"spk!"}
+# a dialogue's vocalizations that are imported (unit_dialogue.c: the pain,
+# scream and death sounds 6-19 the game plays itself; n64_firefight.c's
+# killed enemy 53/55, new combat 108, unexpected enemy 111, grenade throw
+# 115 and sighted 116, shooting 149, taunt 154, flee 156/158, melee 179,
+# celebration 188)
+DIALOG_VOCALIZATIONS = list(range(6, 20)) + [53, 55, 108, 111, 115, 116, 149, 154, 156, 158, 179, 188]
 # groups for which the map's own first tag stands in (a biped's material
 # effects: its footsteps)
 STAND_INS = {b"foot"}
@@ -73,7 +81,12 @@ def merge_tags(base, source, roots, defs=None):
             continue
         decided[t.index] = "import"
         order.append(t)
-        for datum in dependencies(source, defs, t):
+        if t.group_name == "udlg":
+            needs = [struct.unpack("<I", source.read(t.address + 16 + 16 * v + 12, 4))[0]
+                     for v in DIALOG_VOCALIZATIONS]
+        else:
+            needs = dependencies(source, defs, t)
+        for datum in needs:
             d = source.tag(datum)
             if d is not None:
                 todo.append(d)

@@ -243,7 +243,16 @@ static long get_sound_length_in_ticks(
 	if (sound->index == NONE)
 		return 0;
 
+#ifdef HALO_N64
+	/* (the N64's sound tags are records of its own: n64_sound_game.c) */
+	{
+		long n64_sound_definition_length(long sound_index);
+
+		return (n64_sound_definition_length(sound->index) * TICKS_PER_SECOND) / 1000;
+	}
+#else
 	return (long)(sound_definition_get(sound->index)->longest_permutation_length * TICKS_PER_SECOND) / 1000;
+#endif
 }
 
 void game_engine_play_multiplayer_sound(

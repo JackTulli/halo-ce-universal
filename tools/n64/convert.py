@@ -34,8 +34,10 @@ FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\j
                    ("bipd", "characters\\elite\\elite")]
 
 # tag groups the N64 game never loads: the Xbox menus and input devices,
-# and sound (the N64 build has none yet: its code is left out)
-DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snd!", b"lsnd", b"snde"}
+# and sound environments (the N64 has no reverb); sounds and looping
+# sounds are kept in a form of the N64's own (sounds.py) or left out
+DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snde"}
+SOUND_GROUPS = {int.from_bytes(g, "big") for g in (b"snd!", b"lsnd")}
 
 
 def fourcc(text):
@@ -66,13 +68,22 @@ class N64Policy(Policy):
         self.streams = {}  # graph tag index -> bytearray
         self.graphs = []   # graph tag indices in list order
         self.hud = None
+        # the gameplay sounds (sounds.py; None: none)
+        self.sounds = None
 
     @property
     def stream_size(self):
         return sum(len(s) for s in self.streams.values())
 
     def keep_tag(self, tag):
+        if tag.group in SOUND_GROUPS:
+            return self.sounds is not None and self.sounds.keep(tag)
         return tag.group not in DROPPED
+
+    def custom_tag(self, tag):
+        if tag.group in SOUND_GROUPS:
+            return self.sounds.blob(tag)
+        return None
 
     # render data: the N64 draws its own level and models (level.py,
     # models.py); only Halo's renderer and lightmap lookups (left out) read
@@ -196,6 +207,8 @@ def convert(path, output, filesystem=None):
         from .hud import HudExporter
         repacker.policy.hud = HudExporter(xmap, repacker.defs, xmap.name, filesystem)
         print(f"{xmap.name} hud: {repacker.policy.hud.collect()} images")
+        from .sounds import SoundConverter
+        repacker.policy.sounds = SoundConverter(xmap, repacker.defs, Path(filesystem).parent / "sound-cache")
     image = repacker.image
     image.alloc(0)
 
@@ -250,6 +263,11 @@ def convert(path, output, filesystem=None):
         made.write_bytes(bytes(repacker.policy.streams[graph]))
         names.append(share_file(made, anim_dir, ".anim"))
     write_list(Path(output).with_suffix(".anims"), names)
+    # the sounds' files (soundbank.py packs them)
+    sounds = repacker.policy.sounds
+    if sounds is not None:
+        files, made = sounds.write(Path(filesystem).parent / "sound" / f"{xmap.name}.slist")
+        print(f"{xmap.name} sounds: {files} files ({made} new), {sounds.seconds:.0f} s")
     return xmap, repacker, len(out), relocs
 
 

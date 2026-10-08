@@ -43,7 +43,8 @@ void predicted_resources_precache(
 
 #ifdef HALO_N64
 	/* nothing to warm up: the N64 has no texture or sound cache to fill
-	ahead of time (and no sound tags) */
+	ahead of time (and its sound tags are records of its own:
+	port/n64/game/n64_sound_game.c) */
 	return;
 #endif
 

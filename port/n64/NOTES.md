@@ -159,3 +159,27 @@ running notebook. Paths are relative to `source/`.
 - Debugging: "debug_spin=x y z [yaw]" stands the first view there, turning
   or facing yaw degrees. Without objects Wizard's centre draws at ~30 fps:
   the objects (first-person models included) are the larger cost.
+
+## Sound (October 2026)
+
+- Xbox ADPCM is IMA ADPCM in 36-byte blocks a channel: a 4-byte header
+  (predictor, step index) that is not a sample, then 64 samples. ffmpeg's
+  IMA WAV decoder (0x69) outputs the header as a 65th sample: decode it
+  ourselves (tools/n64/sounds.py, table-driven).
+- audioconv64's VADPCM is Huffman-packed by default; libdragon undoes that
+  on the CPU and reads such files synchronously. With a few voices it was
+  a quarter of the CPU in ares: `--wav-compress vadpcm,huffman=false`
+  (12% bigger) streams plain frames by DMA for the RSP to decode.
+- DragonFS keeps a lookup table of every file in RAM (16 bytes each): a
+  thousand sound files would cost 16 KB, so they are one bank file read at
+  offsets (libdragon's `wav64_loadfd` takes an open file at its position;
+  declared in wav64_internal.h only).
+- A stereo wav64 takes two mixer channels (the music: 0 and 1).
+- `mixer_ch_alloc` plans a voice: a free one, else the lowest priority,
+  quietest, oldest; `mixer_ch_play` resets the priority, so set it after.
+- Halo's code that reads sound definitions directly: the announcer's queue
+  and unit speech (longest permutation length: patched to ask
+  n64_sound_definition_length), predicted resources (off on the N64).
+- The Covenant's dialogue tags are 4 KB each (209 vocalization
+  references); their animation graphs reference dialogue too (sleeping,
+  retreating), which merge.py follows.

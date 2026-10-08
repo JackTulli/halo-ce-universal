@@ -599,6 +599,8 @@ void __wrap_game_tick(
 	n64_firefight_tick();
 	__real_game_tick();
 	n64_profile_zone = 0;
+	/* (the audio fed between ticks too: a slow frame runs several) */
+	n64_sound_poll();
 	elapsed = n64_ticks() - start;
 	{
 		extern unsigned long n64_last_tick_us;
