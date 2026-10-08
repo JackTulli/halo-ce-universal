@@ -253,6 +253,11 @@ void widgets_new(
 	short widget_reference_index;
 
 	object->object.first_widget_index = NONE;
+#ifdef HALO_N64
+	/* (the N64 draws no widgets (antennas, flags, glows): none are made, and none are simulated --
+	their point physics alone cast ~1,500 rays a second in Firefight) */
+	return;
+#endif
 	widget_reference_index = 0;
 	if (object_definition->object.widgets.count > 0)
 	{

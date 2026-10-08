@@ -1722,6 +1722,56 @@ void aiming_screen_apply(
 	rotation_index = 0;
 	translation_index = 0;
 
+#ifdef HALO_N64
+	/* on a frame of the grid (the looking screen while a unit looks where
+	it aims): the blends below come to the corner frame alone, normalized
+	twice, and its translation added -- the same numbers without the other
+	three frames; an identity rotation changes nothing */
+	if (yaw_fraction==0.0f && pitch_fraction==0.0f && !compressed)
+	{
+		for (node_index = 0; node_index<animation->node_count; node_index++)
+		{
+			struct real_orientation *orientation = &node_orientations[node_index];
+
+			if (!(node_index&(LONG_BITS-1)))
+			{
+				short long_index = node_index>>LONG_BITS_BITS;
+
+				translation_flags = animation->nodes_with_translation_flags[long_index];
+				rotation_flags = animation->nodes_with_rotation_flags[long_index];
+			}
+			if (TEST_FLAG(rotation_flags, 0))
+			{
+				struct compressed_quaternion_8byte const *compressed00 = (struct compressed_quaternion_8byte const *)data00;
+
+				if (compressed00->i || compressed00->j || compressed00->k ||
+					compressed00->w!=COMPRESSED_QUATERNION_COMPONENT_MAXIMUM)
+				{
+					real_quaternion rotation;
+
+					quaternion_decompress_8byte(compressed00, &rotation);
+					quaternion_normalize(&rotation);
+					quaternion_normalize(&rotation);
+					quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+				}
+				data00 += sizeof(struct compressed_quaternion_8byte);
+			}
+			rotation_flags >>= 1;
+			if (TEST_FLAG(translation_flags, 0))
+			{
+				real_point3d const *translation00 = (real_point3d const *)data00;
+
+				orientation->translation.x += translation00->x;
+				orientation->translation.y += translation00->y;
+				orientation->translation.z += translation00->z;
+				data00 += sizeof(real_point3d);
+			}
+			translation_flags >>= 1;
+		}
+		return;
+	}
+#endif
+
 	for (node_index = 0; node_index<animation->node_count; node_index++)
 	{
 		struct real_orientation *orientation = &node_orientations[node_index];

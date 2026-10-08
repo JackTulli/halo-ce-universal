@@ -412,6 +412,11 @@ long particle_system_new_unattached(
 	real_argb_color const *color,
 	real scale)
 {
+#ifdef HALO_N64
+	/* (the N64 draws no particle systems: none are made, and none are simulated --
+	their point physics alone cast ~1,500 rays a second in Firefight) */
+	return NONE;
+#endif
 	long system_index = datum_new(particle_systems);
 
 	if (system_index != NONE)
@@ -444,6 +449,11 @@ long particle_system_new_attached(
 	long object_index,
 	short attachment_index)
 {
+#ifdef HALO_N64
+	/* (the N64 draws no particle systems: none are made, and none are simulated --
+	their point physics alone cast ~1,500 rays a second in Firefight) */
+	return NONE;
+#endif
 	long system_index = datum_new(particle_systems);
 
 	if (system_index != NONE)

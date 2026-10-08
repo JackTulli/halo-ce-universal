@@ -318,6 +318,12 @@ long contrail_new(
 {
 	long contrail_index = NONE;
 
+#ifdef HALO_N64
+	/* (the N64 draws no contrails: none are made, and none are simulated --
+	their point physics alone cast ~1,500 rays a second in Firefight) */
+	return NONE;
+#endif
+
 	match_assert(
 		"c:\\halo\\SOURCE\\effects\\contrails.c",
 		97,

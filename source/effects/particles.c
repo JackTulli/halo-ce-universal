@@ -826,6 +826,12 @@ void particle_new(
 	real_point3d position;
 	long particle_index;
 
+#ifdef HALO_N64
+	/* (the N64 draws no particles: none are made, and none are simulated --
+	their point physics alone cast ~1,500 rays a second in Firefight) */
+	return;
+#endif
+
 	match_assert_valid_real_vector3d(
 		"c:\\halo\\SOURCE\\effects\\particles.c",
 		109,

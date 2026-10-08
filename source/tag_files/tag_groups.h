@@ -35,7 +35,14 @@ enum tag_field_type
 
 /* ---------- macros */
 
+#if defined(HALO_N64) && defined(HALO_RELEASE)
+/* (what tag_block_get_element_with_size is with its assertions compiled
+out, without the call: the game reaches for block elements constantly) */
+#define TAG_BLOCK_GET_ELEMENT(block_address, index, type) \
+	((type *)((byte *)(block_address)->address + (long)(index) * (long)sizeof(type)))
+#else
 #define TAG_BLOCK_GET_ELEMENT(block_address, index, type) ((type *)tag_block_get_element_with_size((block_address), (index), sizeof(type)))
+#endif
 
 /* ---------- structures */
 
