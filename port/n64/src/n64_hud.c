@@ -67,6 +67,12 @@ static struct
 	views; one view's quads are logged at view 600 */
 	unsigned long begin_ticks, ticks, quad_ticks, meter_ticks, quads, views;
 	int dump;
+	/* what the last sprite quad left in TMEM (tile 0): its pixels and
+	rectangle; NULL when anything else has been loaded since */
+	const void *tmem_pixels;
+	int tmem_s0, tmem_t0, tmem_s1, tmem_t1;
+	/* statistics: quads drawn by the fast path, uploads it skipped */
+	unsigned long fast_quads, skipped_uploads;
 } hud;
 
 static struct meter_entry
@@ -171,6 +177,9 @@ static sprite_t *hud_sprite(int number)
 		}
 		fclose(file);
 		hud.sprites[number] = sprite_load(path);
+		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
+			debugf("hud sprite %d: %dx%d format %d\n", number, hud.sprites[number]->width,
+				hud.sprites[number]->height, (int)sprite_get_format(hud.sprites[number]));
 	}
 	return hud.sprites[number];
 }
@@ -190,6 +199,7 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	hud.x1 = x1;
 	hud.y1 = y1;
 	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
 	hud.begin_ticks = TICKS_READ();
 	hud.recording = -1;
 	hud.view = view;
@@ -230,6 +240,8 @@ void n64_hud_end(void)
 		extern unsigned long n64_emulated_count;
 		static unsigned long emulated;
 
+		debugf("hud: %lu fast quads, %lu uploads skipped\n", hud.fast_quads, hud.skipped_uploads);
+		hud.fast_quads = hud.skipped_uploads = 0;
 		debugf("hud: %lu us per view (quads %lu, meters %lu), %lu quads; %lu emulated instructions per view\n",
 			TICKS_TO_US(hud.ticks) / 240, TICKS_TO_US(hud.quad_ticks) / 240, TICKS_TO_US(hud.meter_ticks) / 240,
 			hud.quads / 240, (n64_emulated_count - emulated) / 240);
@@ -494,15 +506,47 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 
 	if (upright && s1 > s0 && t1 > t0)
 	{
-		rdpq_tex_blit(&surface, quad->x[0], quad->y[0], &(rdpq_blitparms_t){
-			.s0 = is0, .t0 = it0, .width = is1 - is0, .height = it1 - it0,
-			.scale_x = (quad->x[1] - quad->x[0]) / (s1 - s0),
-			.scale_y = (quad->y[2] - quad->y[1]) / (t1 - t0),
-			.flip_x = quad->s[0] > quad->s[2], .flip_y = quad->t[0] > quad->t[2],
-		});
+		int width = is1 - is0, height = it1 - it0;
+		float scale_x = (quad->x[1] - quad->x[0]) / (s1 - s0);
+		float scale_y = (quad->y[2] - quad->y[1]) / (t1 - t0);
+		int flip_x = quad->s[0] > quad->s[2], flip_y = quad->t[0] > quad->t[2];
+		int row_bytes = (TEX_FORMAT_PIX2BYTES(surface_get_format(&surface), width) + 7) & ~7;
+
+		/* a rectangle of the sprite that fits TMEM, unflipped: one upload
+		(none when the last quad's is still there) and one scaled rectangle
+		-- rdpq_tex_blit planned its strips on the CPU for every quad */
+		if (!flip_x && !flip_y && !quad->meter && row_bytes * height <= 4096)
+		{
+			if (hud.tmem_pixels != surface.buffer || hud.tmem_s0 != is0 || hud.tmem_t0 != it0 ||
+				hud.tmem_s1 != is1 || hud.tmem_t1 != it1)
+			{
+				rdpq_tex_upload_sub(TILE0, &surface, NULL, is0, it0, is1, it1);
+				hud.tmem_pixels = surface.buffer;
+				hud.tmem_s0 = is0;
+				hud.tmem_t0 = it0;
+				hud.tmem_s1 = is1;
+				hud.tmem_t1 = it1;
+			}
+			else
+				hud.skipped_uploads++;
+			rdpq_texture_rectangle_scaled(TILE0, quad->x[0], quad->y[0],
+				quad->x[0] + width * scale_x, quad->y[0] + height * scale_y, is0, it0, is1, it1);
+			hud.fast_quads++;
+		}
+		else
+		{
+			hud.tmem_pixels = NULL;
+			rdpq_tex_blit(&surface, quad->x[0], quad->y[0], &(rdpq_blitparms_t){
+				.s0 = is0, .t0 = it0, .width = width, .height = height,
+				.scale_x = scale_x, .scale_y = scale_y, .flip_x = flip_x, .flip_y = flip_y,
+			});
+		}
 	}
 	else if (!quad->meter)
+	{
+		hud.tmem_pixels = NULL;
 		draw_rotated(quad, &surface);
+	}
 	hud.quad_ticks += TICKS_READ() - start;
 }
 
@@ -514,6 +558,7 @@ void n64_hud_text(int x, int y, unsigned long color, const char *text)
 	if (hud.dump)
 		debugf("hud text %d,%d: %s\n", x, y, text);
 	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
 	/* Halo's small font (the menu's), from the top of the text's box */
 	if (!font_loaded)
 	{
@@ -535,6 +580,7 @@ void n64_hud_blip(float x, float y, float size, unsigned long color)
 
 	if (hud.dump)
 		debugf("hud blip %d,%d size %d color %08lx\n", (int)x, (int)y, (int)size, color);
+	hud.tmem_pixels = NULL;
 	if (!(color & 0xF0F0F0) || !hud.blip.buffer)
 		return;
 	set_mode(_mode_blip);

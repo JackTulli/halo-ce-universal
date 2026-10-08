@@ -294,7 +294,7 @@ static void motion_sensor_update(
 	void)
 {
 	long return_eip = get_return_eip();
-	long stack_buffer[0x80];
+	long stack_buffer[STACK_BUFFER_LENGTH];
 	long current_time;
 	short active_sensor_index;
 
@@ -484,7 +484,7 @@ static void motion_sensor_update(
 		short corrupt_index;
 		short buffer_index;
 
-		for (buffer_index = 0x7F; buffer_index >= 0; buffer_index--)
+		for (buffer_index = STACK_BUFFER_LENGTH - 1; buffer_index >= 0; buffer_index--)
 		{
 			if (stack_buffer[buffer_index] != 0x62626262)
 				goto corrupt_stack_found_motion_sensor_update;
@@ -646,7 +646,7 @@ static void render_motion_sensor(
 	point2d const *reference)
 {
 	long return_eip = get_return_eip();
-	long stack_buffer[0x80];
+	long stack_buffer[STACK_BUFFER_LENGTH];
 	director_perspective perspective;
 	struct motion_sensor_player *player;
 	real relative_scale;
@@ -742,7 +742,7 @@ render_motion_sensor_done:
 		short corrupt_index;
 		short buffer_index;
 
-		for (buffer_index = 0x7F; buffer_index >= 0; buffer_index--)
+		for (buffer_index = STACK_BUFFER_LENGTH - 1; buffer_index >= 0; buffer_index--)
 		{
 			if (stack_buffer[buffer_index] != 0x62626262)
 				goto corrupt_stack_found_render_motion_sensor;
