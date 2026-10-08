@@ -59,7 +59,18 @@ enum
 
 #define animation_graph_animation_index_get(block)	((struct animation_graph_animation_index *)((block)->address))
 
+#ifdef HALO_N64
+/* an animation's default data streams from the cartridge like its frames
+(port/n64/src/n64_anim.c): its tag data's flags 1, file offset */
+#define animation_get_default_data(animation) \
+	((animation)->default_data.pad & 1 ? \
+		(byte *)n64_animation_frame((animation)->default_data.file_offset, (animation)->default_data.size, \
+			0, (short)(animation)->default_data.size) : \
+		(byte *)(animation)->default_data.address)
+void *n64_animation_frame(long data_offset, long data_size, short frame_index, short frame_size);
+#else
 #define animation_get_default_data(animation) ((animation)->default_data.address)
+#endif
 
 /* ---------- structures */
 

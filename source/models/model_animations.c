@@ -372,6 +372,24 @@ void animation_get_x_offsets(
 
 	for (frame_index = 0; frame_index < animation->frame_count; frame_index++)
 	{
+#ifdef HALO_N64
+		/* (the frame info streams from the cartridge, a frame at a time:
+		animation_get_frame_info; frame_info is not advanced past it) */
+		if (animation->frame_info.pad & 1)
+		{
+			short sizes[4] = {0, sizeof(struct animation_frame_info_dx_dy), sizeof(struct animation_frame_info_dx_dy_dyaw),
+				sizeof(struct animation_frame_info_dx_dy_dz_dyaw)};
+
+			if (animation->frame_info_type >= 1 && animation->frame_info_type <= 3)
+			{
+				x_offset += ((struct animation_frame_info_dx_dy const *)animation_get_frame_info(animation, frame_index,
+					sizes[animation->frame_info_type]))->dx;
+			}
+			if (frame_index == animation->private_key_frame_index)
+				key_x_offset = x_offset;
+			continue;
+		}
+#endif
 		switch (animation->frame_info_type)
 		{
 		case 1:

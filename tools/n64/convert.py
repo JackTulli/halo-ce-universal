@@ -104,10 +104,15 @@ class N64Policy(Policy):
             if offset >= 1 << 24 or len(self.graphs) > 255:
                 raise ValueError("an animation graph past 16 MB, or 256 graphs in a map")
             return External(offset | (self.graphs.index(tag.index) << 24), len(data))
+        # an animation's default pose and its per-frame root motion stream
+        # too (model_animation_definitions.h/.c, HALO_N64): 190 KB of the
+        # Covenant's graphs, and of every map's own
         if path.endswith("animations[].default data"):
-            return self.animation_data(struct_raw, raw, True)
+            data = self.animation_data(struct_raw, raw, True)
+            # (read whole: it must fit one of the stream cache's 4 KB chunks)
+            return self.stream(tag, data) if len(data) <= 4096 else data
         if path.endswith("animations[].frame info"):
-            return swap_array(raw, 4)
+            return self.stream(tag, swap_array(raw, 4))
         if path.endswith("UnicodeStringList.strings[].string") or path.endswith("HUDMessageText.text data"):
             return swap_array(raw, 2)
         if path.endswith("StringList.strings[].string") or path.endswith("Scenario.script string data"):
@@ -119,6 +124,19 @@ class N64Policy(Policy):
         if path.endswith("ScenarioStructureBSP.sound pas data"):
             return raw
         return None
+
+    def stream(self, tag, data):
+        """data that streams from the cartridge with the graph's frames"""
+        if tag.index not in self.streams:
+            self.streams[tag.index] = bytearray()
+            self.graphs.append(tag.index)
+        stream = self.streams[tag.index]
+        stream += b"\0" * ((-len(stream)) % 8)
+        offset = len(stream)
+        stream += data
+        if offset >= 1 << 24 or len(self.graphs) > 255:
+            raise ValueError("an animation graph past 16 MB, or 256 graphs in a map")
+        return External(offset | (self.graphs.index(tag.index) << 24), len(data))
 
     def animation_data(self, struct_raw, raw, default):
         o = self.anim

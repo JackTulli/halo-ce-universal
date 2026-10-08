@@ -130,7 +130,13 @@ enum
 #endif
 
 	MAXIMUM_SERVER_UPDATES = 32,
+#ifdef HALO_N64
+	/* a local game holds an update or two (the N64 plays no networked games):
+	50 KB of the N64's memory */
+	MAXIMUM_CLIENT_UPDATES = 32,
+#else
 	MAXIMUM_CLIENT_UPDATES = 128,
+#endif
 
 	/* the one-shot buttons: they fire on the tick they are first seen and stay latched until released */
 	LATCHED_CONTROL_FLAGS =

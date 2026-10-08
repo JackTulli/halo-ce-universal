@@ -333,13 +333,20 @@ struct ai_debug_state
 	real field_4C814;
 	boolean field_4C818;
 	char __unknown4C819[3];
+#ifndef HALO_N64 /* the AI's path and firing position records (200 KB): the
+	N64 build has none of the AI that fills them */
 	struct path_state path_state;
+#endif
 	boolean field_608A8;
 	char __unknown608A9[91];
+#ifndef HALO_N64
 	struct path_debug_storage path_storage;
+#endif
 	boolean evaluation_context_valid;
 	char __unknown7D381[3];
+#ifndef HALO_N64
 	struct firing_position_evaluation_context evaluation_context;
+#endif
 	struct ai_debug_actor_record actor_record[NUMBER_OF_AI_DEBUG_ACTOR_RECORDS];
 	long field_859F4;
 	boolean field_859F8;
