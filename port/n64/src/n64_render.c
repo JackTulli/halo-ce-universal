@@ -902,6 +902,20 @@ static void record_material(int index)
 		(debug_cull_front ? T3D_FLAG_CULL_FRONT : (material->flags & MATERIAL_TWO_SIDED) ? 0 : T3D_FLAG_CULL_BACK));
 }
 
+/* a box (world units) wholly past the fog's end, where it would be drawn
+in the fog's colour alone */
+static int beyond_fog(float x0, float y0, float z0, float x1, float y1, float z1)
+{
+	float dx, dy, dz;
+
+	if (!renderer.fog)
+		return 0;
+	dx = renderer.eye[0] < x0 ? x0 - renderer.eye[0] : renderer.eye[0] > x1 ? renderer.eye[0] - x1 : 0.f;
+	dy = renderer.eye[1] < y0 ? y0 - renderer.eye[1] : renderer.eye[1] > y1 ? renderer.eye[1] - y1 : 0.f;
+	dz = renderer.eye[2] < z0 ? z0 - renderer.eye[2] : renderer.eye[2] > z1 ? renderer.eye[2] - z1 : 0.f;
+	return dx * dx + dy * dy + dz * dz > renderer.fog_end * renderer.fog_end;
+}
+
 static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 {
 	int visible_count = 0;
@@ -925,14 +939,19 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 		if (view->visible_clusters && c < view->cluster_count &&
 			!(view->visible_clusters[c >> 5] & (1UL << (c & 31))))
 			continue;
-		if (!t3d_frustum_vs_aabb(&viewport->viewFrustum, &minimum, &maximum))
+		if (!t3d_frustum_vs_aabb(&viewport->viewFrustum, &minimum, &maximum) ||
+			beyond_fog(cluster->minimum[0], cluster->minimum[1], cluster->minimum[2],
+				cluster->maximum[0], cluster->maximum[1], cluster->maximum[2]))
 			continue;
 		renderer.clusters++;
 		for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
 		{
 			struct level_batch *batch = &level.batches[b];
 
-			if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum))
+			if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
+				!beyond_fog(batch->minimum[0] * (1.f / WORLD_SCALE), batch->minimum[1] * (1.f / WORLD_SCALE),
+					batch->minimum[2] * (1.f / WORLD_SCALE), batch->maximum[0] * (1.f / WORLD_SCALE),
+					batch->maximum[1] * (1.f / WORLD_SCALE), batch->maximum[2] * (1.f / WORLD_SCALE)))
 				level.visible[visible_count++] = (uint16_t)b;
 		}
 	}
@@ -1000,11 +1019,11 @@ void n64_render_view(const struct n64_view *view)
 	renderer.unstretched = renderer.chunky;
 	/* the view's shape on the screen (in chunky mode drawn half as wide) */
 	renderer.aspect = (float)(view->x1 - view->x0) / (float)(view->y1 - view->y0);
-	/* nothing past the fog's end: the far plane culls the level's batches
-	and the objects beyond it */
+	/* (the far plane stays the game's: tiny3d does not clip at it, so big
+	triangles across a near far plane came and went as the eye moved; what
+	lies wholly past the fog's end is left out instead, beyond_fog) */
 	t3d_viewport_set_perspective(viewport, view->vertical_field_of_view, renderer.aspect,
-		view->z_near * WORLD_SCALE,
-		(renderer.fog && renderer.fog_end < view->z_far ? renderer.fog_end : view->z_far) * WORLD_SCALE);
+		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
 	renderer.fov = view->vertical_field_of_view;
 	renderer.eye[0] = view->position[0];
 	renderer.eye[1] = view->position[1];
@@ -1274,6 +1293,10 @@ static void render_object(const struct n64_object *object)
 		float dz = object->center[2] - renderer.eye[2];
 		float distance = sqrtf(dx * dx + dy * dy + dz * dz);
 		float pixels = distance > object->radius ? object->radius * 2.0f * renderer.pixels_per_unit / distance : 1e9f;
+
+		/* wholly past the fog's end */
+		if (renderer.fog && distance - object->radius > renderer.fog_end)
+			return;
 
 		/* (a quarter of the screen: the far versions sooner) */
 		if (renderer.view_total > 2)

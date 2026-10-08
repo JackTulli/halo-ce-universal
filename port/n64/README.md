@@ -116,7 +116,10 @@ read the CPU's state through ares' GDB server without gdb.
 
 8 October, performance: the views see 55 world units (one player), 45
 (two) or 32 (three or four) into fog of the map's own colour (its sky's
-outdoor fog), nothing past it; three or four players get lighter levels
+outdoor fog), nothing wholly past it (left out by distance: tiny3d does
+not clip at the far plane, which stays the game's, so a far plane at the
+fog's end made big triangles across it come and go); three or four players
+get lighter levels
 (`<map>-low.lvl`, no lightmap splitting) and models (`<map>-low.mdl`: the
 objects at half their triangles, first-person views at 350); the level's
 visible batches are drawn a material at a time and the objects' batches
