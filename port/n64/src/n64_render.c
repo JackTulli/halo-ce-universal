@@ -1477,6 +1477,7 @@ void n64_profile_poll(void);
 
 void n64_render_frame_end(void)
 {
+	n64_sound_poll();
 	/* (measuring, "debug_fog_test=5": each frame's counts) */
 	if (debug_fog_test == 5)
 	{

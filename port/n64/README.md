@@ -114,6 +114,16 @@ read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
 
+8 October, sound starts: the main menu plays Halo's title music
+(`tools/n64/music.py`: ui.map's title1 looping sound, its chains of Xbox
+ADPCM permutations decoded -- 64 samples a 36-byte block, as
+`port/linux/src/dsound_sdl.c`; ffmpeg's IMA WAV decoder adds a 65th --
+resampled to 22 kHz and compressed to VADPCM wav64 by audioconv64, 5 MB;
+`port/n64/src/n64_sound.c`: libdragon's audio and mixer, the start once
+then a random loop version after another, streamed from the cartridge;
+the mixer fed at every frame's end). Halo's `profile_dump` is renamed on
+the N64 (libdragon's audio brings its own).
+
 8 October, Firefight (`port/n64/game/n64_firefight.c`): the title's
 FIREFIGHT entry, 1-4 players, a map and a difficulty, against waves of
 the campaign's grunts, jackals and elites (imported into every

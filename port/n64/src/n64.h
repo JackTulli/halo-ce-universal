@@ -162,6 +162,15 @@ void n64_render_set_chunky(int on);
 /* the FPS counter in the corner (off in the menu) */
 void n64_render_show_counter(int on);
 
+/* ---------- sound (n64_sound.c): the main menu's music so far */
+
+void n64_sound_initialize(void);
+/* the mixer fed (every frame's end) and the music's next track started */
+void n64_sound_poll(void);
+/* the title music from its start (not again while it plays), and off */
+void n64_music_start(void);
+void n64_music_stop(void);
+
 /* ---------- Halo's fonts (n64_font.c): rom:/fonts/<name>.* from
 tools/n64/ui.py (large, small, interstate) */
 

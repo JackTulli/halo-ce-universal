@@ -2,7 +2,8 @@
   "comment": "Nintendo 64 build inputs (tools/n64_build.py). See port/n64/README.md.",
   "optimisation": "-O2",
   "defines": [
-    "HALO_RELEASE"
+    "HALO_RELEASE",
+    "profile_dump=halo_profile_dump"
   ],
   "drop_defines": [],
   "exclude_dirs": [

@@ -163,6 +163,8 @@ static void menu_load(void)
 		load_scene();
 		menu.loaded = 1;
 	}
+	/* the title music (going on where it was if the menu is back) */
+	n64_music_start();
 	/* the game's level and models give way to the scene's */
 	n64_render_load_scene("ui");
 	n64_render_set_clear_color(0x000000);
@@ -723,6 +725,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_show_counter(1);
 			n64_render_set_clear_color(0x60708C);
 			menu_unload();
+			n64_music_stop();
 			return 1;
 		}
 	}

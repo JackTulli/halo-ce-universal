@@ -221,6 +221,8 @@ def main():
            description="N64 MAP $out")
     n.rule("convert_ui", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.ui $in --filesystem $fsdir",
            description="N64 MENU $out")
+    n.rule("convert_music", command="cd $root && $python -m tools.n64.music $in --filesystem $fsdir",
+           description="N64 MUSIC $out")
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
     n.rule("mkdfs", command="cd $root && $python -m tools.n64.prune $fsdir $maps && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags",
            description="N64 DFS $out")
@@ -240,6 +242,11 @@ def main():
     n.build([str(ui_scene), str(fsdir / "levels" / "ui.mdl"), str(fsdir / "fonts" / "small.glyphs")], "convert_ui",
             "build/xbox/disc/maps/ui.map", implicit=tool_sources, variables={"fsdir": str(fsdir)})
     fs_files.append(str(ui_scene))
+    # the main menu's music (tools/n64/music.py, port/n64/src/n64_sound.c)
+    music = [str(fsdir / "music" / f"title_{name}.wav64") for name in ("in", "loop0", "loop1", "loop2")]
+    n.build(music, "convert_music", "build/xbox/disc/maps/ui.map", implicit=tool_sources,
+            variables={"fsdir": str(fsdir)})
+    fs_files.append(music[0])
     # every debug switch the cartridge can carry (n64_debug_flag): the ones
     # port.json does not ask for are removed, so none lingers in a build
     known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
