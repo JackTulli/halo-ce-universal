@@ -41,6 +41,8 @@ enum
 	MATERIAL_CHANGE_COLOR = 16,
 	/* a transparent model shader drawn as a cut-out glow, unlit */
 	MATERIAL_GLOW = 32,
+	/* a sky's batch: drawn first, without depth (tools/n64/ui.py) */
+	MATERIAL_SKY = 64,
 };
 
 /* ---------- the level file */
@@ -122,8 +124,10 @@ struct model_record
 	uint8_t node_count, region_count;
 	uint16_t first_region, pad;
 	uint16_t first_batch, batch_count;
-	/* the model's vertices, then its indices, in the file */
-	uint32_t data_offset, vertex_bytes, index_bytes;
+	/* the model's vertices, then its indices: rom:/mdl/<data_name>.bin
+	(shared by content) */
+	char data_name[16];
+	uint32_t vertex_bytes, index_bytes;
 	/* its far version's batches (after first_batch), or none */
 	uint16_t far_first, far_count;
 };
@@ -144,6 +148,8 @@ and dropped, least recently drawn first, past this size (a model drawn in
 the last frames in flight stays). A texture stays while a loaded model
 uses it: each batch's texture and render mode are recorded with it. */
 #define MODEL_CACHE_BYTES (448 * 1024)
+/* heap a model load leaves free (the game's own allocations, rspq's) */
+#define MODEL_HEAP_MARGIN (96 * 1024)
 
 struct loaded_model
 {
@@ -221,6 +227,7 @@ static struct
 	/* the view's eye (world units) and how many pixels a unit at distance
 	one covers, for leaving out objects too small to see */
 	float eye[3], pixels_per_unit;
+	color_t clear_color;
 	T3DMat4FP *matrices[FRAMES_IN_FLIGHT];
 	int matrix_count;
 	T3DViewport *viewport;
@@ -232,6 +239,13 @@ static struct
 	unsigned long long fps_window_start;
 	int fps_frames;
 	int fps;
+	int hide_counter;
+	/* chunky mode: as asked (n64_render_set_chunky), and in this frame;
+	whether the current view's half-width picture is still to be widened */
+	int want_chunky, chunky;
+	int unstretched;
+	/* the current view's width over its height */
+	float aspect;
 } renderer;
 
 /* the game's last tick, in microseconds (n64_game.c), for the counter */
@@ -240,8 +254,69 @@ unsigned long n64_last_tick_us;
 end, and the RSP/RDP queue's wait inside n64_render_frame_end */
 static unsigned long render_start_ticks, render_cpu_us, render_wait_us;
 
+void n64_render_set_clear_color(unsigned long rgb)
+{
+	renderer.clear_color = RGBA32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 0xFF);
+}
+
+static void load_models(const char *map_name);
+
+void n64_render_set_chunky(int on)
+{
+	renderer.want_chunky = on != 0;
+}
+
+void n64_render_show_counter(int on)
+{
+	renderer.hide_counter = !on;
+}
+
+/* chunky mode: a view's 3D is drawn into the left half of its rectangle,
+then each of its pixels doubled across the whole rectangle, before its HUD
+(drawn at full width). The RDP widens it in place, in strips from the right:
+a strip's pixels land at or right of where they are read, over strips
+already widened */
+static void stretch_view(void)
+{
+	const short *rect;
+	surface_t picture;
+	int x0, y0, x1, y1, half;
+
+	if (!renderer.unstretched)
+		return;
+	renderer.unstretched = 0;
+	rect = renderer.rects[renderer.view_count - 1];
+	x0 = rect[0], y0 = rect[1], x1 = rect[2], y1 = rect[3];
+	half = (x1 - x0) / 2;
+	/* the RDP's writes of the 3D reach memory before it reads them back
+	(the pipeline drained; a full sync would also stall the RSP) */
+	rdpq_sync_pipe();
+	rdpq_set_scissor(x0, y0, x1, y1);
+	rdpq_set_mode_standard();
+	rdpq_mode_filter(FILTER_POINT);
+	picture = surface_make_sub(renderer.surface, 0, 0, renderer.surface->width, renderer.surface->height);
+	for (int s = x0 + half; s > x0;)
+	{
+		int width = s - x0 < 32 ? s - x0 : 32;
+
+		s -= width;
+		rdpq_tex_blit(&picture, x0 + 2 * (s - x0), y0, &(rdpq_blitparms_t){
+			.s0 = s, .t0 = y0, .width = width, .height = y1 - y0, .scale_x = 2.f,
+		});
+	}
+	renderer.current_texture = -2;
+}
+
+/* a scene's models without a level (the menu's: levels/<name>.mdl) */
+void n64_render_load_scene(const char *name)
+{
+	n64_render_unload_level();
+	load_models(name);
+}
+
 void n64_render_initialize(void)
 {
+	renderer.clear_color = RGBA32(96, 112, 140, 0xFF);
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
 	rdpq_init();
 	t3d_init((T3DInitParams){});
@@ -282,7 +357,7 @@ static sprite_t *acquire_texture(int texture)
 		return NULL;
 	if (!models.sprites[texture])
 	{
-		snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", models.map_name, models.textures[texture].name);
+		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", models.textures[texture].name);
 		models.sprites[texture] = sprite_load(path);
 		if (!models.sprites[texture])
 			return NULL;
@@ -356,12 +431,16 @@ static void drop_model(int index)
 /* the render modes of model batches, recorded once each: textured (the
 doubling is in the texture), shaded by the baked sky light, one RDP cycle;
 glows unlit and cut out; untextured */
-enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, NUMBER_OF_MODEL_MODES };
+enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, MODEL_MODES_WITH_DEPTH,
+	/* the same, for skies: no depth */
+	NUMBER_OF_MODEL_MODES = MODEL_MODES_WITH_DEPTH * 2 };
 static rspq_block_t *model_modes[NUMBER_OF_MODEL_MODES];
 
 static int model_mode(sprite_t *sprite, int flags)
 {
-	return !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : MODEL_MODE_TEXTURED;
+	int mode = !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : MODEL_MODE_TEXTURED;
+
+	return (flags & MATERIAL_SKY) ? mode + MODEL_MODES_WITH_DEPTH : mode;
 }
 
 static void record_model_modes(void)
@@ -370,18 +449,20 @@ static void record_model_modes(void)
 	{
 		if (model_modes[mode])
 			continue;
+		int kind = mode % MODEL_MODES_WITH_DEPTH;
+
 		rspq_block_begin();
 		rdpq_mode_begin();
 		rdpq_set_mode_standard();
-		rdpq_mode_zbuf(true, true);
+		rdpq_mode_zbuf(mode < MODEL_MODES_WITH_DEPTH, mode < MODEL_MODES_WITH_DEPTH);
 		rdpq_mode_persp(true);
 		rdpq_mode_filter(FILTER_BILINEAR);
-		if (mode == MODEL_MODE_GLOW)
+		if (kind == MODEL_MODE_GLOW)
 		{
 			rdpq_mode_combiner(RDPQ_COMBINER_TEX);
 			rdpq_mode_alphacompare(128);
 		}
-		else if (mode == MODEL_MODE_TEXTURED)
+		else if (kind == MODEL_MODE_TEXTURED)
 			rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
 		else
 			rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
@@ -421,9 +502,17 @@ static int load_model(int index)
 	if (loaded->data)
 		return 1;
 	/* room: drop the models drawn longest ago, none drawn in the frames
-	still in flight (their textures go with the last model using them) */
-	while (models.loaded_bytes + models.texture_bytes + size > MODEL_CACHE_BYTES)
+	still in flight (their textures go with the last model using them),
+	past the cache's size or while the heap is short: the model, its
+	recordings (~1 KB a batch), its textures (~2 KB each) and a margin */
+	unsigned long needed = size + (model->far_first + model->far_count) * 3072 + MODEL_HEAP_MARGIN;
+
+	for (;;)
 	{
+		int short_of_heap = n64_heap_free() < needed;
+
+		if (models.loaded_bytes + models.texture_bytes + size <= MODEL_CACHE_BYTES && !short_of_heap)
+			break;
 		int oldest = -1;
 
 		for (int i = 0; i < models.header->model_count; i++)
@@ -433,14 +522,23 @@ static int load_model(int index)
 				oldest = i;
 		}
 		if (oldest < 0)
+		{
+			if (short_of_heap)
+				return 0;
 			break;
+		}
 		drop_model(oldest);
+		if (short_of_heap)
+			rspq_wait(); /* the dropped model's memory comes back once the RSP is done with it */
 	}
 	loaded->data = memalign(16, size);
 	loaded->setups = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
 	loaded->blocks = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
-	file = loaded->data && loaded->setups && loaded->blocks ? fopen(models.path, "rb") : NULL;
-	if (!file || fseek(file, model->data_offset, SEEK_SET) || fread(loaded->data, 1, size, file) != size)
+	char path[48];
+
+	snprintf(path, sizeof(path), "rom:/mdl/%.16s.bin", model->data_name);
+	file = loaded->data && loaded->setups && loaded->blocks ? fopen(path, "rb") : NULL;
+	if (!file || fread(loaded->data, 1, size, file) != size)
 	{
 		if (file)
 			fclose(file);
@@ -500,6 +598,8 @@ static void load_models(const char *map_name)
 		free(models.data);
 		memset(&models, 0, sizeof(models));
 	}
+	if (!map_name)
+		return;
 	snprintf(models.path, sizeof(models.path), "rom:/levels/%s.mdl", map_name);
 	snprintf(models.map_name, sizeof(models.map_name), "%s", map_name);
 	file = fopen(models.path, "rb");
@@ -509,7 +609,7 @@ static void load_models(const char *map_name)
 		return;
 	}
 	/* the tables stay in memory; vertices_offset is where they end */
-	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64O", 4) || header.version != 3)
+	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64O", 4) || header.version != 4)
 	{
 		fclose(file);
 		assertf(0, "%s was converted for another build", models.path);
@@ -543,12 +643,8 @@ static void load_models(const char *map_name)
 	debugf("n64: %d models, %ld KB of tables\n", models.header->model_count, (long)header.vertices_offset / 1024);
 }
 
-int n64_render_load_level(const char *map_name)
+void n64_render_unload_level(void)
 {
-	char path[64];
-	FILE *file;
-	long size;
-
 	if (level.data)
 	{
 		rspq_wait();
@@ -564,7 +660,17 @@ int n64_render_load_level(const char *map_name)
 		free(level.data);
 		memset(&level, 0, sizeof(level));
 	}
+}
+
+int n64_render_load_level(const char *map_name)
+{
+	char path[64];
+	FILE *file;
+	long size;
+
+	n64_render_unload_level();
 	snprintf(path, sizeof(path), "rom:/levels/%s.lvl", map_name);
+	debugf("n64: loading level %s, %lu KB of heap left\n", map_name, n64_heap_free() / 1024);
 	file = fopen(path, "rb");
 	if (!file)
 	{
@@ -602,10 +708,11 @@ int n64_render_load_level(const char *map_name)
 		t3d_tri_sync();
 		level.blocks[b] = rspq_block_end();
 	}
+	debugf("n64: level batches recorded, %lu KB of heap left\n", n64_heap_free() / 1024);
 	level.sprites = calloc(level.header->texture_count, sizeof(sprite_t *));
 	for (int i = 0; i < level.header->texture_count; i++)
 	{
-		snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", map_name, level.textures[i].name);
+		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", level.textures[i].name);
 		level.sprites[i] = sprite_load(path);
 	}
 	load_models(map_name);
@@ -622,12 +729,14 @@ void n64_render_frame_begin(void)
 {
 	unsigned long before_display = TICKS_READ();
 
+	renderer.chunky = renderer.want_chunky;
+	renderer.unstretched = 0;
 	renderer.surface = display_get();
 	render_wait_us = TICKS_TO_US(TICKS_READ() - before_display);
 	render_start_ticks = TICKS_READ();
 	rdpq_attach(renderer.surface, display_get_zbuf());
 	t3d_frame_start();
-	t3d_screen_clear_color(RGBA32(96, 112, 140, 0xFF));
+	t3d_screen_clear_color(renderer.clear_color);
 	t3d_screen_clear_depth();
 	renderer.view_count = 0;
 	renderer.frame_index++;
@@ -675,7 +784,7 @@ static void set_material(int index)
 		((material->flags & MATERIAL_TWO_SIDED) ? 0 : T3D_FLAG_CULL_BACK));
 }
 
-static void draw_level(T3DViewport *viewport)
+static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 {
 	int current_material = -1;
 
@@ -688,7 +797,14 @@ static void draw_level(T3DViewport *viewport)
 		T3DVec3 minimum = {{cluster->minimum[0] * WORLD_SCALE, cluster->minimum[1] * WORLD_SCALE, cluster->minimum[2] * WORLD_SCALE}};
 		T3DVec3 maximum = {{cluster->maximum[0] * WORLD_SCALE, cluster->maximum[1] * WORLD_SCALE, cluster->maximum[2] * WORLD_SCALE}};
 
-		if (!cluster->batch_count || !t3d_frustum_vs_aabb(&viewport->viewFrustum, &minimum, &maximum))
+		if (!cluster->batch_count)
+			continue;
+		/* out of the eye's potentially visible set (a cluster past the
+		BSP's own, surfaces no cluster listed, is always drawn) */
+		if (view->visible_clusters && c < view->cluster_count &&
+			!(view->visible_clusters[c >> 5] & (1UL << (c & 31))))
+			continue;
+		if (!t3d_frustum_vs_aabb(&viewport->viewFrustum, &minimum, &maximum))
 			continue;
 		renderer.clusters++;
 		for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
@@ -719,6 +835,7 @@ void n64_render_view(const struct n64_view *view)
 
 	if (renderer.view_count >= MAXIMUM_VIEWS)
 		return;
+	stretch_view();
 	renderer.rects[renderer.view_count][0] = view->x0;
 	renderer.rects[renderer.view_count][1] = view->y0;
 	renderer.rects[renderer.view_count][2] = view->x1;
@@ -731,8 +848,12 @@ void n64_render_view(const struct n64_view *view)
 			view->forward[0], view->forward[1], view->forward[2], view->up[0], view->up[1], view->up[2],
 			view->vertical_field_of_view, view->x0, view->y0, view->x1, view->y1);
 	}
-	t3d_viewport_set_area(viewport, view->x0, view->y0, view->x1 - view->x0, view->y1 - view->y0);
-	t3d_viewport_set_projection(viewport, view->vertical_field_of_view,
+	t3d_viewport_set_area(viewport, view->x0, view->y0, renderer.chunky ? (view->x1 - view->x0) / 2 : view->x1 - view->x0,
+		view->y1 - view->y0);
+	renderer.unstretched = renderer.chunky;
+	/* the view's shape on the screen (in chunky mode drawn half as wide) */
+	renderer.aspect = (float)(view->x1 - view->x0) / (float)(view->y1 - view->y0);
+	t3d_viewport_set_perspective(viewport, view->vertical_field_of_view, renderer.aspect,
 		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
 	renderer.fov = view->vertical_field_of_view;
 	renderer.eye[0] = view->position[0];
@@ -758,7 +879,7 @@ void n64_render_view(const struct n64_view *view)
 	t3d_light_set_ambient(white);
 	t3d_light_set_count(0);
 	render_phase(PHASE_LEVEL);
-	draw_level(viewport);
+	draw_level(viewport, view);
 	render_phase(PHASE_OBJECTS);
 	renderer.first_person = 0;
 	renderer.viewport = viewport;
@@ -843,7 +964,7 @@ void n64_render_first_person_begin(void)
 		return;
 	/* the game's first-person near and far planes (rasterizer.c), and the
 	weapon in front of whatever the world put in this view's depth */
-	t3d_viewport_set_projection(viewport, renderer.fov, 0.01171875f * WORLD_SCALE, 16.0f * WORLD_SCALE);
+	t3d_viewport_set_perspective(viewport, renderer.fov, renderer.aspect, 0.01171875f * WORLD_SCALE, 16.0f * WORLD_SCALE);
 	t3d_viewport_attach(viewport);
 	t3d_screen_clear_depth();
 	renderer.current_texture = -2;
@@ -885,6 +1006,7 @@ static void render_phase(int phase)
 
 void n64_render_hud_phase(void)
 {
+	stretch_view();
 	render_phase(PHASE_HUD);
 }
 
@@ -1059,6 +1181,8 @@ static void draw_counter(void)
 		renderer.fps_frames = 0;
 		renderer.fps_window_start = now;
 	}
+	if (renderer.hide_counter)
+		return;
 	rdpq_sync_pipe();
 	rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 	rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 12, "%d.%d FPS tick %lu.%lu draw %lu.%lu wait %lu.%lu",
@@ -1070,6 +1194,7 @@ void n64_profile_poll(void);
 
 void n64_render_frame_end(void)
 {
+	stretch_view();
 	render_phase(PHASE_NONE);
 	n64_profile_poll();
 	draw_crosshairs();

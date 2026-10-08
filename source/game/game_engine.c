@@ -4238,6 +4238,19 @@ void game_engine_update_non_deterministic(
 			if (game_engine_globals.postgame_progress > 1.0f)
 				game_engine_globals.postgame_progress = 1.0f;
 
+#ifdef HALO_N64
+			/* back to the N64's own menu (port/n64/src/n64_menu.c), which
+			shows the results: any player's A or START once the scores are
+			up, or by itself after fifteen seconds */
+			game_engine_globals.postgame_timer -= delta_seconds;
+			if (game_engine_globals.postgame_progress >= 1.0f &&
+				(test_any_gamepad_button(_gamepad_analog_button_a) ||
+				test_any_gamepad_button(_gamepad_binary_button_start) ||
+				game_engine_globals.postgame_timer < -15.0f))
+			{
+				main_goto_main_menu();
+			}
+#else
 			if (test_any_gamepad_button(0) || test_any_gamepad_button(12))
 			{
 				if (global_network_game_server_get())
@@ -4248,6 +4261,7 @@ void game_engine_update_non_deterministic(
 			{
 				network_game_abort();
 			}
+#endif
 			break;
 		}
 	}

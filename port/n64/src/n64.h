@@ -103,7 +103,10 @@ struct n64_view
 	float z_near, z_far;
 	short x0, y0, x1, y1;
 	short local_player_index;
-	short pad;
+	/* the level's clusters seen from the eye's (Halo's potentially visible
+	set: a bit per cluster), or NULL for all of them */
+	short cluster_count;
+	const unsigned long *visible_clusters;
 };
 
 /* an object to draw in the current view: its model (the model tag's index),
@@ -134,9 +137,54 @@ void n64_render_frame_begin(void);
 void n64_render_view(const struct n64_view *view);
 /* after n64_render_view: objects in that view */
 void n64_render_object(const struct n64_object *object);
+/* the menu: a scene's models without a level (levels/<name>.mdl; NULL:
+none), the colour a frame is cleared to (0xRRGGBB) */
+void n64_render_load_scene(const char *name);
+void n64_render_unload_level(void);
+void n64_render_set_clear_color(unsigned long rgb);
 /* then the first-person weapon: its own near plane, drawn over the world */
 void n64_render_first_person_begin(void);
 void n64_render_frame_end(void);
+/* chunky mode (the menu's settings): from the next frame on, the views'
+3D is drawn half as wide and its pixels doubled across (the HUD and text
+stay at full width) */
+void n64_render_set_chunky(int on);
+/* the FPS counter in the corner (off in the menu) */
+void n64_render_show_counter(int on);
+
+/* ---------- Halo's fonts (n64_font.c): rom:/fonts/<name>.* from
+tools/n64/ui.py (large, small, interstate) */
+
+struct n64_font;
+struct n64_font *n64_font_load(const char *name);
+void n64_font_free(struct n64_font *font);
+int n64_font_height(const struct n64_font *font);
+int n64_font_ascent(const struct n64_font *font);
+int n64_text_width(const struct n64_font *font, const char *text);
+/* text with its baseline at y; color 0xAARRGGBB */
+void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text);
+
+/* ---------- the menu (n64_menu.c): split screen multiplayer's setup */
+
+struct n64_menu_choice
+{
+	int game_type; /* n64_menu_game_variant */
+	int map; /* n64_menu_map_folder */
+	int score; /* to win: kills, flags, minutes or laps */
+	/* the players: each one's controller port, team (0 red, 1 blue) and
+	Halo colour index */
+	int player_count;
+	int ports[4], teams[4], colors[4];
+};
+
+/* runs the menu until a game is chosen (after a game, its results first:
+lines of text); the choice keeps what was chosen last time */
+int n64_menu_run(struct n64_menu_choice *choice, const char *const *results, int result_count);
+const char *n64_menu_map_folder(int map);
+const char *n64_menu_map_name(int map);
+int n64_menu_map_from_folder(const char *folder);
+const char *n64_menu_game_variant(int game_type);
+int n64_menu_game_teams(int game_type);
 
 /* ---------- the HUD (n64_hud.c): drawn by the game's own HUD code
 (port/n64/game/n64_hud_game.c passes its quads, text and blips on).

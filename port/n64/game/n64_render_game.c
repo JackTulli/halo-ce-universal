@@ -27,6 +27,9 @@ renderer's (port/n64/src/n64_render.c).
 #include "models/model_definitions.h"
 #include "items/weapon_definitions.h"
 #include "tag_files/tag_groups.h"
+#include "scenario/scenario.h"
+#include "structures/structures.h"
+#include "structures/structure_bsp_definitions.h"
 
 #include "../src/n64.h"
 
@@ -168,6 +171,10 @@ void render_initialize_for_new_map(
 
 /* ---------- objects */
 
+/* the eye's potentially visible set, for the objects in a view */
+static unsigned long const *n64_view_clusters;
+static short n64_view_cluster_count;
+
 /* every visible object but the viewer's own body (the view is first person) */
 static void render_objects_for_view(
 	short local_player_index,
@@ -183,6 +190,14 @@ static void render_objects_for_view(
 	object_iterator_new(&iterator, _object_mask_all, FLAG(_object_header_visible_bit));
 	while ((object = object_iterator_next(&iterator)) != NULL)
 	{
+		/* in a cluster the eye cannot see */
+		{
+			short cluster = object->object.location.cluster_index;
+
+			if (n64_view_clusters && cluster >= 0 && cluster < n64_view_cluster_count &&
+				!(n64_view_clusters[cluster >> 5] & (1UL << (cluster & 31))))
+				continue;
+		}
 		struct object_definition *definition;
 		struct n64_object n64;
 
@@ -313,6 +328,8 @@ void render_frame(
 		view.x1 = camera->viewport_bounds.x1 / 2;
 		view.y1 = camera->viewport_bounds.y1 / 2;
 		view.local_player_index = window->local_player_index;
+		view.visible_clusters = NULL;
+		view.cluster_count = 0;
 		if (window_index == 0 && n64_debug_flag("debug_chase"))
 		{
 			/* debugging: the first view follows its player from behind */
@@ -365,6 +382,24 @@ void render_frame(
 				view.up[1] = 0.f;
 				view.up[2] = 1.f;
 			}
+		}
+		{
+			/* the clusters the eye can see (Halo's potentially visible set) */
+			struct location location;
+			struct structure_bsp *bsp = global_structure_bsp_get();
+			real_point3d eye;
+
+			eye.x = view.position[0];
+			eye.y = view.position[1];
+			eye.z = view.position[2];
+			scenario_location_from_point(&location, &eye);
+			if (bsp && location.cluster_index != NONE && bsp->cluster_data.size > 0)
+			{
+				view.visible_clusters = structure_bsp_get_cluster_pvs(bsp, location.cluster_index);
+				view.cluster_count = (short)bsp->clusters.count;
+			}
+			n64_view_clusters = view.visible_clusters;
+			n64_view_cluster_count = view.cluster_count;
 		}
 		render.local_player_index = window->local_player_index;
 		render.window_index = window_index;

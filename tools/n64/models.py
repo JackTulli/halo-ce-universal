@@ -25,7 +25,8 @@ The output file (big-endian):
                   the first model's data, which the N64 keeps in memory)
     textures[]    name[24] (rom:/tex/<map>/<name>.sprite), width, height
     models[]      tag index, node count, region count, first region, first
-                  batch, batch count, data offset, vertex bytes, index bytes,
+                  batch, batch count, data name[16] (rom:/mdl/<name>.bin,
+                  shared by content), vertex bytes, index bytes,
                   first far batch, far batch count (the far version: the
                   whole model at a quarter of the triangles, untextured,
                   coloured with its textures' average colours; no far
@@ -35,11 +36,11 @@ The output file (big-endian):
     geometries[]  first batch, batch count
     batches[]     texture, flags, segment count, triangle count, first segment, index offset
     segments[]    node, cache slot, vertex count, vertex pair offset
-    model data    per model: its vertices (T3DVertPacked, positions in node
-                  space * MODEL_SCALE), then its indices (three u8 per
-                  triangle: cache slots); a batch's segments and indices are
-                  offsets into its model's data. The N64 reads a model's data
-                  from the cartridge when it is first drawn.
+    model data    per model, a file of its own: its vertices (T3DVertPacked,
+                  positions in node space * MODEL_SCALE), then its indices
+                  (three u8 per triangle: cache slots); a batch's segments and
+                  indices are offsets into its model's data. The N64 reads a
+                  model's data from the cartridge when it is first drawn.
 """
 
 import math
@@ -56,7 +57,7 @@ from .level import (LevelBuilder, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW, MATERIAL
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
-VERSION = 3
+VERSION = 4
 LOD_PREFERENCE = ("low", "super low", "medium", "high", "super high")
 OBJECT_GROUPS = ("bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach", "ctrl", "lifi", "plac", "ssce")
 SKY_LIGHT = (0.3, 0.2, 0.93)
@@ -154,6 +155,13 @@ class ModelConverter:
         self.textures.texture_brightness = 1.0
         # (base map, multipurpose map) -> texture with a split palette
         self.masked = {}
+        # by model tag index: a factor for its vertices' positions, flags
+        # for its batches, no far version (tools/n64/ui.py's sky)
+        self.position_scales = {}
+        self.extra_flags = {}
+        self.no_far = set()
+        self.current_scale = 1.0
+        self.current_flags = 0
         self.models = []
 
     def f(self, name):
@@ -358,6 +366,7 @@ class ModelConverter:
         texture, flags, bitmap = shaders[shader_index] if 0 <= shader_index < len(shaders) else (-1, 8, None)
         if texture is None:
             return
+        flags |= self.current_flags
 
         vertices = []
         world = []
@@ -369,7 +378,7 @@ class ModelConverter:
             node = node0 if weight >= 0.5 or n1 < 0 else node1
             if node >= len(nodes_inverse):
                 node = 0
-            local = transform_point(nodes_inverse[node], (px, py, pz))
+            local = tuple(c * self.current_scale for c in transform_point(nodes_inverse[node], (px, py, pz)))
             n = unpack_normal(normal)
             light = max(0.0, n[0] * SKY_LIGHT[0] + n[1] * SKY_LIGHT[1] + n[2] * SKY_LIGHT[2])
             shade = min(1.0, 0.5 + 0.5 * light)
@@ -492,6 +501,13 @@ class ModelConverter:
         atlas = atlas.resize((aw, ah), Image.LANCZOS)
         mask = self.change_mask(multipurpose, (aw, ah)) if multipurpose is not None else None
         whole = self.masked_texture(bitmap, multipurpose) if multipurpose is not None else self.textures.texture(bitmap)
+        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles)
+
+    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles):
+        """texture_windows' grouping over an image already at its size: the
+        triangles that fit a window's span get that window, the rest the
+        whole texture"""
+        aw, ah = atlas.size
 
         def extent(tri):
             us = [vertices[i][2][0] * aw for i in tri]
@@ -534,7 +550,7 @@ class ModelConverter:
             ox = int(max(0, min(math.floor(x0) - 1, aw - ww)))
             oy = int(max(0, min(math.floor(y0) - 1, ah - wh)))
             crop = atlas.crop((ox, oy, ox + ww, oy + wh))
-            texture = self.textures.write_texture(crop, f"{tag.name} window",
+            texture = self.textures.write_texture(crop, f"{name} window",
                                                   mask=mask.crop((ox, oy, ox + ww, oy + wh)) if mask else None)
             groups.append((texture, lambda uv, ox=ox, oy=oy: (uv[0] * aw - ox, uv[1] * ah - oy), tris))
         if coarse:
@@ -619,6 +635,8 @@ class ModelConverter:
         for tag in self.object_models():
             vertex_data, index_data = bytearray(), bytearray()
             first_batch = len(batches)
+            self.current_scale = self.position_scales.get(tag.index, 1.0)
+            self.current_flags = self.extra_flags.get(tag.index, 0)
             a = tag.address
             u_scale, v_scale = struct.unpack("<2f", self.map.read(a + mf["base map u scale"], 8))
             u_scale = u_scale or 1.0
@@ -674,7 +692,7 @@ class ModelConverter:
                 region_records.append((max(pc, 0), first_permutation))
             near_count = len(batches) - first_batch
             far_first = len(batches)
-            if tag.index not in self.first_person and tag.index not in self.units:
+            if tag.index not in self.first_person and tag.index not in self.units and tag.index not in self.no_far:
                 self.convert_far(a, gc, gp, nodes_inverse, u_scale, v_scale, shaders, budget, batches, vertex_data, index_data)
             model_records.append((tag.index, nc, rc, first_region, first_batch, near_count,
                                   far_first - first_batch, len(batches) - far_first))
@@ -687,7 +705,7 @@ class ModelConverter:
             batch_records.append((texture, flags, len(segs), tri_count, len(segments), index_offset))
             segments.extend(segs)
 
-        sizes = [len(textures) * 28, len(model_records) * 28, len(region_records) * 4, len(permutation_records) * 2,
+        sizes = [len(textures) * 28, len(model_records) * 40, len(region_records) * 4, len(permutation_records) * 2,
                  len(geometry_records) * 4, len(batch_records) * 12, len(segments) * 8]
         offset = 64
         offsets = []
@@ -695,12 +713,16 @@ class ModelConverter:
             offsets.append(offset)
             offset = (offset + size + 3) & ~3
         tables_size = (offset + 15) & ~15
-        # each model's data, 16-byte aligned (the RSP loads its vertices by DMA)
-        data_offsets = []
-        offset = tables_size
-        for vertex_data, index_data in model_data:
-            data_offsets.append(offset)
-            offset = (offset + len(vertex_data) + len(index_data) + 15) & ~15
+        # each model's data in a file of its own, shared by content
+        from .level import share_file, write_list
+        mdl_dir = self.textures.out_dir / "mdl"
+        mdl_dir.mkdir(parents=True, exist_ok=True)
+        data_names = []
+        for i, (vertex_data, index_data) in enumerate(model_data):
+            made = mdl_dir / f".{self.textures.map_name}-{i}.bin"
+            made.write_bytes(bytes(vertex_data) + bytes(index_data))
+            data_names.append(share_file(made, mdl_dir, ".bin"))
+        write_list(mdl_dir / f"{self.textures.map_name}.list", sorted(set(data_names)))
 
         out = bytearray()
         out += b"H64O" + struct.pack(">I HHHHHHH xx", VERSION, len(textures), len(model_records), len(region_records),
@@ -717,9 +739,9 @@ class ModelConverter:
             out += name + b"\0" * (24 - len(name)) + struct.pack(">HH", t.width, t.height)
         pad_to(offsets[1])
         for (tag_index, nc, rc, first_region, first_batch, batch_count, far_offset, far_count), (vertex_data, index_data), \
-                data_offset in zip(model_records, model_data, data_offsets):
-            out += struct.pack(">HBBHHHHIIIHH", tag_index, min(nc, 255), rc, first_region, 0, first_batch, batch_count,
-                               data_offset, len(vertex_data), len(index_data), far_offset, far_count)
+                data_name in zip(model_records, model_data, data_names):
+            out += struct.pack(">HBBHHHH16sIIHH", tag_index, min(nc, 255), rc, first_region, 0, first_batch, batch_count,
+                               data_name.encode(), len(vertex_data), len(index_data), far_offset, far_count)
         pad_to(offsets[2])
         for count, first in region_records:
             out += struct.pack(">HH", count, first)
@@ -735,10 +757,7 @@ class ModelConverter:
         pad_to(offsets[6])
         for node, slot, count, pair_offset in segments:
             out += struct.pack(">BBBxI", node, slot, count, pair_offset)
-        for (vertex_data, index_data), data_offset in zip(model_data, data_offsets):
-            pad_to(data_offset)
-            out += vertex_data
-            out += index_data
+        pad_to(tables_size)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(out)
         return {"models": len(model_records), "geometries": len(geometry_records), "batches": len(batch_records),

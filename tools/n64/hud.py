@@ -9,7 +9,7 @@ colours), IA16 for the meters (intensity = each texel's fill order, alpha =
 the shape; 4 bits are too coarse) or RGBA16 for the rare coloured one. The
 HUD's bitmaps are premultiplied; all but the meters are stored straight. The image's bitmap data
 (in the converted tags) carries the sprite's number + 1 in pixels_offset:
-rom:/hud/<map>/<number>.sprite.
+rom:/hud/<hash>.sprite, named in number order by rom:/hud/<map>.list.
 """
 
 import struct
@@ -19,7 +19,7 @@ from pathlib import Path
 from PIL import Image
 
 from .bitmaps import bitmap_images, decode
-from .level import MKSPRITE
+from .level import MKSPRITE, share_file, write_list
 from .walk import Walker
 
 HUD_GROUPS = ("unhi", "wphi", "grhi", "hudg", "hud#")
@@ -51,6 +51,7 @@ class HudExporter:
         # the Xbox address of an image's bitmap data -> sprite number
         self.sprite_of = {}
         self.count = 0
+        self.names = []
 
     def collect(self):
         bitmaps = []
@@ -64,7 +65,7 @@ class HudExporter:
         for tag in self.map.tags:
             if tag.group_name in HUD_GROUPS:
                 walker.walk(tag, on_dependency=on_dependency)
-        out = self.out_dir / "hud" / self.map_name
+        out = self.out_dir / "hud" / f".{self.map_name}"
         out.mkdir(parents=True, exist_ok=True)
         bf = {fl.name: o for o, fl in self.defs.fields("Bitmap")}
         size = self.defs.size("BitmapData")
@@ -82,8 +83,10 @@ class HudExporter:
                     continue
                 number = self.count
                 self.write(img, out / f"{number}.png", "meter" in tag.name)
+                self.names.append(share_file(out / f"{number}.sprite", self.out_dir / "hud", ".sprite"))
                 self.sprite_of[pointer + i * size] = number
                 self.count += 1
+        write_list(self.out_dir / "hud" / f"{self.map_name}.list", self.names)
         return self.count
 
     def write(self, img, png, meter):

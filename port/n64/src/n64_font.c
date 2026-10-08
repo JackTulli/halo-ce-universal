@@ -1,0 +1,155 @@
+/*
+N64_FONT.C
+
+Halo's fonts (tools/n64/ui.py: rom:/fonts/<name>.sprite, an I8 atlas of
+the glyphs' 8-bit coverage, and <name>.glyphs, where each glyph is), drawn
+as Halo's draw_string does: a glyph at the cursor less its origin, the
+cursor on the baseline, moved on by the glyph's width.
+*/
+
+#include <libdragon.h>
+#include <malloc.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "n64.h"
+
+#define FIRST_CHARACTER 32
+#define CHARACTER_COUNT 95
+
+struct glyph
+{
+	uint16_t x, y;
+	uint8_t width, height;
+	int8_t origin_x, origin_y;
+	uint8_t advance;
+	uint8_t present;
+};
+
+struct n64_font
+{
+	sprite_t *atlas;
+	short ascent, descent;
+	struct glyph glyphs[CHARACTER_COUNT];
+};
+
+struct n64_font *n64_font_load(const char *name)
+{
+	char path[64];
+	struct n64_font *font;
+	FILE *file;
+	uint8_t header[10];
+
+	font = calloc(1, sizeof(*font));
+	if (!font)
+		return NULL;
+	snprintf(path, sizeof(path), "rom:/fonts/%s.sprite", name);
+	font->atlas = sprite_load(path);
+	snprintf(path, sizeof(path), "rom:/fonts/%s.glyphs", name);
+	file = fopen(path, "rb");
+	if (!font->atlas || !file || fread(header, 1, sizeof(header), file) != sizeof(header) || memcmp(header, "H64F", 4))
+	{
+		if (file)
+			fclose(file);
+		if (font->atlas)
+			sprite_free(font->atlas);
+		free(font);
+		debugf("n64: no font %s\n", name);
+		return NULL;
+	}
+	font->ascent = (int16_t)((header[4] << 8) | header[5]);
+	font->descent = (int16_t)((header[6] << 8) | header[7]);
+	for (int i = 0, count = (header[8] << 8) | header[9]; i < count; i++)
+	{
+		uint8_t raw[12];
+		int code;
+
+		if (fread(raw, 1, sizeof(raw), file) != sizeof(raw))
+			break;
+		code = (raw[0] << 8) | raw[1];
+		if (code < FIRST_CHARACTER || code >= FIRST_CHARACTER + CHARACTER_COUNT)
+			continue;
+		struct glyph *g = &font->glyphs[code - FIRST_CHARACTER];
+
+		g->x = (raw[2] << 8) | raw[3];
+		g->y = (raw[4] << 8) | raw[5];
+		g->width = raw[6];
+		g->height = raw[7];
+		g->origin_x = (int8_t)raw[8];
+		g->origin_y = (int8_t)raw[9];
+		g->advance = raw[10];
+		g->present = 1;
+	}
+	fclose(file);
+	return font;
+}
+
+void n64_font_free(struct n64_font *font)
+{
+	if (!font)
+		return;
+	sprite_free(font->atlas);
+	free(font);
+}
+
+int n64_font_height(const struct n64_font *font)
+{
+	return font ? font->ascent + font->descent : 8;
+}
+
+int n64_font_ascent(const struct n64_font *font)
+{
+	return font ? font->ascent : 8;
+}
+
+int n64_text_width(const struct n64_font *font, const char *text)
+{
+	int width = 0;
+
+	if (!font)
+		return (int)strlen(text) * 8;
+	for (; *text; text++)
+	{
+		int c = (unsigned char)*text;
+
+		if (c >= FIRST_CHARACTER && c < FIRST_CHARACTER + CHARACTER_COUNT)
+			width += font->glyphs[c - FIRST_CHARACTER].advance;
+	}
+	return width;
+}
+
+/* text with its baseline at y; color 0xAARRGGBB */
+void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text)
+{
+	surface_t atlas;
+
+	if (!font)
+	{
+		rdpq_text_print(NULL, FONT_BUILTIN_DEBUG_MONO, x, y, text);
+		return;
+	}
+	atlas = sprite_get_pixels(font->atlas);
+	rdpq_sync_pipe();
+	rdpq_set_mode_standard();
+	/* the colour, the glyph's coverage as alpha */
+	rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+	rdpq_mode_filter(FILTER_POINT);
+	rdpq_set_prim_color(RGBA32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, color >> 24));
+	for (; *text; text++)
+	{
+		int c = (unsigned char)*text;
+		const struct glyph *g;
+
+		if (c < FIRST_CHARACTER || c >= FIRST_CHARACTER + CHARACTER_COUNT)
+			continue;
+		g = &font->glyphs[c - FIRST_CHARACTER];
+		if (g->present && g->width && g->height)
+		{
+			rdpq_tex_blit(&atlas, x - g->origin_x, y - g->origin_y, &(rdpq_blitparms_t){
+				.s0 = g->x, .t0 = g->y, .width = g->width, .height = g->height,
+			});
+		}
+		x += g->advance;
+	}
+}

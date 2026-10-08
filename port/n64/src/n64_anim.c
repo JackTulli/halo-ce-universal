@@ -2,11 +2,14 @@
 N64_ANIM.C
 
 Animation frames streamed from the cartridge. The converter moves every
-animation's frame data out of the map (tools/n64/convert.py) into
-rom:/maps/<map>.anim; the animation's tag data keeps its size, a flag and
-its offset in that file. A frame is read with the 4 KB chunk around it into
-a small least-recently-used cache, so the frames that follow (the next
-ticks') are already there.
+animation's frame data out of the map (tools/n64/convert.py) into a file
+for each animation graph, shared between maps by content
+(rom:/anim/<hash>.anim; rom:/maps/<map>.anims lists the map's); the
+animation's tag data keeps its size, a flag and its offset: its graph's
+place in the list in the top 8 bits, the offset in that graph's file below.
+A frame is read with the 4 KB chunk around it into a small
+least-recently-used cache, so the frames that follow (the next ticks') are
+already there.
 */
 
 #include <libdragon.h>
@@ -19,9 +22,11 @@ ticks') are already there.
 #define CHUNK_SIZE 4096
 #define CHUNK_COUNT 48
 
+#define MAXIMUM_GRAPHS 256
+
 struct chunk
 {
-	long start; /* file offset of the chunk's first byte, or -1 */
+	long start; /* cartridge address of the chunk's first byte, or -1 */
 	long length; /* bytes read: a chunk stops where its animation ends */
 	unsigned long last_used;
 	uint8_t *data;
@@ -29,7 +34,10 @@ struct chunk
 
 static struct
 {
-	uint32_t rom_address;
+	/* each graph's file: its cartridge address and size */
+	uint32_t rom_addresses[MAXIMUM_GRAPHS];
+	long sizes[MAXIMUM_GRAPHS];
+	int graph_count;
 	long file_size;
 	struct chunk chunks[CHUNK_COUNT];
 	unsigned long clock;
@@ -38,19 +46,37 @@ static struct
 
 void n64_animation_open(const char *map_name)
 {
-	char path[64];
-	FILE *file;
+	char path[64], line[32];
+	FILE *list;
 
-	snprintf(path, sizeof(path), "rom:/maps/%s.anim", map_name);
-	anim.rom_address = dfs_rom_addr(path + 5);
-	file = fopen(path, "rb");
+	anim.graph_count = 0;
 	anim.file_size = 0;
-	if (file)
+	snprintf(path, sizeof(path), "rom:/maps/%s.anims", map_name);
+	list = fopen(path, "r");
+	while (list && anim.graph_count < MAXIMUM_GRAPHS && fgets(line, sizeof(line), list))
 	{
-		fseek(file, 0, SEEK_END);
-		anim.file_size = ftell(file);
-		fclose(file);
+		char graph_path[48];
+		FILE *file;
+
+		if (strlen(line) < 16)
+			continue;
+		snprintf(graph_path, sizeof(graph_path), "anim/%.16s.anim", line);
+		anim.rom_addresses[anim.graph_count] = dfs_rom_addr(graph_path);
+		anim.sizes[anim.graph_count] = 0;
+		snprintf(path, sizeof(path), "rom:/%s", graph_path);
+		file = fopen(path, "rb");
+		if (file)
+		{
+			fseek(file, 0, SEEK_END);
+			anim.sizes[anim.graph_count] = ftell(file);
+			fclose(file);
+		}
+		anim.file_size += anim.sizes[anim.graph_count];
+		anim.graph_count++;
 	}
+	if (list)
+		fclose(list);
+	snprintf(path, sizeof(path), "rom:/maps/%s.anims", map_name);
 	for (int i = 0; i < CHUNK_COUNT; i++)
 	{
 		if (!anim.chunks[i].data)
@@ -65,7 +91,12 @@ void n64_animation_open(const char *map_name)
 frame and the frame size */
 void *n64_animation_frame(long data_offset, long data_size, short frame_index, short frame_size)
 {
-	long offset = data_offset + (long)frame_index * frame_size;
+	int graph = (unsigned long)data_offset >> 24;
+	long graph_offset = data_offset & 0xFFFFFF;
+	long base = graph < anim.graph_count ? (long)anim.rom_addresses[graph] : 0;
+	long graph_size = graph < anim.graph_count ? anim.sizes[graph] : 0;
+	/* addresses on the cartridge, so that a chunk is a chunk of any graph */
+	long offset = base + graph_offset + (long)frame_index * frame_size;
 	long start;
 	struct chunk *chunk = NULL;
 	struct chunk *oldest = &anim.chunks[0];
@@ -95,13 +126,13 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 		chunk = oldest;
 		/* from the frame on, as much of the animation as fits */
 		start = offset & ~1L;
-		length = data_offset + data_size - start;
+		length = base + graph_offset + data_size - start;
 		if (length > CHUNK_SIZE)
 			length = CHUNK_SIZE;
-		if (start + length > anim.file_size)
-			length = anim.file_size - start;
+		if (start + length > base + graph_size)
+			length = base + graph_size - start;
 		data_cache_hit_writeback_invalidate(chunk->data, CHUNK_SIZE);
-		dma_read(chunk->data, anim.rom_address + start, (length + 1) & ~1L);
+		dma_read(chunk->data, start, (length + 1) & ~1L);
 		chunk->start = start;
 		chunk->length = length;
 	}

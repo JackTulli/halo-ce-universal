@@ -61,15 +61,18 @@ void n64_wait_microseconds(unsigned long microseconds)
 
 unsigned long n64_heap_free(void)
 {
-	struct mallinfo info = mallinfo();
-	return (unsigned long)(get_memory_size() - info.uordblks);
+	heap_stats_t heap;
+
+	sys_get_heap_stats(&heap);
+	return (unsigned long)heap.free;
 }
 
 /* Halo's deepest calls (collision, physics under the game tick) need more
-than the 64 KB libdragon keeps for main's stack at the top of RAM, and the
-heap grows up to it: the game runs on a stack of its own, filled with a
-pattern so that its deepest use can be reported (n64_stack_used) */
-#define GAME_STACK_SIZE (256 * 1024)
+than the 64 KB libdragon keeps for main's stack at the top of RAM (~97 KB
+in Wizard), and the heap grows up to it: the game runs on a stack of its
+own, filled with a pattern so that its deepest use can be reported
+(n64_stack_used) */
+#define GAME_STACK_SIZE (192 * 1024)
 #define GAME_STACK_FILL 0xA5A5A5A5u
 
 static uint32_t *game_stack;

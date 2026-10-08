@@ -50,6 +50,9 @@ enum
 static struct
 {
 	char map_name[32];
+	/* rom:/hud/<map>.list: 16 characters a sprite */
+	char *names;
+	int name_count;
 	sprite_t *sprites[MAXIMUM_SPRITES];
 	int missing[MAXIMUM_SPRITES];
 	int x0, y0, x1, y1;
@@ -120,6 +123,27 @@ void n64_hud_set_map(const char *map_name)
 	if (!hud.blip.buffer)
 		make_blip();
 	snprintf(hud.map_name, sizeof(hud.map_name), "%s", map_name);
+	/* the sprites' names, in number order (tools/n64/hud.py) */
+	free(hud.names);
+	hud.names = NULL;
+	hud.name_count = 0;
+	{
+		char path[64], line[32];
+		FILE *file;
+
+		snprintf(path, sizeof(path), "rom:/hud/%s.list", map_name);
+		file = fopen(path, "r");
+		if (file)
+		{
+			hud.names = malloc(MAXIMUM_SPRITES * 16);
+			while (hud.names && hud.name_count < MAXIMUM_SPRITES && fgets(line, sizeof(line), file))
+			{
+				if (strlen(line) >= 16)
+					memcpy(hud.names + 16 * hud.name_count++, line, 16);
+			}
+			fclose(file);
+		}
+	}
 }
 
 static sprite_t *hud_sprite(int number)
@@ -132,7 +156,12 @@ static sprite_t *hud_sprite(int number)
 	{
 		FILE *file;
 
-		snprintf(path, sizeof(path), "rom:/hud/%s/%d.sprite", hud.map_name, number);
+		if (!hud.names || number >= hud.name_count)
+		{
+			hud.missing[number] = 1;
+			return NULL;
+		}
+		snprintf(path, sizeof(path), "rom:/hud/%.16s.sprite", hud.names + number * 16);
 		file = fopen(path, "rb");
 		if (!file)
 		{
@@ -471,12 +500,25 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 
 void n64_hud_text(int x, int y, unsigned long color, const char *text)
 {
+	static struct n64_font *font;
+	static int font_loaded;
+
 	if (hud.dump)
 		debugf("hud text %d,%d: %s\n", x, y, text);
 	hud.mode = _mode_none;
-	rdpq_sync_pipe();
-	rdpq_text_print(&(rdpq_textparms_t){0}, FONT_BUILTIN_DEBUG_MONO, x, y + 8, text);
-	(void)color;
+	/* Halo's small font (the menu's), from the top of the text's box */
+	if (!font_loaded)
+	{
+		font = n64_font_load("small");
+		font_loaded = 1;
+	}
+	if (!font)
+	{
+		rdpq_sync_pipe();
+		rdpq_text_print(&(rdpq_textparms_t){0}, FONT_BUILTIN_DEBUG_MONO, x, y + 8, text);
+		return;
+	}
+	n64_text_draw(font, x, y + n64_font_ascent(font), color, text);
 }
 
 void n64_hud_blip(float x, float y, float size, unsigned long color)

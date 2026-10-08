@@ -827,21 +827,23 @@ static void create_local_players(
 				784,
 				(gamepad_index>=0) && (gamepad_index<MAXIMUM_GAMEPADS));
 #ifdef HALO_N64
-			/* no menus to name the players or pick their colours: Player 1-4
-			in red, blue, green and yellow */
+			/* the players the N64's menu set up (port/n64/game/n64_game.c):
+			named after their controller ports, in their colours and teams */
 			{
-				static short const colors[4] = {2, 3, 6, 5};
+				extern void n64_game_local_player(long index, short *port, short *color, short *team);
 				struct network_player n64_player;
+				short port, color, team;
 				short c;
 
+				n64_game_local_player(i, &port, &color, &team);
 				csmemset(&n64_player, 0, sizeof(n64_player));
 				for (c = 0; c < 8; c++)
 					n64_player.name[c] = (wchar_t)"Player 1"[c];
-				n64_player.name[7] = (wchar_t)('1' + i);
-				n64_player.primary_color_index = colors[i & 3];
+				n64_player.name[7] = (wchar_t)('1' + port);
+				n64_player.primary_color_index = color;
 				n64_player.machine_index = 0;
 				n64_player.controller_index = (char)gamepad_index;
-				n64_player.team_index = (char)i;
+				n64_player.team_index = (char)team;
 				n64_player.player_list_index = (char)i;
 				player = player_new(0, NONE, gamepad_index, &n64_player);
 			}
@@ -1106,6 +1108,47 @@ void main_menu_unload(
 	return;
 }
 
+#ifdef HALO_N64
+/* the N64's own menu (port/n64/src/n64_menu.c, through n64_game.c) instead
+of ui.map's shell: it runs until a game is chosen, which then loads as
+main_change_map_name loads the next map of a game in progress, or as
+main_setup_connection loads the first */
+void main_menu_load(
+	void)
+{
+	extern void n64_game_results(void);
+	extern void n64_game_menu(void);
+	extern unsigned long n64_ticks(void);
+	struct game_options options;
+	boolean in_progress = game_in_progress();
+
+	main_globals.want_to_be_at_main_menu = FALSE;
+	if (in_progress)
+	{
+		n64_game_results();
+		game_dispose_from_old_map();
+	}
+	n64_game_menu();
+	main_globals.connection = _game_connection_local;
+	game_options_new(&options);
+	csstrncpy(
+		options.map_name,
+		main_globals.soloplayer_map_name,
+		NUMBEROF(options.map_name) - 1);
+	options.map_name[NUMBEROF(options.map_name) - 1] = 0;
+	options.difficulty = global_difficulty_level;
+	/* not the same spawns every game */
+	options.random_seed = n64_ticks();
+	game_precache_new_map(options.map_name, TRUE);
+	if (in_progress)
+		game_unload();
+	else
+		game_dispose_from_old_map();
+	main_new_map(&options);
+
+	return;
+}
+#else
 void main_menu_load(
 	void)
 {
@@ -1125,6 +1168,7 @@ void main_menu_load(
 
 	return;
 }
+#endif
 
 static void screenshot_record(
 	struct bitmap_data *screen,
@@ -3135,7 +3179,8 @@ void main_loop(
 	game_initialize();
 	console_startup();
 #ifdef HALO_N64
-	/* no menus: straight into a split-screen game (port/n64/game/n64_game.c) */
+	/* the N64's menu (main_menu_load), or for testing straight into a game
+	(port/n64/game/n64_game.c) */
 	{
 		extern void n64_game_setup(void);
 

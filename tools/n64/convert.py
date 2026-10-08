@@ -53,12 +53,35 @@ class N64Policy(Policy):
         self.defs = defs
         offs = {f.name: o for o, f in defs.fields("ModelAnimationsAnimation")}
         self.anim = offs
-        # animation frames stream from the cartridge (maps/<map>.anim)
-        self.stream = bytearray()
+        # animation frames stream from the cartridge: a file for each
+        # animation graph, shared by content (anim/<hash>.anim, the map's
+        # list in maps/<map>.anims); a frame data's offset carries its graph's
+        # place in that list in its top 8 bits
+        self.streams = {}  # graph tag index -> bytearray
+        self.graphs = []   # graph tag indices in list order
         self.hud = None
+
+    @property
+    def stream_size(self):
+        return sum(len(s) for s in self.streams.values())
 
     def keep_tag(self, tag):
         return tag.group not in DROPPED
+
+    # render data: the N64 draws its own level and models (level.py,
+    # models.py); only Halo's renderer and lightmap lookups (left out) read
+    # these
+    RENDER_BLOCKS = ("ScenarioStructureBSP.leaf surfaces[]", "ScenarioStructureBSP.surfaces[]",
+                     "ScenarioStructureBSP.clusters[].subclusters[].surface indices[]",
+                     "ScenarioStructureBSP.clusters[].surface indices[]", "ScenarioStructureBSP.lightmaps[].materials[]",
+                     # the models' geometry: the N64's own (models.py)
+                     "Model.geometries[].parts[]",
+                     # effects' particles: the N64 draws none (437 KB of Sidewinder's
+                     # tags, and their simulation)
+                     "Effect.events[].particles[]")
+
+    def keep_block(self, tag, path, count):
+        return 0 if path in self.RENDER_BLOCKS else count
 
     def override(self, tag, struct_name, field_name, address):
         # a HUD image's sprite (tools/n64/hud.py): its number + 1
@@ -71,10 +94,16 @@ class N64Policy(Policy):
         address, struct_name, struct_raw = parent
         if path.endswith("animations[].frame data"):
             data = self.animation_data(struct_raw, raw, False)
-            self.stream += b"\0" * ((-len(self.stream)) % 8)
-            offset = len(self.stream)
-            self.stream += data
-            return External(offset, len(data))
+            if tag.index not in self.streams:
+                self.streams[tag.index] = bytearray()
+                self.graphs.append(tag.index)
+            stream = self.streams[tag.index]
+            stream += b"\0" * ((-len(stream)) % 8)
+            offset = len(stream)
+            stream += data
+            if offset >= 1 << 24 or len(self.graphs) > 255:
+                raise ValueError("an animation graph past 16 MB, or 256 graphs in a map")
+            return External(offset | (self.graphs.index(tag.index) << 24), len(data))
         if path.endswith("animations[].default data"):
             return self.animation_data(struct_raw, raw, True)
         if path.endswith("animations[].frame info"):
@@ -182,7 +211,16 @@ def convert(path, output, filesystem=None):
     out += struct.pack(f">{len(relocs)}I", *relocs)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     Path(output).write_bytes(out)
-    Path(output).with_suffix(".anim").write_bytes(bytes(repacker.policy.stream))
+    # the animation graphs' frames, shared by content
+    from .level import share_file, write_list
+    anim_dir = (Path(filesystem) if filesystem is not None else Path(output).parent) / "anim"
+    anim_dir.mkdir(parents=True, exist_ok=True)
+    names = []
+    for i, graph in enumerate(repacker.policy.graphs):
+        made = anim_dir / f".{xmap.name}-{i}.anim"
+        made.write_bytes(bytes(repacker.policy.streams[graph]))
+        names.append(share_file(made, anim_dir, ".anim"))
+    write_list(Path(output).with_suffix(".anims"), names)
     return xmap, repacker, len(out), relocs
 
 
@@ -197,7 +235,7 @@ def main():
     args = parser.parse_args()
     xmap, repacker, size, relocs = convert(args.map, args.output, args.filesystem)
     print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations, "
-          f"{len(repacker.policy.stream) / 1e6:.2f} MB of animation frames streamed")
+          f"{repacker.policy.stream_size / 1e6:.2f} MB of animation frames streamed")
     if args.filesystem:
         from .level import LevelBuilder
         builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)
@@ -207,6 +245,10 @@ def main():
         models = ModelConverter(xmap, repacker.defs, xmap.name, args.filesystem)
         stats = models.write(args.filesystem / "levels" / f"{xmap.name}.mdl")
         print(f"{xmap.name} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        # the shared files the map uses (tools/n64/prune.py removes the rest)
+        from .level import write_list
+        write_list(args.filesystem / "tex" / f"{xmap.name}.list",
+                   sorted(builder.used_textures | models.textures.used_textures))
     if args.stats:
         for g, s in sorted(repacker.stats.items(), key=lambda x: -x[1])[:25]:
             print(f"  {g} {s / 1024:8.1f} KB")

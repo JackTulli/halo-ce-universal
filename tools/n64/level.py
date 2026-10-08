@@ -120,6 +120,26 @@ def sample_lightmap(page, u, v):
     return None
 
 
+def share_file(path, directory, suffix):
+    """moves a made file to directory/<hash of its contents><suffix> (the
+    same contents made for another map is one file) and returns the hash"""
+    import hashlib
+    data = Path(path).read_bytes()
+    name = hashlib.sha1(data).hexdigest()[:16]
+    target = Path(directory) / f"{name}{suffix}"
+    if target.exists() and target.read_bytes() == data:
+        Path(path).unlink()
+    else:
+        os.replace(path, target)
+    return name
+
+
+def write_list(path, names):
+    """a map's list of the shared files it uses (tools/n64/prune.py)"""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text("".join(f"{n}\n" for n in names))
+
+
 def split_palette(img, mask):
     """img (RGBA) as a 16-colour paletted image: the texels where mask < 128
     take entries 0-7, the others 8-15, each half the image's own colours
@@ -158,6 +178,8 @@ class LevelBuilder:
         self.map_name = map_name
         self.out_dir = Path(out_dir)
         self.textures = []
+        # the shared textures this map uses (tex/<map>.list)
+        self.used_textures = set()
         self.texture_by_bitmap = {}
         self.materials = []
         self.material_by_shader = {}
@@ -210,10 +232,11 @@ class LevelBuilder:
             r, g, b = (ch.point(lambda v: min(255, int(v * k))) for ch in (r, g, b))
             img = Image.merge("RGBA", (r, g, b, a))
         index = len(self.textures)
-        name = f"{self.texture_prefix}{index:02d}"
-        tex_dir = self.out_dir / "tex" / self.map_name
-        tex_dir.mkdir(parents=True, exist_ok=True)
-        png = tex_dir / f"{name}.png"
+        # made in a directory of the map's own, then shared by content:
+        # rom:/tex/<hash>.sprite (every map's weapons are the same)
+        work_dir = self.out_dir / "tex" / f".{self.map_name}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        png = work_dir / f"{self.texture_prefix}{index:02d}.png"
         if mask is not None and fmt == "CI4":
             split_palette(img, mask).save(png)
         else:
@@ -225,8 +248,10 @@ class LevelBuilder:
         # cycles, and interpolated mipmapping would need one of them
         mipmaps = False
         subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
-                        "--compress", "1", "-o", str(tex_dir), str(png)], check=True, capture_output=True)
+                        "--compress", "1", "-o", str(work_dir), str(png)], check=True, capture_output=True)
         png.unlink()
+        name = share_file(png.with_suffix(".sprite"), self.out_dir / "tex", ".sprite")
+        self.used_textures.add(name)
         rgb = img.convert("RGB")
         alpha = list(img.getchannel("A").getdata()) if img.mode == "RGBA" else None
         pixels = [p for i, p in enumerate(rgb.getdata()) if alpha is None or alpha[i] >= 128] or list(rgb.getdata())
@@ -357,12 +382,26 @@ class LevelBuilder:
         csize = self.defs.size("ScenarioStructureBSPCluster")
         clusters = []
         used = set()
+        so = self.fields("ScenarioStructureBSPSubcluster")
+        ssize = self.defs.size("ScenarioStructureBSPSubcluster")
         for ci in range(cluster_count):
             ca = cluster_ptr + ci * csize
             ic, ip = struct.unpack("<iI", x.read(ca + co["surface indices"], 8))
             indices = list(struct.unpack(f"<{ic}i", x.read(ip, 4 * ic))) if ic > 0 else []
-            clusters.append([i for i in indices if 0 <= i < surfaces_count and surface_info[i]])
-            used.update(clusters[-1])
+            # the Xbox's maps list a cluster's surfaces by subcluster
+            sc, sp = struct.unpack("<iI", x.read(ca + co["subclusters"], 8))
+            for si in range(max(sc, 0)):
+                sic, sip = struct.unpack("<iI", x.read(sp + si * ssize + so["surface indices"], 8))
+                if sic > 0:
+                    indices += struct.unpack(f"<{sic}i", x.read(sip, 4 * sic))
+            seen = set()
+            members = []
+            for i in indices:
+                if 0 <= i < surfaces_count and surface_info[i] and i not in used and i not in seen:
+                    seen.add(i)
+                    members.append(i)
+            clusters.append(members)
+            used.update(members)
         # surfaces no cluster lists (rare): a last cluster of their own
         leftover = [i for i in range(surfaces_count) if surface_info[i] and i not in used]
         if leftover:

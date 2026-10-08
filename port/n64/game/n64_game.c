@@ -4,7 +4,9 @@ N64_GAME.C
 The game-side half of the N64 platform layer, compiled like the game's own
 units (it sees the game's headers):
 
-- the start of a game without menus (n64_game_setup, called from main.c),
+- the menu's games (n64_game_menu, from main.c's main_menu_load: the
+  N64's own menu, port/n64/src/n64_menu.c) and, for testing, the start of
+  a game without it (n64_game_setup, called from main.c),
 - the memory map: the game state and the loaded map are ordinary
   allocations (physical_memory_map.c is left out),
 - the cache files: maps are converted ahead of time (tools/n64/convert.py)
@@ -27,10 +29,13 @@ units (it sees the game's headers):
 #include "memory/data.h"
 #include "units/units.h"
 #include "items/weapons.h"
+#include "game/game_engine.h"
+#include "text/unicode.h"
 
 #include "../src/n64.h"
 #include "errors.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -38,26 +43,168 @@ void *memalign(size_t alignment, size_t size);
 
 extern short player_spawn_count;
 
-/* ---------- settings of the first milestone */
+/* ---------- a game straight from the start, for testing */
 
-#define N64_MAP_NAME "levels\\test\\wizard\\wizard"
-#define N64_GAME_VARIANT "slayer"
-#define N64_PLAYER_COUNT 2
+#define N64_TEST_GAME_VARIANT "slayer"
+#define N64_TEST_PLAYER_COUNT 2
 
-/* ---------- the start of a game */
+/* what the menu chose (or the test game) */
+static struct n64_menu_choice n64_choice;
+
+/* the game's variant, players and map from the choice */
+static void n64_game_start(
+	void)
+{
+	static char map_name[96];
+	struct game_variant variant, temporary_variant;
+	char const *folder = n64_menu_map_folder(n64_choice.map);
+	char line[96];
+
+	variant = *game_engine_get_variant_by_name(&temporary_variant, n64_menu_game_variant(n64_choice.game_type));
+	if (n64_choice.score > 0)
+		variant.universal_variant.score_to_win = n64_choice.score;
+	game_set_game_variant(&variant);
+	player_spawn_count = (short)n64_choice.player_count;
+	snprintf(map_name, sizeof(map_name), "levels\\test\\%s\\%s", folder, folder);
+	main_set_map_name(map_name);
+	main_disallow_persistent_storage();
+	{
+		/* the game's controllers 0 to n-1 are the players' ports */
+		extern int n64_gamepad_ports[4];
+		int used = 0, i, port;
+
+		for (i = 0; i < n64_choice.player_count; i++)
+		{
+			n64_gamepad_ports[i] = n64_choice.ports[i];
+			used |= 1 << n64_choice.ports[i];
+		}
+		for (port = 0; port < 4 && i < 4; port++)
+		{
+			if (!(used & (1 << port)))
+				n64_gamepad_ports[i++] = port;
+		}
+	}
+	snprintf(line, sizeof(line), "n64: %s on %s, %d players, score %d", n64_menu_game_variant(n64_choice.game_type),
+		map_name, n64_choice.player_count, n64_choice.score);
+	n64_log(line);
+}
 
 void n64_game_setup(
 	void)
 {
+	char name[32];
+	int i;
+
 	/* ai_debug_initialize's defaults (the AI is left out) */
 	ai_debug.selected_actor_index = NONE;
 	ai_debug.selected_squad_index = NONE;
 
-	game_set_game_variant_from_name(N64_GAME_VARIANT);
-	player_spawn_count = N64_PLAYER_COUNT;
-	main_set_map_name(N64_MAP_NAME);
-	main_disallow_persistent_storage();
-	n64_log("n64: " N64_GAME_VARIANT " on " N64_MAP_NAME);
+	/* testing (port.json flag "debug_map=<map>", or "autotest"): straight
+	into a two-player game; else main.c starts at the menu */
+	name[0] = 0;
+	if (!n64_debug_text("debug_map", name, sizeof(name)) && !n64_debug_flag("autotest"))
+		return;
+	n64_choice.map = n64_menu_map_from_folder(name[0] ? name : "wizard");
+	if (n64_choice.map < 0)
+		n64_choice.map = n64_menu_map_from_folder("wizard");
+	n64_choice.game_type = 0;
+	n64_choice.score = 0;
+	n64_choice.player_count = N64_TEST_PLAYER_COUNT;
+	for (i = 0; i < 4; i++)
+	{
+		static short const colors[4] = {2, 3, 6, 5};
+
+		n64_choice.ports[i] = i;
+		n64_choice.teams[i] = i & 1;
+		n64_choice.colors[i] = colors[i];
+	}
+	n64_game_start();
+}
+
+/* ---------- the menu's games (main.c's main_menu_load, HALO_N64) */
+
+static char n64_result_text[6][64];
+static char const *n64_result_lines[6];
+static int n64_result_count;
+
+static void n64_ascii(
+	char *out,
+	int size,
+	wchar_t const *text)
+{
+	int i;
+
+	for (i = 0; i + 1 < size && text && text[i]; i++)
+		out[i] = text[i] < 128 ? (char)(text[i] >= 'a' && text[i] <= 'z' ? text[i] - 32 : text[i]) : '?';
+	out[i] = 0;
+}
+
+/* the game that just ended, for the menu: who won, then each player's
+score, kills and deaths */
+void n64_game_results(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	char winner[48] = "";
+	int count = 1;
+
+	n64_result_count = 0;
+	if (!game_engine)
+		return;
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && count < 6)
+	{
+		long player_index = iterator.datum_index;
+		int port = player->local_player_index >= 0 && player->local_player_index < 4 ?
+			n64_choice.ports[player->local_player_index] : 0;
+		wchar_t score[32];
+		char score_text[32];
+
+		csmemset(score, 0, sizeof(score));
+		if (game_engine->format_player_score)
+			game_engine->format_player_score(player_index, score);
+		n64_ascii(score_text, sizeof(score_text), score);
+		snprintf(n64_result_text[count], sizeof(n64_result_text[count]), "PLAYER %d   %s   (%d KILLS, %d DEATHS)",
+			port + 1, score_text, player->statistics.kills[0], player->statistics.deaths);
+		n64_result_lines[count] = n64_result_text[count];
+		count++;
+		if (game_engine_did_player_win(player_index) == TRUE && !winner[0])
+		{
+			if (n64_menu_game_teams(n64_choice.game_type))
+				snprintf(winner, sizeof(winner), "%s TEAM WINS", player->team_index ? "BLUE" : "RED");
+			else
+				snprintf(winner, sizeof(winner), "PLAYER %d WINS", port + 1);
+		}
+	}
+	snprintf(n64_result_text[0], sizeof(n64_result_text[0]), "%s", winner[0] ? winner : "TIE GAME");
+	n64_result_lines[0] = n64_result_text[0];
+	n64_result_count = count;
+}
+
+/* the menu, then the game it chose */
+void n64_game_menu(
+	void)
+{
+	int count = n64_result_count;
+
+	n64_result_count = 0;
+	n64_menu_run(&n64_choice, n64_result_lines, count);
+	n64_game_start();
+}
+
+/* main.c's create_local_players: the index-th player's controller port,
+Halo colour index and team */
+void n64_game_local_player(
+	long index,
+	short *port,
+	short *color,
+	short *team)
+{
+	index = PIN(index, 0, 3);
+	*port = (short)n64_choice.ports[index];
+	*color = (short)n64_choice.colors[index];
+	*team = (short)(n64_menu_game_teams(n64_choice.game_type) ? n64_choice.teams[index] : index);
 }
 
 /* ---------- memory map */

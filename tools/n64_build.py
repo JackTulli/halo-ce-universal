@@ -219,20 +219,28 @@ def main():
     # port.json asks for (an "autotest" file drives the controllers by script)
     n.rule("convert_map", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.convert $in -o $map --filesystem $fsdir",
            description="N64 MAP $out")
+    n.rule("convert_ui", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.ui $in --filesystem $fsdir",
+           description="N64 MENU $out")
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
-    n.rule("mkdfs", command="cd $root && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags", description="N64 DFS $out")
+    n.rule("mkdfs", command="cd $root && $python -m tools.n64.prune $fsdir $maps && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags",
+           description="N64 DFS $out")
     fsdir = BUILD_DIR / "filesystem"
     fs_files = []
     tool_sources = sorted(str(p) for p in Path("tools/n64").glob("*.py"))
     for name in port.get("maps", []):
         out_map = fsdir / "maps" / f"{name}.map"
-        n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "maps" / f"{name}.anim")], "convert_map",
+        n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "maps" / f"{name}.anims")], "convert_map",
                 f"build/xbox/disc/maps/{name}.map", implicit=tool_sources, variables={"fsdir": str(fsdir), "map": str(out_map)})
         fs_files.append(str(out_map))
+    # the menu (port/n64/src/n64_menu.c): ui.map's scene, fonts and pictures
+    ui_scene = fsdir / "ui" / "scene.bin"
+    n.build([str(ui_scene), str(fsdir / "levels" / "ui.mdl"), str(fsdir / "fonts" / "small.glyphs")], "convert_ui",
+            "build/xbox/disc/maps/ui.map", implicit=tool_sources, variables={"fsdir": str(fsdir)})
+    fs_files.append(str(ui_scene))
     # every debug switch the cartridge can carry (n64_debug_flag): the ones
     # port.json does not ask for are removed, so none lingers in a build
     known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
-                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time", "profile_tick")
+                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time", "profile_tick", "debug_map", "debug_menu")
     # a flag "name=value" is a setting: a file holding the value
     flag_names = [flag.split("=", 1)[0] for flag in port.get("flags", [])]
     for flag in known_flags:
@@ -249,7 +257,8 @@ def main():
             n.build(str(out_flag), "touch")
         fs_files.append(str(out_flag))
     dfs = BUILD_DIR / "halo.dfs"
-    n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(port.get("flags", []))})
+    n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(port.get("flags", [])),
+                                                       "maps": " ".join(port.get("maps", []) + ["ui"])})
     n.build(str(BUILD_DIR / "halo.z64"), "z64", str(elf), implicit=[str(dfs)], variables={"extra": str(dfs)})
     n.default([str(BUILD_DIR / "halo.z64")])
     out.close()

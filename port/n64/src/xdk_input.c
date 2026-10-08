@@ -48,6 +48,9 @@ static DWORD reported_gamepads;
 static unsigned long last_poll_tick;
 
 int n64_test_input = 0;
+/* the N64 controller port each of the game's gamepads reads: the menu's
+players are the game's gamepads 0 to n-1 (port/n64/game/n64_game.c) */
+int n64_gamepad_ports[4] = {0, 1, 2, 3};
 
 static void poll(void)
 {
@@ -73,7 +76,7 @@ static DWORD connected_gamepads(void)
 	{
 		struct n64_pad pad;
 
-		n64_input_get(port, &pad);
+		n64_input_get(n64_gamepad_ports[port], &pad);
 		if (pad.connected)
 			mask |= 1 << port;
 	}
@@ -202,7 +205,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		struct n64_pad pad;
 
 		poll();
-		n64_input_get(port, &pad);
+		n64_input_get(n64_gamepad_ports[port], &pad);
 		if (!pad.connected)
 			return ERROR_DEVICE_NOT_CONNECTED;
 		pad_to_gamepad(&pad, &state->Gamepad);

@@ -58,7 +58,19 @@
     "source/rasterizer/rasterizer_swizzle.c"
   ],
   "maps": [
-    "wizard"
+    "wizard",
+    "beavercreek",
+    "bloodgulch",
+    "boardingaction",
+    "carousel",
+    "chillout",
+    "damnation",
+    "hangemhigh",
+    "longest",
+    "prisoner",
+    "putput",
+    "ratrace",
+    "sidewinder"
   ],
   "flags": [],
   "ldflags": [
