@@ -74,8 +74,10 @@ def pack_normal(n):
 
 
 class Texture:
-    def __init__(self, name, width, height):
+    def __init__(self, name, width, height, colour=(1.0, 1.0, 1.0)):
         self.name, self.width, self.height = name, width, height
+        # the texture's average colour (0..1), for drawing it untextured
+        self.colour = colour
 
 
 # the colours Halo fills a lightmap page's unused texels with
@@ -225,7 +227,11 @@ class LevelBuilder:
         subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
                         "--compress", "1", "-o", str(tex_dir), str(png)], check=True, capture_output=True)
         png.unlink()
-        self.textures.append(Texture(name, w2, h2))
+        rgb = img.convert("RGB")
+        alpha = list(img.getchannel("A").getdata()) if img.mode == "RGBA" else None
+        pixels = [p for i, p in enumerate(rgb.getdata()) if alpha is None or alpha[i] >= 128] or list(rgb.getdata())
+        colour = tuple(sum(p[k] for p in pixels) / len(pixels) / 255.0 for k in range(3))
+        self.textures.append(Texture(name, w2, h2, colour))
         return index
 
     # ---------- shaders
@@ -310,6 +316,7 @@ class LevelBuilder:
                     continue
                 material = self.material(shader_datum)
                 verts = []
+                same_vertex = {}
                 data = x.read(cv_ptr, rv_count * 32)
                 # the lightmap's texture coordinates follow the rendered
                 # vertices: a compressed normal and u, v over 32767
@@ -333,7 +340,12 @@ class LevelBuilder:
                             if d > 0:
                                 color = [c + l * d for c, l in zip(color, lc)]
                     lightmap = (page, lightmap_uvs[v][0] / 32767.0, lightmap_uvs[v][1] / 32767.0) if lightmap_uvs else None
-                    verts.append(((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color), lightmap))
+                    vertex = ((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color), lightmap)
+                    # the same vertex twice (position, texture coordinate,
+                    # light): one, so that batches share it
+                    key = (tuple(round(c, 4) for c in vertex[0]), tuple(round(c, 5) for c in vertex[2]),
+                           tuple(round(c, 5) for c in lightmap[1:]) if lightmap else None)
+                    verts.append(same_vertex.setdefault(key, vertex))
                 for s in range(first, first + count):
                     a, b, c = surfaces[s]
                     # Halo's front faces wind clockwise (Direct3D), tiny3d's
@@ -452,43 +464,74 @@ class LevelBuilder:
 
     def batches(self, triangles):
         """splits (material, v0, v1, v2) triangles of one material into
-        batches of at most 70 vertices with a bounded uv extent"""
+        batches of at most 70 vertices with a bounded uv extent. A batch
+        grows from a triangle by the triangle that adds the fewest new
+        vertices: the RSP transforms every vertex a batch loads, and a
+        compact batch is left out whole when it is out of view"""
         out = []
-        current_vertices, current_map, current_tris = [], {}, []
-        uv_min = [math.inf, math.inf]
-        uv_max = [-math.inf, -math.inf]
         material = triangles[0][0] if triangles else 0
         texture, _ = self.materials[material]
         size = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
-
-        def flush():
-            if current_tris:
-                out.append((material, list(current_vertices), list(current_tris)))
-
-        for tri in triangles:
-            new = [v for v in tri[1:] if id(v) not in current_map]
-            n_min = list(uv_min)
-            n_max = list(uv_max)
+        by_vertex = {}
+        for t, tri in enumerate(triangles):
             for v in tri[1:]:
-                for k in range(2):
-                    n_min[k] = min(n_min[k], v[2][k])
-                    n_max[k] = max(n_max[k], v[2][k])
-            extent = max((n_max[0] - n_min[0]) * size[0], (n_max[1] - n_min[1]) * size[1])
-            if len(current_vertices) + len(new) > MAXIMUM_BATCH_VERTICES or extent > MAXIMUM_UV_EXTENT:
-                flush()
-                current_vertices, current_map, current_tris = [], {}, []
-                n_min = [min(v[2][k] for v in tri[1:]) for k in range(2)]
-                n_max = [max(v[2][k] for v in tri[1:]) for k in range(2)]
-            uv_min, uv_max = n_min, n_max
-            idx = []
-            for v in tri[1:]:
-                key = id(v)
-                if key not in current_map:
-                    current_map[key] = len(current_vertices)
-                    current_vertices.append(v)
-                idx.append(current_map[key])
-            current_tris.append(tuple(idx))
-        flush()
+                by_vertex.setdefault(id(v), []).append(t)
+        remaining = set(range(len(triangles)))
+
+        while remaining:
+            current_vertices, current_map, current_tris = [], {}, []
+            uv_min = [math.inf, math.inf]
+            uv_max = [-math.inf, -math.inf]
+            candidates = set()
+            seed = min(remaining)
+            while True:
+                if current_tris:
+                    pool = candidates & remaining
+                else:
+                    pool = {seed}
+                best, best_new = None, None
+                for t in sorted(pool):
+                    new = sum(1 for v in triangles[t][1:] if id(v) not in current_map)
+                    if best is None or new < best_new:
+                        best, best_new = t, new
+                        if new == 0:
+                            break
+                if best is None:
+                    # nothing adjacent left: start over from any triangle
+                    # that still fits
+                    for t in sorted(remaining)[:64]:
+                        new = sum(1 for v in triangles[t][1:] if id(v) not in current_map)
+                        if len(current_vertices) + new <= MAXIMUM_BATCH_VERTICES:
+                            best, best_new = t, new
+                            break
+                if best is None:
+                    break
+                tri = triangles[best]
+                n_min = list(uv_min)
+                n_max = list(uv_max)
+                for v in tri[1:]:
+                    for k in range(2):
+                        n_min[k] = min(n_min[k], v[2][k])
+                        n_max[k] = max(n_max[k], v[2][k])
+                extent = max((n_max[0] - n_min[0]) * size[0], (n_max[1] - n_min[1]) * size[1])
+                if len(current_vertices) + best_new > MAXIMUM_BATCH_VERTICES or (current_tris and extent > MAXIMUM_UV_EXTENT):
+                    # the best does not fit: try the others once, else close
+                    candidates.discard(best)
+                    if not candidates & remaining:
+                        break
+                    continue
+                uv_min, uv_max = n_min, n_max
+                idx = []
+                for v in tri[1:]:
+                    key = id(v)
+                    if key not in current_map:
+                        current_map[key] = len(current_vertices)
+                        current_vertices.append(v)
+                        candidates.update(by_vertex[key])
+                    idx.append(current_map[key])
+                current_tris.append(tuple(idx))
+                remaining.discard(best)
+            out.append((material, list(current_vertices), list(current_tris)))
         return out
 
     def write(self, path, bsp_tag):

@@ -25,7 +25,11 @@ The output file (big-endian):
                   the first model's data, which the N64 keeps in memory)
     textures[]    name[24] (rom:/tex/<map>/<name>.sprite), width, height
     models[]      tag index, node count, region count, first region, first
-                  batch, batch count, data offset, vertex bytes, index bytes
+                  batch, batch count, data offset, vertex bytes, index bytes,
+                  first far batch, far batch count (the far version: the
+                  whole model at a quarter of the triangles, untextured,
+                  coloured with its textures' average colours; no far
+                  version for players and first-person models)
     regions[]     permutation count, first permutation
     permutations[] geometry (index into geometries, -1 for none)
     geometries[]  first batch, batch count
@@ -48,18 +52,24 @@ from PIL import Image
 from .bitmaps import bitmap_images, decode
 from .decimate import decimate
 from .level import (LevelBuilder, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW, MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED,
-                    pack_normal, unpack_normal)
+                    MATERIAL_UNTEXTURED, pack_normal, unpack_normal)
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
-VERSION = 2
+VERSION = 3
 LOD_PREFERENCE = ("low", "super low", "medium", "high", "super high")
 OBJECT_GROUPS = ("bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach", "ctrl", "lifi", "plac", "ssce")
 SKY_LIGHT = (0.3, 0.2, 0.93)
 # triangles a model may keep (tools/n64/decimate.py): the first-person
 # models are drawn in every view
 FIRST_PERSON_BUDGET = 500
+# the first-person hands: mostly behind the weapon
+HANDS_BUDGET = 350
 MODEL_BUDGET = 400
+# a far version keeps this share of the model's triangles (at least
+# FAR_MINIMUM)
+FAR_SHARE = 0.25
+FAR_MINIMUM = 24
 # by the object's group: players matter most; what lies on the floor or
 # flies is small on screen
 GROUP_BUDGETS = {"bipd": 600, "vehi": 600, "weap": 250, "eqip": 250, "garb": 250, "proj": 150}
@@ -84,6 +94,25 @@ def transform_point(m, p):
     return (u[0] * z + l[0] * y + f[0] * x + t[0],
             u[1] * z + l[1] * y + f[1] * x + t[1],
             u[2] * z + l[2] * y + f[2] * x + t[2])
+
+
+def weld_nodes(vertices, world, nodes_inverse):
+    """the vertices at one position all on the node most of them have (each
+    vertex is on one node: two at a point on different nodes part as the
+    model moves, a crack, and the simplifier must leave them be)"""
+    by_position = {}
+    for i, p in enumerate(world):
+        by_position.setdefault(tuple(round(c, 5) for c in p), []).append(i)
+    out = list(vertices)
+    for members in by_position.values():
+        nodes = [vertices[i][0] for i in members]
+        if len(set(nodes)) < 2:
+            continue
+        node = max(set(nodes), key=nodes.count)
+        for i in members:
+            v = vertices[i]
+            out[i] = (node, transform_point(nodes_inverse[node], world[i])) + tuple(v[2:])
+    return out
 
 
 def strip_triangles(indices):
@@ -123,6 +152,10 @@ class ModelConverter:
         of = self.f("Object")
         found = []
         self.budgets = {}
+        self.first_person = set()
+        # models a unit (a player) uses keep their textures at any distance
+        # (a player's colour)
+        self.units = set()
         for tag in self.map.tags:
             if tag.group_name not in OBJECT_GROUPS:
                 continue
@@ -134,6 +167,8 @@ class ModelConverter:
                 # a model several groups use keeps the largest budget
                 budget = GROUP_BUDGETS.get(tag.group_name, MODEL_BUDGET)
                 self.budgets[model.index] = max(self.budgets.get(model.index, 0), budget)
+                if tag.group_name in ("bipd", "vehi"):
+                    self.units.add(model.index)
         # the first-person views: each weapon's model, and the hands
         wf = self.f("Weapon")
         for tag in self.map.tags:
@@ -144,6 +179,7 @@ class ModelConverter:
                     found.append(model)
                 if model is not None:
                     self.budgets[model.index] = FIRST_PERSON_BUDGET
+                    self.first_person.add(model.index)
         gf = self.f("Globals")
         for tag in self.map.tags:
             if tag.group_name == "matg":
@@ -154,7 +190,8 @@ class ModelConverter:
                     if model is not None and model.group_name == "mode" and model not in found:
                         found.append(model)
                     if model is not None:
-                        self.budgets[model.index] = FIRST_PERSON_BUDGET
+                        self.budgets[model.index] = HANDS_BUDGET
+                        self.first_person.add(model.index)
         return found
 
     def shader_texture(self, shader_datum):
@@ -306,6 +343,7 @@ class ModelConverter:
             return
 
         vertices = []
+        world = []
         for v in range(vertex_count):
             px, py, pz, normal, binormal, tangent, tu, tv, n0, n1, w0 = struct.unpack_from("<3fIIIhhbbH", data, v * 32)
             node0 = n0 // 3 if n0 >= 0 else 0
@@ -319,6 +357,8 @@ class ModelConverter:
             light = max(0.0, n[0] * SKY_LIGHT[0] + n[1] * SKY_LIGHT[1] + n[2] * SKY_LIGHT[2])
             shade = min(1.0, 0.5 + 0.5 * light)
             vertices.append((node, local, (tu / 32767.0 * u_scale, tv / 32767.0 * v_scale), shade, n))
+            world.append((px, py, pz))
+        vertices = weld_nodes(vertices, world, nodes_inverse)
 
         # tiny3d winds front faces counter-clockwise
         triangles = [(a, c, b) for a, b, c in strip_triangles(indices)
@@ -331,6 +371,83 @@ class ModelConverter:
             groups = [(texture, None, triangles)]
         for group_texture, st_of, group_triangles in groups:
             self.build_batches(vertices, group_triangles, group_texture, flags, st_of, batches, vertex_data, index_data)
+
+    def convert_far(self, address, gc, gp, nodes_inverse, u_scale, v_scale, shaders, budget, batches, vertex_data,
+                    index_data):
+        """the model's far version: every region's first permutation at its
+        lowest level of detail, one untextured mesh coloured with each part's
+        texture's average colour, simplified to a quarter of the budget"""
+        rf, pf, gf = self.f("ModelRegion"), self.f("ModelRegionPermutation"), self.f("ModelGeometry")
+        rsize, psize, gsize = (self.defs.size(s) for s in ("ModelRegion", "ModelRegionPermutation", "ModelGeometry"))
+        part_size = self.defs.size("ModelGeometryPart")
+        mf = self.f("Model")
+        vertices, triangles = [], []
+        rc, rp = self.block(address + mf["regions"])
+        for r in range(rc):
+            pc, pp = self.block(rp + r * rsize + rf["permutations"])
+            if pc <= 0:
+                continue
+            raw = self.map.read(pp, psize)
+            gi = -1
+            for lod in ("super low", "low", "medium", "high", "super high"):
+                gi = struct.unpack_from("<h", raw, pf[lod])[0]
+                if 0 <= gi < gc:
+                    break
+            if not 0 <= gi < gc:
+                continue
+            parts_count, parts = self.block(gp + gi * gsize + gf["parts"])
+            for p in range(parts_count):
+                part_vertices, part_triangles, texture, flags = self.part_mesh(parts + p * part_size, nodes_inverse,
+                                                                              u_scale, v_scale, shaders)
+                if not part_triangles or flags & MATERIAL_GLOW:
+                    continue
+                colour = self.textures.textures[texture].colour if texture is not None and texture >= 0 else (0.6, 0.6, 0.6)
+                base = len(vertices)
+                for v in part_vertices:
+                    vertices.append((v[0], v[1], v[2], tuple(min(1.0, c * v[3]) for c in colour), v[4]))
+                triangles.extend((a + base, b + base, c + base) for a, b, c in part_triangles)
+        if not triangles:
+            return
+        target = max(FAR_MINIMUM, int(budget * FAR_SHARE))
+        if len(triangles) > target:
+            triangles = decimate(vertices, triangles, target)
+        self.build_batches(vertices, triangles, -1, MATERIAL_UNTEXTURED, lambda uv: (0.0, 0.0), batches, vertex_data,
+                           index_data)
+
+    def part_mesh(self, part_address, nodes_inverse, u_scale, v_scale, shaders):
+        """a part's vertices (node, position in node space, uv, shade,
+        normal) and triangles (tiny3d's winding), its texture and flags"""
+        pf = self.f("ModelGeometryPart")
+        raw = self.map.read(part_address, self.defs.size("ModelGeometryPart"))
+        shader_index = struct.unpack_from("<h", raw, pf["shader index"])[0]
+        triangle_count = struct.unpack_from("<I", raw, pf["triangle count"])[0]
+        triangle_pointer = struct.unpack_from("<I", raw, pf["triangle offset"])[0]
+        vertex_count = struct.unpack_from("<I", raw, pf["vertex count"])[0]
+        vertex_entry = struct.unpack_from("<I", raw, pf["vertex offset"])[0]
+        texture, flags, _ = shaders[shader_index] if 0 <= shader_index < len(shaders) else (-1, 8, None)
+        if texture is None or not vertex_count or not triangle_pointer or not vertex_entry:
+            return [], [], texture, flags
+        vertex_pointer = struct.unpack("<I", self.map.read(vertex_entry + 4, 4))[0]
+        data = self.map.read(vertex_pointer, vertex_count * 32)
+        indices = struct.unpack(f"<{triangle_count + 2}H", self.map.read(triangle_pointer, 2 * (triangle_count + 2)))
+        vertices = []
+        world = []
+        for v in range(vertex_count):
+            px, py, pz, normal, binormal, tangent, tu, tv, n0, n1, w0 = struct.unpack_from("<3fIIIhhbbH", data, v * 32)
+            node0 = n0 // 3 if n0 >= 0 else 0
+            node1 = n1 // 3 if n1 >= 0 else node0
+            node = node0 if w0 / 65535.0 >= 0.5 or n1 < 0 else node1
+            if node >= len(nodes_inverse):
+                node = 0
+            n = unpack_normal(normal)
+            light = max(0.0, n[0] * SKY_LIGHT[0] + n[1] * SKY_LIGHT[1] + n[2] * SKY_LIGHT[2])
+            vertices.append((node, transform_point(nodes_inverse[node], (px, py, pz)),
+                             (tu / 32767.0 * u_scale, tv / 32767.0 * v_scale), min(1.0, 0.5 + 0.5 * light), n))
+            world.append((px, py, pz))
+        vertices = weld_nodes(vertices, world, nodes_inverse)
+        triangles = [(a, c, b) for a, b, c in strip_triangles(indices)
+                     if a < vertex_count and b < vertex_count and c < vertex_count]
+        return vertices, triangles, texture, flags
 
     def texture_windows(self, bitmap, vertices, triangles):
         """a first-person part's triangles grouped by window of its atlas:
@@ -463,6 +580,9 @@ class ModelConverter:
             return [max(-32768, min(32767, int(round(s_ * 32)))), max(-32768, min(32767, int(round(t_ * 32))))]
 
         def rgba(v):
+            if isinstance(v[3], tuple):
+                r, g, b = (int(round(min(1.0, c) * 255)) for c in v[3])
+                return (r << 24) | (g << 16) | (b << 8) | 255
             c = int(round(v[3] * 255))
             return (c << 24) | (c << 16) | (c << 8) | 255
         return struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[4]), *pos(b), pack_normal(b[4]),
@@ -511,7 +631,7 @@ class ModelConverter:
                 for p in range(pc):
                     self.convert_part(pp + p * part_size, nodes_inverse, u_scale, v_scale,
                                       shaders, batches, vertex_data, index_data, keep,
-                                      detail=budget == FIRST_PERSON_BUDGET)
+                                      detail=tag.index in self.first_person)
                 geometry_map[gi] = len(geometry_records)
                 geometry_records.append((first, len(batches) - first))
                 return geometry_map[gi]
@@ -531,7 +651,12 @@ class ModelConverter:
                             break
                     permutation_records.append(choice)
                 region_records.append((max(pc, 0), first_permutation))
-            model_records.append((tag.index, nc, rc, first_region, first_batch, len(batches) - first_batch))
+            near_count = len(batches) - first_batch
+            far_first = len(batches)
+            if tag.index not in self.first_person and tag.index not in self.units:
+                self.convert_far(a, gc, gp, nodes_inverse, u_scale, v_scale, shaders, budget, batches, vertex_data, index_data)
+            model_records.append((tag.index, nc, rc, first_region, first_batch, near_count,
+                                  far_first - first_batch, len(batches) - far_first))
             model_data.append((vertex_data, index_data))
 
         textures = self.textures.textures
@@ -541,7 +666,7 @@ class ModelConverter:
             batch_records.append((texture, flags, len(segs), tri_count, len(segments), index_offset))
             segments.extend(segs)
 
-        sizes = [len(textures) * 28, len(model_records) * 24, len(region_records) * 4, len(permutation_records) * 2,
+        sizes = [len(textures) * 28, len(model_records) * 28, len(region_records) * 4, len(permutation_records) * 2,
                  len(geometry_records) * 4, len(batch_records) * 12, len(segments) * 8]
         offset = 64
         offsets = []
@@ -570,10 +695,10 @@ class ModelConverter:
             name = t.name.encode()
             out += name + b"\0" * (24 - len(name)) + struct.pack(">HH", t.width, t.height)
         pad_to(offsets[1])
-        for (tag_index, nc, rc, first_region, first_batch, batch_count), (vertex_data, index_data), data_offset in \
-                zip(model_records, model_data, data_offsets):
-            out += struct.pack(">HBBHHHHIII", tag_index, min(nc, 255), rc, first_region, 0, first_batch, batch_count,
-                               data_offset, len(vertex_data), len(index_data))
+        for (tag_index, nc, rc, first_region, first_batch, batch_count, far_offset, far_count), (vertex_data, index_data), \
+                data_offset in zip(model_records, model_data, data_offsets):
+            out += struct.pack(">HBBHHHHIIIHH", tag_index, min(nc, 255), rc, first_region, 0, first_batch, batch_count,
+                               data_offset, len(vertex_data), len(index_data), far_offset, far_count)
         pad_to(offsets[2])
         for count, first in region_records:
             out += struct.pack(">HH", count, first)

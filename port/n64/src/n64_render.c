@@ -24,6 +24,11 @@ units" everything here is drawn in), already lit.
 #define SCREEN_HEIGHT 240
 #define MAXIMUM_VIEWS 4
 #define WORLD_SCALE 64.0f
+/* an object smaller than this on screen is drawn in its far version */
+#define FAR_PIXELS 24.0f
+#ifndef GUARD_BAND_SCALE
+#define GUARD_BAND_SCALE 4
+#endif
 
 enum
 {
@@ -119,6 +124,8 @@ struct model_record
 	uint16_t first_batch, batch_count;
 	/* the model's vertices, then its indices, in the file */
 	uint32_t data_offset, vertex_bytes, index_bytes;
+	/* its far version's batches (after first_batch), or none */
+	uint16_t far_first, far_count;
 };
 struct region_record { uint16_t permutation_count, first_permutation; };
 struct geometry_record { uint16_t first_batch, batch_count; };
@@ -188,6 +195,12 @@ static void gpu_time_sync(void)
 		rspq_wait();
 	}
 }
+
+/* the parts of a view, timed: the time since the last change goes to the
+part that was under way (with debug_gpu_time, once the RSP and RDP are
+done with it) */
+enum { PHASE_NONE, PHASE_LEVEL, PHASE_OBJECTS, PHASE_FIRST_PERSON, PHASE_HUD };
+static void render_phase(int phase);
 static int debug_untextured;
 
 static struct
@@ -201,6 +214,9 @@ static struct
 	/* microseconds of CPU in the level, objects and first-person models,
 	and frames, over the statistics window */
 	unsigned long long level_ticks, object_ticks, first_person_ticks, draw_ticks, window_start;
+	unsigned long long hud_ticks;
+	int phase;
+	unsigned long phase_start;
 	int first_person;
 	/* the view's eye (world units) and how many pixels a unit at distance
 	one covers, for leaving out objects too small to see */
@@ -230,7 +246,13 @@ void n64_render_initialize(void)
 	rdpq_init();
 	t3d_init((T3DInitParams){});
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
+	{
 		renderer.viewports[i] = t3d_viewport_create();
+		/* triangles reaching past four times the view are clipped (the
+		RDP's scissor trims the rest): Halo's big floors and walls near the
+		eye made the RSP clip a lot with tiny3d's default of two */
+		renderer.viewports[i].guardBandScale = GUARD_BAND_SCALE;
+	}
 	renderer.identity = malloc_uncached(sizeof(T3DMat4FP));
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
 		renderer.matrices[i] = malloc_uncached(sizeof(T3DMat4FP) * MATRICES_PER_FRAME);
@@ -321,9 +343,9 @@ static void drop_model(int index)
 	release->data = loaded->data;
 	release->setups = loaded->setups;
 	release->blocks = loaded->blocks;
-	release->count = model->batch_count;
+	release->count = model->far_first + model->far_count;
 	rdpq_call_deferred(release_model, release);
-	for (int b = 0; b < model->batch_count; b++)
+	for (int b = 0; b < model->far_first + model->far_count; b++)
 		release_texture(models.batches[model->first_batch + b].texture);
 	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
 	loaded->data = NULL;
@@ -415,8 +437,8 @@ static int load_model(int index)
 		drop_model(oldest);
 	}
 	loaded->data = memalign(16, size);
-	loaded->setups = calloc(model->batch_count, sizeof(rspq_block_t *));
-	loaded->blocks = calloc(model->batch_count, sizeof(rspq_block_t *));
+	loaded->setups = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
+	loaded->blocks = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
 	file = loaded->data && loaded->setups && loaded->blocks ? fopen(models.path, "rb") : NULL;
 	if (!file || fseek(file, model->data_offset, SEEK_SET) || fread(loaded->data, 1, size, file) != size)
 	{
@@ -434,7 +456,7 @@ static int load_model(int index)
 	data_cache_hit_writeback_invalidate(loaded->data, size);
 	models.loaded_bytes += size;
 	models.reads++;
-	for (int b = 0; b < model->batch_count; b++)
+	for (int b = 0; b < model->far_first + model->far_count; b++)
 	{
 		struct model_batch *batch = &models.batches[model->first_batch + b];
 		uint8_t *index = loaded->data + model->vertex_bytes + batch->index_offset;
@@ -487,7 +509,7 @@ static void load_models(const char *map_name)
 		return;
 	}
 	/* the tables stay in memory; vertices_offset is where they end */
-	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64O", 4) || header.version != 2)
+	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64O", 4) || header.version != 3)
 	{
 		fclose(file);
 		assertf(0, "%s was converted for another build", models.path);
@@ -735,15 +757,9 @@ void n64_render_view(const struct n64_view *view)
 	rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
 	t3d_light_set_ambient(white);
 	t3d_light_set_count(0);
-	{
-		unsigned long start;
-
-		gpu_time_sync();
-		start = TICKS_READ();
-		draw_level(viewport);
-		gpu_time_sync();
-		renderer.level_ticks += TICKS_READ() - start;
-	}
+	render_phase(PHASE_LEVEL);
+	draw_level(viewport);
+	render_phase(PHASE_OBJECTS);
 	renderer.first_person = 0;
 	renderer.viewport = viewport;
 	renderer.current_texture = -2;
@@ -791,7 +807,7 @@ static int current_model_mode = -1;
 static void use_setup(struct loaded_model *loaded, int b, struct model_batch *batch, unsigned long color)
 {
 	int key = (batch->texture << 8) | batch->flags;
-	sprite_t *sprite = debug_untextured ? NULL : models.sprites[batch->texture];
+	sprite_t *sprite = debug_untextured || batch->texture < 0 ? NULL : models.sprites[batch->texture];
 	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags);
 
 	if (!(batch->flags & MATERIAL_CHANGE_COLOR))
@@ -832,22 +848,44 @@ void n64_render_first_person_begin(void)
 	t3d_screen_clear_depth();
 	renderer.current_texture = -2;
 	renderer.first_person = 1;
+	render_phase(PHASE_FIRST_PERSON);
 }
 
 static void render_object(const struct n64_object *object);
 
+/* the node matrices converted this frame, by object */
+#define CONVERTED_SLOTS 256
+static struct converted_matrices
+{
+	unsigned long frame, key;
+	T3DMat4FP *matrices;
+} converted[CONVERTED_SLOTS];
+
 void n64_render_object(const struct n64_object *object)
 {
-	unsigned long start;
+	render_object(object);
+}
+
+static void render_phase(int phase)
+{
+	unsigned long now;
 
 	gpu_time_sync();
-	start = TICKS_READ();
-	render_object(object);
-	gpu_time_sync();
-	if (renderer.first_person)
-		renderer.first_person_ticks += TICKS_READ() - start;
-	else
-		renderer.object_ticks += TICKS_READ() - start;
+	now = TICKS_READ();
+	switch (renderer.phase)
+	{
+	case PHASE_LEVEL: renderer.level_ticks += now - renderer.phase_start; break;
+	case PHASE_OBJECTS: renderer.object_ticks += now - renderer.phase_start; break;
+	case PHASE_FIRST_PERSON: renderer.first_person_ticks += now - renderer.phase_start; break;
+	case PHASE_HUD: renderer.hud_ticks += now - renderer.phase_start; break;
+	}
+	renderer.phase = phase;
+	renderer.phase_start = now;
+}
+
+void n64_render_hud_phase(void)
+{
+	render_phase(PHASE_HUD);
 }
 
 static void render_object(const struct n64_object *object)
@@ -856,6 +894,7 @@ static void render_object(const struct n64_object *object)
 	T3DMat4FP *matrices;
 	T3DVec3 center;
 	int node_count;
+	int far;
 
 	if (n64_debug_flag("debug_no_objects"))
 		return;
@@ -865,23 +904,59 @@ static void render_object(const struct n64_object *object)
 	center = (T3DVec3){{object->center[0] * WORLD_SCALE, object->center[1] * WORLD_SCALE, object->center[2] * WORLD_SCALE}};
 	if (!t3d_frustum_vs_sphere(&renderer.viewport->viewFrustum, &center, object->radius * WORLD_SCALE + 8.0f))
 		return;
+	far = 0;
 	if (!renderer.first_person)
 	{
-		/* smaller than a pixel and a half across: not drawn */
+		/* smaller than a pixel and a half across: not drawn; smaller than
+		FAR_PIXELS: its far version, if it has one */
 		float dx = object->center[0] - renderer.eye[0], dy = object->center[1] - renderer.eye[1];
 		float dz = object->center[2] - renderer.eye[2];
 		float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+		float pixels = distance > object->radius ? object->radius * 2.0f * renderer.pixels_per_unit / distance : 1e9f;
 
-		if (distance > object->radius && object->radius * 2.0f * renderer.pixels_per_unit < 1.5f * distance)
+		if (pixels < 1.5f)
 			return;
+		far = model->far_count && pixels < FAR_PIXELS;
 	}
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
 	if (!load_model(model - models.models))
 		return;
+	/* an object seen in an earlier view of this frame has its matrices */
+	matrices = NULL;
+	if (object->key)
+	{
+		for (int probe = 0; probe < 8; probe++)
+		{
+			struct converted_matrices *entry = &converted[(object->key * 2654435761u + probe) % CONVERTED_SLOTS];
+
+			if (entry->frame == renderer.frame_index && entry->key == object->key)
+			{
+				matrices = entry->matrices;
+				break;
+			}
+		}
+	}
+	if (matrices)
+		goto converted_already;
 	matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
 	renderer.matrix_count += model->node_count;
+	if (object->key)
+	{
+		for (int probe = 0; probe < 8; probe++)
+		{
+			struct converted_matrices *entry = &converted[(object->key * 2654435761u + probe) % CONVERTED_SLOTS];
+
+			if (entry->frame != renderer.frame_index)
+			{
+				entry->frame = renderer.frame_index;
+				entry->key = object->key;
+				entry->matrices = matrices;
+				break;
+			}
+		}
+	}
 	for (int n = 0; n < node_count; n++)
 	{
 		const float *m = object->node_matrices + n * 13;
@@ -899,9 +974,25 @@ static void render_object(const struct n64_object *object)
 	animation drives) keep the first node's matrix */
 	for (int n = node_count; n < model->node_count; n++)
 		matrices[n] = matrices[0];
+converted_already:
 	t3d_segment_set(SEGMENT_NODE_MATRICES, matrices);
 	renderer.objects++;
 	unsigned long color = ((unsigned long)object->tint[0] << 16) | ((unsigned long)object->tint[1] << 8) | object->tint[2];
+
+	if (far)
+	{
+		struct loaded_model *loaded = &models.loaded[model - models.models];
+
+		for (int b = model->far_first; b < model->far_first + model->far_count; b++)
+		{
+			struct model_batch *batch = &models.batches[model->first_batch + b];
+
+			use_setup(loaded, b, batch, color);
+			rspq_block_run(loaded->blocks[b]);
+			renderer.triangles += batch->triangle_count;
+		}
+		return;
+	}
 	for (int r = 0; r < model->region_count; r++)
 	{
 		struct region_record *region = &models.regions[model->first_region + r];
@@ -979,6 +1070,7 @@ void n64_profile_poll(void);
 
 void n64_render_frame_end(void)
 {
+	render_phase(PHASE_NONE);
 	n64_profile_poll();
 	draw_crosshairs();
 	draw_counter();
@@ -993,14 +1085,16 @@ void n64_render_frame_end(void)
 
 		if (renderer.window_start)
 		{
-			debugf("frames: %lu.%lu fps; per frame: draw %llu us (level %llu, objects %llu, first person %llu), tick %lu us\n",
+			debugf("frames: %lu.%lu fps; per frame: draw %llu us (level %llu, objects %llu, first person %llu, hud %llu), tick %lu us\n",
 				(unsigned long)(120ULL * TICKS_PER_SECOND * 10 / (now - renderer.window_start) / 10),
 				(unsigned long)(120ULL * TICKS_PER_SECOND * 10 / (now - renderer.window_start) % 10),
 				TICKS_TO_US(renderer.draw_ticks) / 120, TICKS_TO_US(renderer.level_ticks) / 120,
-				TICKS_TO_US(renderer.object_ticks) / 120, TICKS_TO_US(renderer.first_person_ticks) / 120, n64_last_tick_us);
+				TICKS_TO_US(renderer.object_ticks) / 120, TICKS_TO_US(renderer.first_person_ticks) / 120,
+				TICKS_TO_US(renderer.hud_ticks) / 120, n64_last_tick_us);
 		}
 		renderer.window_start = now;
 		renderer.draw_ticks = renderer.level_ticks = renderer.object_ticks = renderer.first_person_ticks = 0;
+		renderer.hud_ticks = 0;
 		sys_get_heap_stats(&heap);
 		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
 			"models %lu KB (%lu reads), textures %lu KB (%lu reads)\n",

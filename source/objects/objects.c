@@ -2323,6 +2323,12 @@ match_vassert(file, line, \
 	csprintf(temporary, "%s had a forward (%f,%f,%f) not perpendicular to up (%f,%f,%f)", string, (*matrix).forward.i, (*matrix).forward.j, (*matrix).forward.k, (*matrix).up.i, (*matrix).up.j, (*matrix).up.k)); \
 match_vassert(file, line, valid_real_matrix4x3(matrix), csprintf(temporary, "%s: assert_valid_real_matrix4x3", string));
 
+#ifdef HALO_N64
+/* the checks' only use is the asserts', compiled out on the N64 (they ran on
+every node of every object every tick) */
+#define ocnm_root_matrix_custom(file, line, matrix, custom_string) { }
+#define ocnm_parent_matrix_custom(file, line, matrix, custom_string) { }
+#else
 #define ocnm_root_matrix_custom(file, line, matrix, custom_string) \
 if (!valid_real_matrix4x3(matrix)) \
 { \
@@ -2358,6 +2364,7 @@ if (!valid_real_matrix4x3(matrix)) \
 	real_vector3d const *ocnm_up = &(*matrix).up; \
 	ocnm_parent_matrix_internal(file, line, matrix, string); \
 }
+#endif
 
 void object_compute_node_matrices(
 	long object_index)
@@ -3703,7 +3710,7 @@ static boolean object_update(
 			/* each stage timed (port/n64/game/n64_game.c logs the sums) */
 			extern unsigned long n64_ticks(void);
 			extern unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
-			unsigned long *n64_equipment = object->object.type == _object_type_biped ? n64_equipment_stage_time : NULL;
+			unsigned long *n64_equipment = object->object.type == _object_type_machine ? n64_equipment_stage_time : NULL;
 			unsigned long t0 = n64_ticks(), t1;
 
 			object_type_update(object_index);

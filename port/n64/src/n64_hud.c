@@ -145,8 +145,11 @@ static sprite_t *hud_sprite(int number)
 	return hud.sprites[number];
 }
 
+void n64_render_hud_phase(void);
+
 int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 {
+	n64_render_hud_phase();
 	hud.x0 = x0;
 	hud.y0 = y0;
 	hud.x1 = x1;

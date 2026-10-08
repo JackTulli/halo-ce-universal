@@ -196,6 +196,7 @@ static void render_objects_for_view(
 		n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
 		n64.node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
 		n64.node_matrices = (const float *)object_get_node_matrices(iterator.index);
+		n64.key = (unsigned long)iterator.index;
 		n64.region_permutations = object->object.region_permutations;
 		n64.region_count = MAXIMUM_REGIONS_PER_OBJECT;
 		n64.center[0] = object->object.bounding_sphere_center.x;
@@ -241,6 +242,7 @@ void n64_first_person_model_draw(
 	n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(model_index);
 	n64.node_count = (short)model_definition_get(model_index)->nodes.count;
 	n64.node_matrices = (const float *)node_matrices;
+	n64.key = 0;
 	n64.region_permutations = no_permutations;
 	n64.region_count = 0;
 	n64.center[0] = render.camera.position.x;

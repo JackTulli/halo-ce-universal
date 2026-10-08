@@ -120,9 +120,11 @@ struct n64_object
 	short pad;
 	float center[3];
 	float radius;
-	/* the colour the model's light is doubled by: white for most objects,
-	a player's armour colour for players */
+	/* a player's colour (where the model's textures take it), else white */
 	unsigned char tint[4];
+	/* the object (non-zero, the same in every view of a frame: its node
+	matrices are converted once a frame), or 0 */
+	unsigned long key;
 };
 
 void n64_render_initialize(void);

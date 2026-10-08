@@ -7,8 +7,10 @@ result drawable as it was:
 
 - vertices are welded by position within their node first, so a texture
   seam (two vertices, one position) moves as one and never opens a crack;
-- an edge collapses only between welded vertices of the same node (the
-  skinning stays as it was);
+- an edge between vertices of two nodes collapses too, at CROSS_NODE_COST
+  times its error (after the edges within a node): the moved vertex's
+  triangles take the other node's vertex, as rigid skinning stretches a
+  joint anyway (a hand's 36 finger nodes left little to collapse otherwise);
 - a vertex moves onto its neighbour's position (half-edge collapse), and
   each corner of a remaining triangle takes, from the vertices at that
   position, the one its own vertex already shares a triangle with: the same
@@ -57,6 +59,9 @@ def _normal(a, b, c):
     ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
     vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
     return (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+
+
+CROSS_NODE_COST = 8.0
 
 
 def decimate(vertices, triangles, target):
@@ -125,15 +130,16 @@ def decimate(vertices, triangles, target):
         neighbours = set()
         for t in by_group[g]:
             for h in tris[t][1]:
-                if h != g and nodes[h] == nodes[g]:
+                if h != g:
                     neighbours.add(h)
         for h in neighbours:
             q = [x + y for x, y in zip(quadric[g], quadric[h])]
+            k = 1.0 if nodes[h] == nodes[g] else CROSS_NODE_COST
             # (g moves onto h, and h onto g, unless the mover is locked)
             if g not in locked:
-                heapq.heappush(heap, (_error(q, positions[h]), g, h, version[g], version[h]))
+                heapq.heappush(heap, (k * _error(q, positions[h]), g, h, version[g], version[h]))
             if h not in locked:
-                heapq.heappush(heap, (_error(q, positions[g]), h, g, version[h], version[g]))
+                heapq.heappush(heap, (k * _error(q, positions[g]), h, g, version[h], version[g]))
 
     for g in range(len(members)):
         push_edges(g)

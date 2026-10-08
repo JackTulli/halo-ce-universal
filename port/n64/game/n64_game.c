@@ -472,7 +472,7 @@ void __wrap_game_tick(
 				n64_object_stage_time[i] = 0;
 			}
 			n64_log(phases);
-			length = snprintf(phases, sizeof(phases), "bipeds: ");
+			length = snprintf(phases, sizeof(phases), "machines: ");
 			for (i = 0; i < 5; i++)
 			{
 				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
