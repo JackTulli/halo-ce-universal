@@ -322,6 +322,31 @@ boolean collision_test_vector(
 		test_environment = FALSE;
 	}
 
+#ifdef HALO_N64
+	{
+		/* (measuring, "debug_ray_callers": who casts rays, and how long) */
+		extern volatile int n64_profile_zone;
+		extern unsigned long n64_ray_callers[16][2];
+		int n64_debug_flag(char const *name);
+
+		if (n64_debug_flag("debug_ray_callers"))
+		{
+			unsigned long caller = (unsigned long)__builtin_return_address(0);
+			int i;
+
+			for (i = 0; i < 16; i++)
+			{
+				if (n64_ray_callers[i][0] == caller || !n64_ray_callers[i][0])
+				{
+					n64_ray_callers[i][0] = caller;
+					n64_ray_callers[i][1] += 1 + (n64_profile_zone ? 0x10000 : 0);
+					break;
+				}
+			}
+		}
+	}
+#endif
+
 	collision->type = NONE;
 	collision->start_location.leaf_index = NONE;
 	collision->start_location.cluster_index = NONE;

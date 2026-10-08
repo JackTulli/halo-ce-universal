@@ -520,6 +520,13 @@ unsigned long n64_tick_phases[8];
 unsigned long n64_object_type_time[16], n64_object_type_count[16];
 /* objects.c's object_update, by stage */
 unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
+/* the object type whose stages are logged apart (port.json flag
+"debug_stage_type=<type>": 0 biped, 1 vehicle, 2 weapon, 3 equipment,
+6 scenery, 7 machine) */
+int n64_stage_type = 7;
+/* (collisions.c, "debug_ray_callers": each caller of collision_test_vector
+and how many rays it cast, those while the HUD drew in the top 16 bits) */
+unsigned long n64_ray_callers[16][2];
 static char const *const n64_object_stage_names[5] =
 {
 	"type update", "damage/export", "node matrices", "functions/colours", "lights",
@@ -594,7 +601,13 @@ void n64_game_tick(
 	unsigned long elapsed;
 
 	if (!n64_tick_profile.window_start)
+	{
+		char setting[8];
+
 		n64_tick_profile.window_start = n64_ticks64();
+		if (n64_debug_text("debug_stage_type", setting, sizeof(setting)))
+			n64_stage_type = atoi(setting);
+	}
 	n64_profile_zone = n64_debug_flag("profile_tick");
 	n64_firefight_tick();
 	game_tick();
@@ -634,6 +647,16 @@ void n64_game_tick(
 				n64_tick_phases[i] = 0;
 			}
 			n64_log(phases);
+			if (n64_debug_flag("debug_ray_callers"))
+			{
+				for (i = 0; i < 16 && n64_ray_callers[i][0]; i++)
+				{
+					snprintf(phases, sizeof(phases), "rays from %08lx: %lu (%lu in the HUD)", n64_ray_callers[i][0],
+						n64_ray_callers[i][1] & 0xFFFF, n64_ray_callers[i][1] >> 16);
+					n64_log(phases);
+					n64_ray_callers[i][1] = 0;
+				}
+			}
 			length = 0;
 			for (i = 0; i < 12; i++)
 			{
@@ -656,7 +679,14 @@ void n64_game_tick(
 				n64_object_stage_time[i] = 0;
 			}
 			n64_log(phases);
-			length = snprintf(phases, sizeof(phases), "machines: ");
+			{
+				extern unsigned long n64_unmoved_reasons[4];
+
+				length = snprintf(phases, sizeof(phases), "type %d (not still %lu, overlays %lu, moved %lu, skipped %lu): ",
+					n64_stage_type, n64_unmoved_reasons[0], n64_unmoved_reasons[1], n64_unmoved_reasons[2],
+					n64_unmoved_reasons[3]);
+				n64_unmoved_reasons[0] = n64_unmoved_reasons[1] = n64_unmoved_reasons[2] = n64_unmoved_reasons[3] = 0;
+			}
 			for (i = 0; i < 5; i++)
 			{
 				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],

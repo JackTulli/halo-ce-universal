@@ -27,7 +27,7 @@ static volatile int sample_count;
 static volatile int dumped;
 static int zone_only;
 /* "profile_stack": each sample is STACK_WORDS words (pc, ra, callers) */
-#define STACK_WORDS 8
+#define STACK_WORDS 12
 static int stack_chain;
 static uint32_t text_end;
 extern char __text_end[];
@@ -58,12 +58,14 @@ static void sample(void)
 		uint32_t sp = *(uint32_t *)(frame + 32 + 29 * 8 + 4);
 		int found = 0;
 
-		for (int i = 0; i < 96 && found < STACK_WORDS - 2 && (sp & 3) == 0 &&
-			sp >= 0x80000400 && sp < 0x80800000 - 4 * 96; i++)
+		for (int i = 0; i < 512 && found < STACK_WORDS - 2 && (sp & 3) == 0 &&
+			sp >= 0x80000400 && sp < 0x80800000 - 4 * 512; i++)
 		{
 			uint32_t word = ((uint32_t *)sp)[i];
 
-			if (word >= 0x80000400 && word < text_end && (word & 3) == 0)
+			/* (a recursion's frames return to one place: once) */
+			if (word >= 0x80000400 && word < text_end && (word & 3) == 0 &&
+				(!found || samples[sample_count + found - 1] != word))
 				samples[sample_count + found++] = word;
 		}
 		while (found < STACK_WORDS - 2)

@@ -11437,6 +11437,14 @@ static void unit_verify_vectors(
 {
 	char buffer[512];
 
+#ifdef HALO_N64
+	/* (a diagnostic, six vector checks ten times a unit a tick: the N64
+	logs nothing of it) */
+	(void)unit_index;
+	(void)debugstring;
+	(void)buffer;
+	return;
+#endif
 	if (!unit_vectors_are_valid(unit_index))
 	{
 		struct unit_datum *unit = unit_get(unit_index);

@@ -52,6 +52,9 @@ OBJECTS.C
 #include "sound/game_sound.h"
 #include "structures/structure_bsp_definitions.h"
 #include "units/units.h"
+#ifdef HALO_N64
+#include "units/vehicle_datum.h"
+#endif
 
 /* ---------- constants */
 
@@ -3657,11 +3660,83 @@ static boolean n64_same_words(
 	return TRUE;
 }
 
+/* a vehicle's node matrices come from its place, its animations, its
+function values (its overlays), its unit's animation state and aiming,
+and its own state (suspension, wheels, turning, speed): with none of them
+changed since the last tick (a parked, empty vehicle), they are the same
+(two parked warthogs were 2 ms of Blood Gulch's tick) */
+/* (measuring, for the object type n64_game.c logs apart: why its objects'
+node matrices were computed -- not still, overlays, moved -- and how often
+they were not) */
+unsigned long n64_unmoved_reasons[4];
+extern int n64_stage_type;
+
+static boolean n64_vehicle_unmoved(
+	long object_index,
+	struct object_datum *object)
+{
+	static struct
+	{
+		long object_index;
+		real_point3d position;
+		real_vector3d forward, up, translational_velocity, angular_velocity;
+		real scale;
+		struct animation_state animation;
+		real functions[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS];
+		real_vector3d aiming, looking;
+		struct unit_animation unit_animation;
+		struct _vehicle_datum vehicle;
+	} last[8];
+	struct vehicle_datum *vehicle = (struct vehicle_datum *)object;
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & 7);
+
+	if (object->object.parent_object_index != NONE || object->object.animation.interpolation_frame_count)
+	{
+		if (last[slot].object_index == object_index)
+			last[slot].object_index = NONE;
+		return FALSE;
+	}
+	if (last[slot].object_index == object_index &&
+		!csmemcmp(&last[slot].position, &object->object.position, sizeof(real_point3d)) &&
+		!csmemcmp(&last[slot].forward, &object->object.forward, sizeof(real_vector3d)) &&
+		!csmemcmp(&last[slot].up, &object->object.up, sizeof(real_vector3d)) &&
+		!csmemcmp(&last[slot].translational_velocity, &object->object.translational_velocity, sizeof(real_vector3d)) &&
+		!csmemcmp(&last[slot].angular_velocity, &object->object.angular_velocity, sizeof(real_vector3d)) &&
+		last[slot].scale == object->object.scale &&
+		last[slot].animation.index == object->object.animation.state.index &&
+		last[slot].animation.frame_index == object->object.animation.state.frame_index &&
+		!csmemcmp(last[slot].functions, object->object.outgoing_function_values, sizeof(last[slot].functions)) &&
+		!csmemcmp(&last[slot].aiming, &vehicle->unit.aiming_vector, sizeof(real_vector3d)) &&
+		!csmemcmp(&last[slot].looking, &vehicle->unit.looking_vector, sizeof(real_vector3d)) &&
+		!csmemcmp(&last[slot].unit_animation, &vehicle->unit.animation, sizeof(struct unit_animation)) &&
+		!csmemcmp(&last[slot].vehicle, &vehicle->vehicle, sizeof(struct _vehicle_datum)))
+	{
+		return TRUE;
+	}
+	last[slot].object_index = object_index;
+	last[slot].position = object->object.position;
+	last[slot].forward = object->object.forward;
+	last[slot].up = object->object.up;
+	last[slot].translational_velocity = object->object.translational_velocity;
+	last[slot].angular_velocity = object->object.angular_velocity;
+	last[slot].scale = object->object.scale;
+	last[slot].animation = object->object.animation.state;
+	csmemcpy(last[slot].functions, object->object.outgoing_function_values, sizeof(last[slot].functions));
+	last[slot].aiming = vehicle->unit.aiming_vector;
+	last[slot].looking = vehicle->unit.looking_vector;
+	last[slot].unit_animation = vehicle->unit.animation;
+	last[slot].vehicle = vehicle->vehicle;
+	return FALSE;
+}
+
 static boolean n64_object_unmoved(
 	long object_index,
 	struct object_datum *object,
 	struct object_definition *object_definition)
 {
+	if (object->object.type == _object_type_vehicle)
+		return n64_vehicle_unmoved(object_index, object);
+
 	static struct
 	{
 		long object_index;
@@ -3685,6 +3760,19 @@ static boolean n64_object_unmoved(
 		struct animation_graph *graph = animation_graph_definition_get(object_definition->object.animation_graph.index);
 
 		still = graph->object_overlays.count == 0;
+		if (!still)
+			n64_unmoved_reasons[1]++;
+	}
+	else if (!still && object->object.type == n64_stage_type)
+		n64_unmoved_reasons[0]++;
+	/* scenery that animates by itself (Blood Gulch's plants swaying, a
+	quarter of a millisecond each): its pose every other tick, staggered */
+	if (!still && object->object.type == _object_type_scenery &&
+		object->object.parent_object_index == NONE && !animation->interpolation_frame_count &&
+		TEST_FLAG(object->object.flags, _object_animates_automatically_bit) &&
+		((game_time_get() + slot) & 1))
+	{
+		return TRUE;
 	}
 	if (!still)
 	{
@@ -3702,8 +3790,12 @@ static boolean n64_object_unmoved(
 			(last[slot].animation.index == animation->state.index &&
 				last[slot].animation.frame_index == animation->state.frame_index)))
 	{
+		if (object->object.type == n64_stage_type)
+			n64_unmoved_reasons[3]++;
 		return TRUE;
 	}
+	if (object->object.type == n64_stage_type)
+		n64_unmoved_reasons[2]++;
 	last[slot].object_index = object_index;
 	last[slot].position = object->object.position;
 	last[slot].forward = object->object.forward;
@@ -3744,7 +3836,8 @@ static boolean object_update(
 			/* each stage timed (port/n64/game/n64_game.c logs the sums) */
 			extern unsigned long n64_ticks(void);
 			extern unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
-			unsigned long *n64_equipment = object->object.type == _object_type_machine ? n64_equipment_stage_time : NULL;
+			extern int n64_stage_type;
+			unsigned long *n64_equipment = object->object.type == n64_stage_type ? n64_equipment_stage_time : NULL;
 			unsigned long t0 = n64_ticks(), t1;
 
 			object_type_update(object_index);
