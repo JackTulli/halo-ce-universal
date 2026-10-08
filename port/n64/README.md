@@ -116,10 +116,8 @@ read the CPU's state through ares' GDB server without gdb.
 
 8 October, performance: the views see 55 world units (one player), 45
 (two) or 32 (three or four) into fog of the map's own colour (its sky's
-outdoor fog), nothing wholly past it (left out by distance: tiny3d does
-not clip at the far plane, which stays the game's, so a far plane at the
-fog's end made big triangles across it come and go); three or four players
-get lighter levels
+outdoor fog), nothing wholly past it (left out by distance); three or
+four players get lighter levels
 (`<map>-low.lvl`, no lightmap splitting) and models (`<map>-low.mdl`: the
 objects at half their triangles, first-person views at 350); the level's
 visible batches are drawn a material at a time and the objects' batches
@@ -132,6 +130,17 @@ every fourth frame. In ares: Wizard 30 / 27 / 11 fps with 1 / 2 / 4
 players, Blood Gulch 30 / 18 / 9 (were 30 / 19 / 8 and 27 / 12 / 6). Four
 players also crashed in the motion sensor (a decompiled array sized for
 two players), fixed.
+
+Distant terrain flashing in and out (worse on big maps) was a race: the
+viewports were tiny3d's unbuffered kind, one copy of the camera and
+projection matrices overwritten by every attach, and once the CPU ran
+ahead of the RSP the world's later batches and objects were drawn with the
+first-person weapon's (16-unit far plane). They are buffered now (two
+attaches a frame for each frame in flight). The frustum's far plane is
+also made from the eye and its direction: tiny3d's, the difference of two
+projection rows equal to four digits, moved about in floats. Measuring:
+`debug_spin_period=<ticks>`, `debug_far`, `debug_no_pvs`,
+`debug_fog_test=<1-5>`.
 
 8 October: the menu and all 13 multiplayer maps (Battle Creek, Sidewinder,
 Damnation, Rat Race, Prisoner, Hang 'em High, Chill Out, Derelict, Boarding

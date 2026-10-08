@@ -221,6 +221,9 @@ static int debug_cull_front;
 /* measuring: 1, the level's vertices without its triangles; 2, its
 materials without its batches */
 static int debug_level_parts;
+/* measuring the fog: 1, nothing left out past it; 2, no fog; 3, fog far
+away */
+static int debug_fog_test;
 
 static struct
 {
@@ -288,6 +291,14 @@ void n64_render_set_view_count(int count)
 
 void n64_render_set_fog(unsigned long rgb, float start, float end)
 {
+	/* (measuring, "debug_fog_test": 2 no fog, 3 fog far away) */
+	if (debug_fog_test == 2)
+		end = 0.f;
+	if (debug_fog_test == 3 || debug_fog_test == 5)
+	{
+		start = 1000.f;
+		end = 2000.f;
+	}
 	renderer.fog = end > 0.f;
 	renderer.fog_color = RGBA32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 0xFF);
 	renderer.fog_start = start;
@@ -366,7 +377,13 @@ void n64_render_initialize(void)
 	t3d_init((T3DInitParams){});
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
 	{
-		renderer.viewports[i] = t3d_viewport_create();
+		/* the camera and projection matrices in a ring the RSP reads from
+		while the CPU goes on: two per frame (the world's, the first-person
+		weapon's) for each frame in flight and one more. Unbuffered, tiny3d
+		kept one copy that each attach overwrote, and once the CPU ran
+		ahead of the RSP the world's later batches and objects were drawn
+		with the weapon's 16-unit far plane: distant terrain came and went */
+		renderer.viewports[i] = t3d_viewport_create_buffered(2 * (FRAMES_IN_FLIGHT + 1));
 		/* triangles reaching past four times the view are clipped (the
 		RDP's scissor trims the rest): Halo's big floors and walls near the
 		eye made the RSP clip a lot with tiny3d's default of two */
@@ -384,6 +401,8 @@ void n64_render_initialize(void)
 		debug_cull_front = n64_debug_flag("debug_cull_front");
 		if (n64_debug_text("debug_level_parts", text, sizeof(text)))
 			debug_level_parts = atoi(text);
+		if (n64_debug_text("debug_fog_test", text, sizeof(text)))
+			debug_fog_test = atoi(text);
 	}
 	renderer.identity = malloc_uncached(sizeof(T3DMat4FP));
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
@@ -515,7 +534,7 @@ static void record_model_modes(void)
 		rspq_block_begin();
 		rdpq_mode_begin();
 		rdpq_set_mode_standard();
-		rdpq_mode_zbuf(depth, depth);
+		rdpq_mode_zbuf(depth && debug_fog_test != 4, depth);
 		rdpq_mode_persp(true);
 		rdpq_mode_fog(mode >= NUMBER_OF_MODEL_MODES ? RDPQ_FOG_STANDARD : 0);
 		rdpq_mode_filter(FILTER_BILINEAR);
@@ -868,7 +887,7 @@ static void record_material(int index)
 	rdpq_sync_tile();
 	rdpq_mode_begin();
 	rdpq_set_mode_standard();
-	rdpq_mode_zbuf(true, true);
+	rdpq_mode_zbuf(debug_fog_test != 4, true);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_mode_dithering(DITHER_SQUARE_SQUARE);
@@ -908,7 +927,7 @@ static int beyond_fog(float x0, float y0, float z0, float x1, float y1, float z1
 {
 	float dx, dy, dz;
 
-	if (!renderer.fog)
+	if (!renderer.fog || debug_fog_test == 1)
 		return 0;
 	dx = renderer.eye[0] < x0 ? x0 - renderer.eye[0] : renderer.eye[0] > x1 ? renderer.eye[0] - x1 : 0.f;
 	dy = renderer.eye[1] < y0 ? y0 - renderer.eye[1] : renderer.eye[1] > y1 ? renderer.eye[1] - y1 : 0.f;
@@ -1041,6 +1060,22 @@ void n64_render_view(const struct n64_view *view)
 		up = (T3DVec3){{0, 0, 1}};
 	}
 	t3d_viewport_look_at(viewport, &eye, &target, &up);
+	{
+		/* the frustum's far plane from the eye and its direction: tiny3d
+		takes it as the difference of two projection rows that agree to
+		four digits with Halo's near plane, so in floats it landed anywhere
+		and moved as the eye turned -- the distant level and objects came
+		and went from frame to frame */
+		float fx = target.v[0] - eye.v[0], fy = target.v[1] - eye.v[1], fz = target.v[2] - eye.v[2];
+		float length = sqrtf(fx * fx + fy * fy + fz * fz);
+		float far = (renderer.fog && renderer.fog_end < view->z_far ? renderer.fog_end : view->z_far) * WORLD_SCALE;
+
+		if (length > 0.f)
+		{
+			fx /= length, fy /= length, fz /= length;
+			viewport->viewFrustum.planes[5] = (T3DVec4){{-fx, -fy, -fz, fx * eye.v[0] + fy * eye.v[1] + fz * eye.v[2] + far}};
+		}
+	}
 	t3d_viewport_attach(viewport);
 	apply_fog();
 
@@ -1442,6 +1477,17 @@ void n64_profile_poll(void);
 
 void n64_render_frame_end(void)
 {
+	/* (measuring, "debug_fog_test=5": each frame's counts) */
+	if (debug_fog_test == 5)
+	{
+		static unsigned long last_batches, last_objects, last_triangles;
+
+		debugf("frame %lu: %lu batches, %lu objects, %lu triangles\n", renderer.frame_index,
+			renderer.batches - last_batches, renderer.objects - last_objects, renderer.triangles - last_triangles);
+		last_batches = renderer.batches;
+		last_objects = renderer.objects;
+		last_triangles = renderer.triangles;
+	}
 	flush_draws();
 	stretch_view();
 	render_phase(PHASE_NONE);

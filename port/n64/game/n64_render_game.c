@@ -12,6 +12,7 @@ renderer's (port/n64/src/n64_render.c).
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "game/game.h"
 #include "game/players.h"
@@ -391,6 +392,16 @@ void render_frame(
 		view.vertical_field_of_view = camera->vertical_field_of_view;
 		view.z_near = camera->z_near;
 		view.z_far = 200.f;
+		{
+			/* (measuring, "debug_far=<units>") */
+			static float debug_far = -1.f;
+			char text[16];
+
+			if (debug_far < 0.f)
+				debug_far = n64_debug_text("debug_far", text, sizeof(text)) ? (float)atof(text) : 0.f;
+			if (debug_far > 0.f)
+				view.z_far = debug_far;
+		}
 		/* the game lays the views out on a 640x480 screen */
 		view.x0 = camera->viewport_bounds.x0 / 2;
 		view.y0 = camera->viewport_bounds.y0 / 2;
@@ -438,8 +449,16 @@ void render_frame(
 			}
 			if (spin == 4 || (spin && window_index == 0))
 			{
-				float angle = spin == 4 ? (spin_at[3] + 180.f * window_index) * (6.2831853f / 360.f) :
-					(float)(game_time_get() % 480) * (6.2831853f / 480.f);
+				/* (port.json flag "debug_spin_period=<ticks>": another turning speed) */
+				static long period = -1;
+				float angle;
+
+				if (period < 0)
+					period = n64_debug_text("debug_spin_period", text, sizeof(text)) ? atol(text) : 480;
+				if (period <= 0)
+					period = 480;
+				angle = spin == 4 ? (spin_at[3] + 180.f * window_index) * (6.2831853f / 360.f) :
+					(float)(game_time_get() % period) * (6.2831853f / (float)period);
 
 				view.position[0] = spin_at[0];
 				view.position[1] = spin_at[1];
@@ -462,7 +481,7 @@ void render_frame(
 			eye.y = view.position[1];
 			eye.z = view.position[2];
 			scenario_location_from_point(&location, &eye);
-			if (bsp && location.cluster_index != NONE && bsp->cluster_data.size > 0)
+			if (bsp && location.cluster_index != NONE && bsp->cluster_data.size > 0 && !n64_debug_flag("debug_no_pvs"))
 			{
 				view.visible_clusters = structure_bsp_get_cluster_pvs(bsp, location.cluster_index);
 				view.cluster_count = (short)bsp->clusters.count;
