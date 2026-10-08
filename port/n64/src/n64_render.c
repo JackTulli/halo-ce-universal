@@ -331,41 +331,58 @@ static void drop_model(int index)
 	loaded->blocks = NULL;
 }
 
-/* a batch's render mode and texture, recorded: textured (the doubling is in
-the texture), shaded by the baked sky light, one RDP cycle; Halo's
-two-sided shaders without back-face culling; glows unlit and cut out */
+/* the render modes of model batches, recorded once each: textured (the
+doubling is in the texture), shaded by the baked sky light, one RDP cycle;
+glows unlit and cut out; untextured */
+enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, NUMBER_OF_MODEL_MODES };
+static rspq_block_t *model_modes[NUMBER_OF_MODEL_MODES];
+
+static int model_mode(sprite_t *sprite, int flags)
+{
+	return !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : MODEL_MODE_TEXTURED;
+}
+
+static void record_model_modes(void)
+{
+	for (int mode = 0; mode < NUMBER_OF_MODEL_MODES; mode++)
+	{
+		if (model_modes[mode])
+			continue;
+		rspq_block_begin();
+		rdpq_mode_begin();
+		rdpq_set_mode_standard();
+		rdpq_mode_zbuf(true, true);
+		rdpq_mode_persp(true);
+		rdpq_mode_filter(FILTER_BILINEAR);
+		if (mode == MODEL_MODE_GLOW)
+		{
+			rdpq_mode_combiner(RDPQ_COMBINER_TEX);
+			rdpq_mode_alphacompare(128);
+		}
+		else if (mode == MODEL_MODE_TEXTURED)
+			rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
+		else
+			rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
+		rdpq_mode_end();
+		model_modes[mode] = rspq_block_end();
+	}
+}
+
+/* a batch's texture (and the RSP's culling: Halo's two-sided shaders are
+drawn without back-face culling), recorded */
 static rspq_block_t *record_setup(sprite_t *sprite, int flags)
 {
-	int textured = sprite != NULL;
 	int two_sided = (flags & MATERIAL_TWO_SIDED) != 0;
-	int glow = (flags & MATERIAL_GLOW) != 0;
 
 	rspq_block_begin();
-	rdpq_sync_pipe();
-	rdpq_sync_tile();
-	rdpq_mode_begin();
-	rdpq_set_mode_standard();
-	rdpq_mode_zbuf(true, true);
-	rdpq_mode_persp(true);
-	rdpq_mode_filter(FILTER_BILINEAR);
-	if (textured && glow)
-	{
-		rdpq_mode_combiner(RDPQ_COMBINER_TEX);
-		rdpq_mode_alphacompare(128);
-	}
-	else if (textured)
-		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
-	else
-		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
-	rdpq_mode_end();
-	if (textured)
+	if (sprite)
 	{
 		rdpq_sprite_upload(TILE0, sprite, &(rdpq_texparms_t){
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
 		});
 	}
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | (two_sided ? 0 : T3D_FLAG_CULL_BACK) |
-		(textured ? T3D_FLAG_TEXTURED : 0));
+		(sprite ? T3D_FLAG_TEXTURED : 0));
 	return rspq_block_end();
 }
 
@@ -423,6 +440,7 @@ static int load_model(int index)
 		uint8_t *index = loaded->data + model->vertex_bytes + batch->index_offset;
 		sprite_t *sprite = acquire_texture(batch->texture);
 
+		record_model_modes();
 		loaded->setups[b] = record_setup(debug_untextured ? NULL : sprite, batch->flags);
 		rspq_block_begin();
 		for (int g = 0; g < batch->segment_count; g++)
@@ -765,23 +783,35 @@ static uint16_t *tinted_palette(sprite_t *sprite, unsigned long color)
 	return palette;
 }
 
-/* a batch's setup, unless it is the one in force; a player's colour on a
-MATERIAL_CHANGE_COLOR texture (color 0xRRGGBB; white leaves it as it is) */
+/* a batch's render mode and texture, unless they are the ones in force; a
+player's colour on a MATERIAL_CHANGE_COLOR texture (color 0xRRGGBB; white
+leaves it as it is) */
+static int current_model_mode = -1;
+
 static void use_setup(struct loaded_model *loaded, int b, struct model_batch *batch, unsigned long color)
 {
 	int key = (batch->texture << 8) | batch->flags;
+	sprite_t *sprite = debug_untextured ? NULL : models.sprites[batch->texture];
+	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags);
 
 	if (!(batch->flags & MATERIAL_CHANGE_COLOR))
 		color = 0xFFFFFF;
+	if (renderer.current_texture == -2)
+		current_model_mode = -1;
+	if (mode != current_model_mode)
+	{
+		rspq_block_run(model_modes[mode]);
+		current_model_mode = mode;
+	}
 	if (key != renderer.current_texture || (color == 0xFFFFFF && current_color != 0xFFFFFF))
 	{
 		rspq_block_run(loaded->setups[b]);
 		renderer.current_texture = key;
 		current_color = 0xFFFFFF;
 	}
-	if (color != current_color && models.sprites[batch->texture] && !debug_untextured)
+	if (color != current_color && sprite)
 	{
-		uint16_t *palette = tinted_palette(models.sprites[batch->texture], color);
+		uint16_t *palette = tinted_palette(sprite, color);
 
 		if (palette)
 			rdpq_tex_upload_tlut(palette, 0, 16);

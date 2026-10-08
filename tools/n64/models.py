@@ -39,6 +39,7 @@ The output file (big-endian):
 """
 
 import math
+import os
 import struct
 from pathlib import Path
 
@@ -62,11 +63,14 @@ MODEL_BUDGET = 400
 # by the object's group: players matter most; what lies on the floor or
 # flies is small on screen
 GROUP_BUDGETS = {"bipd": 600, "vehi": 600, "weap": 250, "eqip": 250, "garb": 250, "proj": 150}
-# first-person textures: the atlas at this size, cut into windows of at most
+# first-person textures: the atlas at this size (each window is a texture
+# load and a batch more: 256 cost the RSP/RDP ~15 ms a frame more than 128),
+# cut into windows of at most
 # WINDOW texels a side (CI4, 2 KB of TMEM); a window keeps a texel of
 # margin for the filtering
-DETAIL_ATLAS = 256
+DETAIL_ATLAS = int(os.environ.get("N64_DETAIL_ATLAS", "128"))
 WINDOW = 64
+DETAIL_WINDOWS = os.environ.get("N64_DETAIL_WINDOWS", "1") == "1"
 
 
 def matrix4x3(values):
@@ -322,7 +326,7 @@ class ModelConverter:
         if keep < 1.0:
             triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)))
 
-        groups = self.texture_windows(bitmap, vertices, triangles) if detail and texture >= 0 else None
+        groups = self.texture_windows(bitmap, vertices, triangles) if detail and texture >= 0 and DETAIL_WINDOWS else None
         if not groups:
             groups = [(texture, None, triangles)]
         for group_texture, st_of, group_triangles in groups:
