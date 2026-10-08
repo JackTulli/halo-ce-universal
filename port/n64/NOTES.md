@@ -97,3 +97,17 @@ running notebook. Paths are relative to `source/`.
   heap, so the heap's top was being overwritten (seen as z-buffer values in
   pointers once the HUD's allocations reached that far). The game now runs
   on its own 256 KB stack.
+
+## Simplified models (October 2026)
+
+- Each part of a model (one per shader: glove, hand, gun body...) is
+  simplified on its own, so a vertex on an open edge must not move: the
+  first versions let part edges and the seams between rigidly skinned nodes
+  drift, which opened holes in the first-person hands and weapons (the
+  plasma pistol went from 20 open edges to 167). Locked now, and a collapse
+  is also refused when it turns a triangle more than 60 degrees (a fold
+  faces away and is culled) or breaks the link condition. Checked with a
+  script that counts open edges and same-direction edges per model.
+- Model shaders can be two-sided (shader_model flags bit 1; transparent
+  shaders bit 2, meters bit 1): those batches draw without back-face
+  culling. In Wizard only the needler's core is.

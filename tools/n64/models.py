@@ -32,7 +32,7 @@ import struct
 from pathlib import Path
 
 from .decimate import decimate
-from .level import LevelBuilder, pack_normal, unpack_normal
+from .level import LevelBuilder, MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, pack_normal, unpack_normal
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
@@ -125,18 +125,35 @@ class ModelConverter:
         return found
 
     def shader_texture(self, shader_datum):
+        """(texture, material flags) of a model's shader (tools/n64/level.py's
+        MATERIAL_* bits): two-sided shaders are drawn without culling"""
         tag = self.map.tag(shader_datum)
         if tag is None:
             return -1, 0
         if tag.group_name == "soso":
             so = self.f("ShaderModel")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
-            return self.textures.texture(base), 0
+            model_flags = struct.unpack("<H", self.map.read(tag.address + so["shader model flags"], 2))[0]
+            return self.textures.texture(base), MATERIAL_TWO_SIDED if model_flags & 2 else 0
         if tag.group_name == "senv":
             so = self.f("ShaderEnvironment")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
             return self.textures.texture(base), 0
-        return self.textures.first_map(tag), 4
+        flags = MATERIAL_TRANSPARENT
+        # the transparent shaders' own flags: "two sided" is bit 2 (bit 1
+        # for meters)
+        for struct_name, field, bit in (("ShaderTransparentChicago", "shader transparent chicago flags", 4),
+                                        ("ShaderTransparentChicagoExtended", "shader transparent chicago extended flags", 4),
+                                        ("ShaderTransparentGeneric", "shader transparent generic flags", 4),
+                                        ("ShaderTransparentGlass", "shader transparent glass flags", 4),
+                                        ("ShaderTransparentMeter", "shader transparent meter flags", 2)):
+            if tag.group_name == {"ShaderTransparentChicago": "schi", "ShaderTransparentChicagoExtended": "scex",
+                                  "ShaderTransparentGeneric": "sotr", "ShaderTransparentGlass": "sgla",
+                                  "ShaderTransparentMeter": "smet"}[struct_name]:
+                fields = self.f(struct_name)
+                if field in fields and self.map.read(tag.address + fields[field], 1)[0] & bit:
+                    flags |= MATERIAL_TWO_SIDED
+        return self.textures.first_map(tag), flags
 
     def part_triangle_count(self, part_address):
         pf = self.f("ModelGeometryPart")

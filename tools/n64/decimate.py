@@ -12,7 +12,14 @@ result drawable as it was:
 - a vertex moves onto its neighbour's position (half-edge collapse), and
   each corner of a remaining triangle takes, from the vertices at that
   position, the one whose texture coordinate is nearest its own;
-- a collapse that would turn a triangle over is refused.
+- a collapse that would turn a triangle more than 60 degrees is refused (it
+  would fold over its neighbours, and a folded triangle faces away), as is
+  one that would join the mesh to itself (g and h may share no neighbour
+  but the far corners of the triangles on their edge);
+- a vertex on an open edge (where the part meets another part, or the
+  mesh simply ends) or where two nodes meet (the same position in two
+  groups) never moves: the meshes would open there. A model's parts are
+  simplified one by one, so their shared edges must stay where they are.
 
 decimate(vertices, triangles, target) takes vertices as (node, position,
 uv, ...) tuples and triangles as vertex index triples, and returns the
@@ -86,6 +93,23 @@ def decimate(vertices, triangles, target):
             if q:
                 quadric[g] = [x + y for x, y in zip(quadric[g], q)]
     alive_count = len(tris)
+    # vertices that must not move: on open edges, and where nodes meet
+    edge_use = {}
+    for _, corners, _ in tris:
+        for x, y in ((corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[0])):
+            key = (x, y) if x < y else (y, x)
+            edge_use[key] = edge_use.get(key, 0) + 1
+    locked = set()
+    for (x, y), n in edge_use.items():
+        if n == 1:
+            locked.add(x)
+            locked.add(y)
+    groups_at = {}
+    for g, position in enumerate(positions):
+        groups_at.setdefault(tuple(round(c, 5) for c in position), []).append(g)
+    for shared in groups_at.values():
+        if len(shared) > 1:
+            locked.update(shared)
     alive_group = [True] * len(members)
     version = [0] * len(members)
     heap = []
@@ -98,8 +122,11 @@ def decimate(vertices, triangles, target):
                     neighbours.add(h)
         for h in neighbours:
             q = [x + y for x, y in zip(quadric[g], quadric[h])]
-            heapq.heappush(heap, (_error(q, positions[h]), g, h, version[g], version[h]))
-            heapq.heappush(heap, (_error(q, positions[g]), h, g, version[h], version[g]))
+            # (g moves onto h, and h onto g, unless the mover is locked)
+            if g not in locked:
+                heapq.heappush(heap, (_error(q, positions[h]), g, h, version[g], version[h]))
+            if h not in locked:
+                heapq.heappush(heap, (_error(q, positions[g]), h, g, version[h], version[g]))
 
     for g in range(len(members)):
         push_edges(g)
@@ -116,7 +143,7 @@ def decimate(vertices, triangles, target):
         cost, g, h, vg, vh = heapq.heappop(heap)
         if not alive_group[g] or not alive_group[h] or version[g] != vg or version[h] != vh:
             continue
-        # refuse a collapse that turns a remaining triangle over
+        # refuse a collapse that turns a remaining triangle too far
         flips = False
         for t in by_group[g]:
             corners = tris[t][1]
@@ -124,10 +151,21 @@ def decimate(vertices, triangles, target):
                 continue
             before = _normal(*(positions[c] for c in corners))
             after = _normal(*(positions[h] if c == g else positions[c] for c in corners))
-            if before[0] * after[0] + before[1] * after[1] + before[2] * after[2] <= 0:
+            dot = before[0] * after[0] + before[1] * after[1] + before[2] * after[2]
+            lengths = math.sqrt((before[0] ** 2 + before[1] ** 2 + before[2] ** 2) *
+                                (after[0] ** 2 + after[1] ** 2 + after[2] ** 2))
+            if lengths < 1e-20 or dot < 0.5 * lengths:
                 flips = True
                 break
         if flips:
+            continue
+        # the link condition: the only neighbours g and h share are the far
+        # corners of the triangles on their edge
+        shared_triangles = by_group[g] & by_group[h]
+        far = {c for t in shared_triangles for c in tris[t][1] if c != g and c != h}
+        g_neighbours = {c for t in by_group[g] for c in tris[t][1]} - {g}
+        h_neighbours = {c for t in by_group[h] for c in tris[t][1]} - {h}
+        if (g_neighbours & h_neighbours) - far:
             continue
         for t in list(by_group[g]):
             tri = tris[t]

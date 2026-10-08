@@ -497,17 +497,20 @@ void n64_render_view(const struct n64_view *view)
 }
 
 /* models: textured (the doubling is in the texture), shaded by their baked
-sky light; one RDP cycle, or two with a player's tint */
-static int current_tinted;
+sky light; one RDP cycle, or two with a player's tint. Halo's two-sided
+shaders (tools/n64/models.py) are drawn without back-face culling. */
+static int current_tinted, current_two_sided;
 
-static void set_model_texture(int texture, int tinted)
+static void set_model_texture(int texture, int flags, int tinted)
 {
 	int textured = texture >= 0 && models.sprites[texture] && !debug_untextured;
+	int two_sided = (flags & MATERIAL_TWO_SIDED) != 0;
 
-	if (texture == renderer.current_texture && tinted == current_tinted)
+	if (texture == renderer.current_texture && tinted == current_tinted && two_sided == current_two_sided)
 		return;
 	renderer.current_texture = texture;
 	current_tinted = tinted;
+	current_two_sided = two_sided;
 	rdpq_sync_pipe();
 	rdpq_sync_tile();
 	rdpq_mode_begin();
@@ -529,7 +532,7 @@ static void set_model_texture(int texture, int tinted)
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
 		});
 	}
-	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_CULL_BACK |
+	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | (two_sided ? 0 : T3D_FLAG_CULL_BACK) |
 		(textured ? T3D_FLAG_TEXTURED : 0));
 }
 
@@ -610,7 +613,7 @@ void n64_render_object(const struct n64_object *object)
 			struct model_batch *batch = &models.batches[b];
 			uint8_t *index = models.indices + batch->index_offset;
 
-			set_model_texture(batch->texture, tinted);
+			set_model_texture(batch->texture, batch->flags, tinted);
 			rspq_block_run(models.blocks[b]);
 			renderer.triangles += batch->triangle_count;
 		}
