@@ -114,6 +114,22 @@ read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
 
+8 October, Firefight (`port/n64/game/n64_firefight.c`): the title's
+FIREFIGHT entry, 1-4 players, a map and a difficulty, against waves of
+the campaign's grunts, jackals and elites (imported into every
+multiplayer map from a30 by `tools/n64/merge.py`, at their lowest level
+of detail, their bitmaps read from a30's file). Their AI is the N64's
+own, through `unit_control()`, thinking at 15 Hz (half of them each
+tick); they find their way with Halo's own pathfinding
+(`source/ai/path*.c`, one search a tick at most, obstacle avoidance off:
+it needs the AI's object records). Units must be kept active
+(`object_set_automatic_deactivation`) and actively controlled
+(`unit_set_actively_controlled`), or Halo freezes them out of sight and
+resets their throttles. Shared lives, waves of five a set, results on
+the menu. ares: Wizard ~28 fps with one player, Blood Gulch ~21, Wizard
+four players ~9 (each Covenant biped costs ~3.4 ms of a tick, like a
+player).
+
 8 October, performance: the views see 55 world units (one player), 45
 (two) or 32 (three or four) into fog of the map's own colour (its sky's
 outdoor fog), nothing wholly past it (left out by distance); three or

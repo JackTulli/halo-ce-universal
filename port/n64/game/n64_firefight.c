@@ -40,12 +40,17 @@ score to reach (port/n64/game/n64_game.c).
 #include "scenario/scenario_definitions.h"
 #include "tag_files/tag_groups.h"
 #include "units/units.h"
+#include "units/bipeds.h"
 #include "units/unit_control_data.h"
+#include "ai/path.h"
+#include "ai/ai_profile.h"
+#include "ai/ai_debug.h"
 
 #include "../src/n64.h"
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---------- constants */
@@ -63,6 +68,11 @@ enum
 #define TICKS_BETWEEN_WAVES (6 * TICKS_PER_SECOND)
 #define TICKS_BETWEEN_SPAWNS 20
 #define FIREFIGHT_TEAM _game_team_covenant
+/* the Covenant think at 15 Hz, half of them each tick (their units keep
+the last control between) */
+#define THINK_INTERVAL 2
+/* a path is found again after this long, or when its target has moved */
+#define PATH_LIFETIME (3 * TICKS_PER_SECOND)
 
 static char const *const covenant_bipeds[NUMBER_OF_COVENANT_KINDS] =
 {
@@ -105,6 +115,12 @@ struct covenant
 	short sight_timer, stuck_timer, unstick_timer, jump_timer, melee_timer, grenade_timer;
 	short unseen_ticks;
 	boolean target_visible;
+	boolean trigger_down;
+	/* the way to the target (Halo's pathfinding, source/ai/path.c) */
+	boolean path_valid;
+	short path_age;
+	struct path_result path;
+	real_point3d path_goal;
 	long target_player;
 	real_point3d last_seen;
 	real_point3d last_position;
@@ -135,7 +151,19 @@ static struct
 	long weapon_definitions[NUMBER_OF_COVENANT_KINDS][2];
 	struct covenant enemies[MAXIMUM_ENEMIES];
 	short enemy_count;
+	/* paths found this tick (one at most) */
+	short paths_this_tick;
+	/* (the log's: searches, no surface under one end, searches that
+	reached, paths built) */
+	long path_searches, path_no_surface, path_found, path_built;
 } firefight;
+
+/* the AI's meters, which the pathfinder counts in (ai_profile.c is the
+AI's, left out) */
+struct ai_profile_globals ai_profile;
+
+/* the pathfinder's working state (47 KB, only while Firefight plays) */
+static struct path_state *firefight_path_state;
 
 /* ---------- small things */
 
@@ -451,6 +479,72 @@ static boolean line_of_sight(
 		from, &vector, ignore_object_index, &collision);
 }
 
+/* a path to the target, if this tick still has one to find: Halo's own
+(source/ai/path.c) over the collision BSP's surfaces; partial paths (to
+the nearest point the search reached) are kept */
+static void plan_path(
+	struct covenant *enemy,
+	long target_unit)
+{
+	struct path_input input;
+	real_point3d start, goal;
+	long start_surface, goal_surface;
+
+	if (firefight.paths_this_tick || !firefight_path_state)
+		return;
+	firefight.paths_this_tick++;
+	enemy->path_age = 0;
+	enemy->path_valid = FALSE;
+	start_surface = biped_find_pathfinding_surface_index(enemy->unit_index, &start);
+	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
+	firefight.path_searches++;
+	if (start_surface == NONE || goal_surface == NONE)
+	{
+		firefight.path_no_surface++;
+		return;
+	}
+	path_input_new(&input, 0.3f, FALSE, enemy->unit_index);
+	path_input_set_start(&input, &start, start_surface);
+	path_state_new(&input, firefight_path_state, NULL);
+	path_state_destination(firefight_path_state, &goal, goal_surface, 40.f);
+	if (path_state_find(firefight_path_state))
+		firefight.path_found++;
+	if (path_state_build_path(firefight_path_state, &enemy->path) && enemy->path.step_count > 0)
+	{
+		firefight.path_built++;
+		enemy->path_valid = TRUE;
+		enemy->path.step_index = 0;
+		enemy->path_goal = goal;
+	}
+}
+
+/* the way along the path from here (horizontal, unit length); FALSE when
+the path is used up */
+static boolean follow_path(
+	struct covenant *enemy,
+	real_point3d const *position,
+	real_vector2d *direction)
+{
+	struct path_result *path = &enemy->path;
+
+	while (enemy->path_valid && path->step_index < path->step_count)
+	{
+		real_point3d const *point = &path->steps[path->step_index].point;
+		real dx = point->x - position->x, dy = point->y - position->y;
+		real length = (real)sqrt(dx * dx + dy * dy);
+
+		if (length > 0.6f)
+		{
+			direction->i = dx / length;
+			direction->j = dy / length;
+			return TRUE;
+		}
+		path->step_index++;
+	}
+	enemy->path_valid = FALSE;
+	return FALSE;
+}
+
 static void think(
 	struct covenant *enemy)
 {
@@ -461,7 +555,9 @@ static void think(
 	long target_unit, target_player;
 	real distance;
 	real_vector3d to_target, desired;
+	real_vector2d move = { 0.f, 0.f }; /* the way to go, in the world */
 	real forward = 0.f, strafe = 0.f;
+	boolean approaching, moving_along_path = FALSE;
 	word flags = 0;
 	real trigger = 0.f;
 
@@ -484,12 +580,11 @@ static void think(
 	target_position = object_get(target_unit)->object.position;
 
 	/* can it see the target? (a few times a second) */
-	if (--enemy->sight_timer <= 0)
+	enemy->sight_timer -= THINK_INTERVAL;
+	if (enemy->sight_timer <= 0)
 	{
 		enemy->sight_timer = 8;
 		enemy->target_visible = line_of_sight(&eye, &target_eye, enemy->unit_index);
-		if (enemy->target_visible)
-			enemy->last_seen = target_eye;
 	}
 	if (enemy->target_visible)
 	{
@@ -499,67 +594,123 @@ static void think(
 	else
 	{
 		if (enemy->unseen_ticks < 32000)
-			enemy->unseen_ticks++;
+			enemy->unseen_ticks += THINK_INTERVAL;
 		/* (not seen yet: head for where the target is) */
 		if (enemy->last_seen.x == 0.f && enemy->last_seen.y == 0.f)
 			enemy->last_seen = target_eye;
 	}
-
-	/* where to look: at the target, missing by the difficulty's error */
-	to_target.i = enemy->last_seen.x - eye.x;
-	to_target.j = enemy->last_seen.y - eye.y;
-	to_target.k = enemy->last_seen.z - eye.z - 0.1f;
 	distance = horizontal_distance(&unit->object.position, &target_position);
-	desired = to_target;
-	normalize(&desired);
-	{
-		real error = kind->aim_error * aim_error_scale[firefight.difficulty];
 
-		desired.i += error * ff_random_real();
-		desired.j += error * ff_random_real();
-		desired.k += error * 0.6f * ff_random_real();
+	/* where to go: along a path while the target is out of sight or out of
+	range; in range, keep its kind's distance and move sideways */
+	approaching = !enemy->target_visible || distance > kind->far_range;
+	if (approaching)
+	{
+		enemy->path_age += THINK_INTERVAL;
+		if (!enemy->path_valid || enemy->path_age > PATH_LIFETIME ||
+			horizontal_distance(&enemy->path_goal, &target_position) > 4.f)
+		{
+			plan_path(enemy, target_unit);
+		}
+		if (follow_path(enemy, &unit->object.position, &move))
+			moving_along_path = TRUE;
+		else
+		{
+			/* no path (yet): straight for it */
+			real dx = target_position.x - unit->object.position.x;
+			real dy = target_position.y - unit->object.position.y;
+			real length = (real)sqrt(dx * dx + dy * dy);
+
+			if (length > 0.01f)
+			{
+				move.i = dx / length;
+				move.j = dy / length;
+			}
+		}
+	}
+
+	/* where to look: at the target when it is in sight (missing by the
+	difficulty's error), else the way it is going */
+	if (enemy->target_visible || !moving_along_path)
+	{
+		to_target.i = enemy->last_seen.x - eye.x;
+		to_target.j = enemy->last_seen.y - eye.y;
+		to_target.k = enemy->last_seen.z - eye.z - 0.1f;
+		desired = to_target;
 		normalize(&desired);
+		if (enemy->target_visible)
+		{
+			real error = kind->aim_error * aim_error_scale[firefight.difficulty];
+
+			desired.i += error * ff_random_real();
+			desired.j += error * ff_random_real();
+			desired.k += error * 0.6f * ff_random_real();
+			normalize(&desired);
+		}
+	}
+	else
+	{
+		desired.i = move.i;
+		desired.j = move.j;
+		desired.k = 0.f;
 	}
 	/* turning: a quick but not instant swing */
-	enemy->aim.i += (desired.i - enemy->aim.i) * 0.35f;
-	enemy->aim.j += (desired.j - enemy->aim.j) * 0.35f;
-	enemy->aim.k += (desired.k - enemy->aim.k) * 0.35f;
+	enemy->aim.i += (desired.i - enemy->aim.i) * 0.6f;
+	enemy->aim.j += (desired.j - enemy->aim.j) * 0.6f;
+	enemy->aim.k += (desired.k - enemy->aim.k) * 0.6f;
 	normalize(&enemy->aim);
 
-	/* where to go: in to its range, out of it, or sideways */
-	if (!enemy->target_visible || distance > kind->far_range)
-		forward = 1.f;
-	else if (distance < kind->near_range)
-		forward = enemy->kind == _covenant_grunt ? -0.8f : -0.4f;
-	if (--enemy->strafe_timer <= 0)
+	if (approaching)
 	{
-		enemy->strafe_timer = (short)(25 + ff_random() % 50);
-		enemy->strafe_direction = (short)(ff_random() & 1 ? 1 : -1);
-	}
-	if (enemy->target_visible)
-		strafe = 0.75f * enemy->strafe_direction;
+		/* the way to go, relative to where it faces (Halo's throttle: i
+		forward, j left) */
+		real fi = enemy->aim.i, fj = enemy->aim.j;
+		real length = (real)sqrt(fi * fi + fj * fj);
 
-	/* stuck (moving and getting nowhere): go around for a while, jump */
+		if (length > 0.01f)
+		{
+			fi /= length;
+			fj /= length;
+		}
+		forward = move.i * fi + move.j * fj;
+		strafe = move.i * -fj + move.j * fi;
+	}
+	else
+	{
+		if (distance < kind->near_range)
+			forward = enemy->kind == _covenant_grunt ? -0.8f : -0.4f;
+		enemy->strafe_timer -= THINK_INTERVAL;
+		if (enemy->strafe_timer <= 0)
+		{
+			enemy->strafe_timer = (short)(25 + ff_random() % 50);
+			enemy->strafe_direction = (short)(ff_random() & 1 ? 1 : -1);
+		}
+		strafe = 0.75f * enemy->strafe_direction;
+	}
+
+	/* stuck (moving and getting nowhere): around for a while, a jump, and
+	a new path */
 	if (enemy->unstick_timer > 0)
 	{
-		enemy->unstick_timer--;
+		enemy->unstick_timer -= THINK_INTERVAL;
 		forward = enemy->unstick_throttle.i;
 		strafe = enemy->unstick_throttle.j;
 	}
-	else if ((game_time_get() & 15) == (enemy->unit_index & 15))
+	else if (((game_time_get() / THINK_INTERVAL) & 7) == (enemy->unit_index & 7))
 	{
 		real moved = horizontal_distance(&unit->object.position, &enemy->last_position);
 
 		enemy->last_position = unit->object.position;
-		if ((forward != 0.f || strafe != 0.f) && moved < 0.3f)
+		if ((forward != 0.f || strafe != 0.f) && moved < 0.25f)
 		{
 			if (++enemy->stuck_timer >= 2)
 			{
 				enemy->stuck_timer = 0;
-				enemy->unstick_timer = (short)(20 + ff_random() % 25);
+				enemy->unstick_timer = (short)(16 + ff_random() % 20);
 				enemy->unstick_throttle.i = ff_random_real() < 0.f ? -0.5f : 0.4f;
 				enemy->unstick_throttle.j = ff_random() & 1 ? 1.f : -1.f;
-				enemy->jump_timer = 1;
+				enemy->jump_timer = THINK_INTERVAL;
+				enemy->path_valid = FALSE;
 			}
 		}
 		else
@@ -567,7 +718,7 @@ static void think(
 	}
 	if (enemy->jump_timer > 0)
 	{
-		enemy->jump_timer--;
+		enemy->jump_timer -= THINK_INTERVAL;
 		flags |= FLAG(_unit_control_jump_bit);
 	}
 
@@ -576,23 +727,28 @@ static void think(
 	{
 		if (enemy->fire_timer > 0)
 		{
-			enemy->fire_timer--;
-			/* (the plasma pistol fires a shot a press: held, it would
-			overcharge) */
-			if (!(enemy->kind != _covenant_elite && (enemy->fire_timer & 3)))
+			enemy->fire_timer -= THINK_INTERVAL;
+			/* (a plasma pistol fires a shot a press, and held it would
+			overcharge: pressed every other update) */
+			enemy->trigger_down = enemy->kind == _covenant_elite ? TRUE : !enemy->trigger_down;
+			if (enemy->trigger_down)
 			{
 				trigger = 1.f;
 				flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
 			}
-			if (enemy->fire_timer == 0)
+			if (enemy->fire_timer <= 0)
 				enemy->fire_timer = -(short)(kind->pause_ticks * pause_scale[firefight.difficulty] + ff_random() % 12);
 		}
-		else if (++enemy->fire_timer >= 0)
-			enemy->fire_timer = (short)(kind->burst_ticks + ff_random() % 6);
+		else
+		{
+			enemy->fire_timer += THINK_INTERVAL;
+			if (enemy->fire_timer >= 0)
+				enemy->fire_timer = (short)(kind->burst_ticks + ff_random() % 6);
+		}
 	}
 	/* melee up close */
 	if (enemy->melee_timer > 0)
-		enemy->melee_timer--;
+		enemy->melee_timer -= THINK_INTERVAL;
 	else if (distance < 1.6f && enemy->target_visible)
 	{
 		flags |= FLAG(_unit_control_use_equipment_bit);
@@ -600,14 +756,18 @@ static void think(
 	}
 	/* a plasma grenade now and then */
 	if (enemy->grenade_timer > 0)
-		enemy->grenade_timer--;
+		enemy->grenade_timer -= THINK_INTERVAL;
 	else if (kind->grenade_chance && enemy->target_visible && distance > 7.f && distance < 20.f &&
-		(long)(ff_random() % 1000) < kind->grenade_chance)
+		(long)(ff_random() % 1000) < kind->grenade_chance * THINK_INTERVAL)
 	{
 		flags |= FLAG(_unit_control_throw_grenade_bit);
 		enemy->grenade_timer = 8 * TICKS_PER_SECOND;
 	}
 
+	if (forward > 1.f) forward = 1.f;
+	if (forward < -1.f) forward = -1.f;
+	if (strafe > 1.f) strafe = 1.f;
+	if (strafe < -1.f) strafe = -1.f;
 	csmemset(&control, 0, sizeof(control));
 	control.animation_state = _unit_animation_state_in_combat;
 	control.aiming_speed = 0;
@@ -714,12 +874,23 @@ void n64_firefight_begin(
 	firefight.lives = starting_lives[firefight.difficulty];
 	firefight.random = n64_ticks();
 	firefight.break_timer = 3 * TICKS_PER_SECOND;
+	if (!firefight_path_state)
+		firefight_path_state = (struct path_state *)malloc(sizeof(struct path_state));
+	/* (the paths' last stage steers around nearby objects from the AI's
+	own records of them, which the N64 has not got: smoothed paths only;
+	the Covenant push past each other) */
+	ai_debug.path_disable_obstacle_avoidance = TRUE;
 }
 
 void n64_firefight_stop(
 	void)
 {
 	firefight.active = FALSE;
+	if (firefight_path_state)
+	{
+		free(firefight_path_state);
+		firefight_path_state = NULL;
+	}
 }
 
 int n64_firefight_active(
@@ -808,27 +979,32 @@ void n64_firefight_tick(
 			firefight.wave_spawned++;
 	}
 
+	firefight.paths_this_tick = 0;
 	for (i = 0; i < firefight.enemy_count; i++)
-		think(&firefight.enemies[i]);
+	{
+		if ((game_time_get() + i) % THINK_INTERVAL == 0)
+			think(&firefight.enemies[i]);
+	}
 
 	/* (the log, every two seconds: each Covenant's whereabouts) */
 	if (!(game_time_get() % (2 * TICKS_PER_SECOND)))
 	{
 		char line[160];
 
-		snprintf(line, sizeof(line), "firefight: wave %ld (%ld of %ld out, %ld down), lives %ld, score %ld",
+		snprintf(line, sizeof(line), "firefight: wave %ld (%ld of %ld out, %ld down), lives %ld, score %ld; paths: %ld searches, %ld without a surface, %ld reached, %ld built",
 			firefight.wave, firefight.wave_spawned, firefight.wave_total, firefight.wave_killed, firefight.lives,
-			firefight.score);
+			firefight.score, firefight.path_searches, firefight.path_no_surface, firefight.path_found, firefight.path_built);
 		n64_log(line);
 		for (i = 0; i < firefight.enemy_count; i++)
 		{
 			struct covenant *enemy = &firefight.enemies[i];
 			struct unit_datum *unit = unit_get(enemy->unit_index);
 
-			snprintf(line, sizeof(line), "  %s at %.1f %.1f %.1f, body %.2f shield %.2f, %s, fire %d, stuck %d",
+			snprintf(line, sizeof(line), "  %s at %.1f %.1f %.1f, body %.2f shield %.2f, %s, fire %d, stuck %d, path %d %d/%d",
 				covenant_bipeds[enemy->kind] + 11, unit->object.position.x, unit->object.position.y,
 				unit->object.position.z, unit->object.body_vitality, unit->object.shield_vitality,
-				enemy->target_visible ? "sees" : "hunts", enemy->fire_timer, enemy->unstick_timer);
+				enemy->target_visible ? "sees" : "hunts", enemy->fire_timer, enemy->unstick_timer,
+				enemy->path_valid, enemy->path.step_index, enemy->path.step_count);
 			n64_log(line);
 			snprintf(line, sizeof(line), "    throttle %.2f %.2f, velocity %.3f %.3f %.3f, animation %d frame %d, state %d",
 				unit->unit.throttle.i, unit->unit.throttle.j, unit->object.translational_velocity.i,

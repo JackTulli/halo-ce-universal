@@ -17,7 +17,13 @@ file has inline function assertions.
 
 enum
 {
+#ifdef HALO_N64
+	/* the N64's Firefight finds paths for a few Covenant on multiplayer maps
+	(port/n64/game/n64_firefight.c): 35 KB of nodes instead of 70 */
+	PATH_NODE_LIST_SIZE = 0x200,
+#else
 	PATH_NODE_LIST_SIZE = 0x400,
+#endif
 	PATH_HASH_TABLE_SIZE = 0x1000,
 	MAXIMUM_DISC_COUNT = 128,
 	MAXIMUM_OBSTACLE_AVOIDANCE_STEPS = 128,
@@ -285,17 +291,25 @@ typedef char path_state_node_count_offset_assert[
 	offsetof(struct path_state, node_count) == 0x80 ? 1 : -1];
 typedef char path_state_node_list_offset_assert[
 	offsetof(struct path_state, node_list) == 0x84 ? 1 : -1];
+#ifndef HALO_N64
 typedef char path_state_hash_table_offset_assert[
 	offsetof(struct path_state, hash_table) == 0x1208A ? 1 : -1];
+#endif
+#ifndef HALO_N64 /* (smaller on the N64: above) */
 typedef char path_state_size_assert[
 	sizeof(struct path_state) == 0x1408C ? 1 : -1];
+#endif
 
+#ifndef HALO_N64
 typedef char path_debug_storage_size_assert[
 	sizeof(struct path_debug_storage) == 0x1CA7C ? 1 : -1];
+#endif
+#ifndef HALO_N64
 typedef char path_debug_storage_raw_steps_offset_assert[
 	offsetof(struct path_debug_storage, raw_steps) == 0x14100 ? 1 : -1];
 typedef char path_debug_storage_avoided_steps_offset_assert[
 	offsetof(struct path_debug_storage, avoided_steps) == 0x14548 ? 1 : -1];
+#endif
 
 /* ---------- prototypes/PATH.C */
 
