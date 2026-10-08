@@ -527,6 +527,9 @@ int n64_stage_type = 7;
 /* (collisions.c, "debug_ray_callers": each caller of collision_test_vector
 and how many rays it cast, those while the HUD drew in the top 16 bits) */
 unsigned long n64_ray_callers[16][2];
+/* (object_types.c, bipeds.c: the logged type's update by part -- object,
+unit, biped... -- and bipeds' moving) */
+unsigned long n64_part_time[8];
 static char const *const n64_object_stage_names[5] =
 {
 	"type update", "damage/export", "node matrices", "functions/colours", "lights",
@@ -635,7 +638,7 @@ void n64_game_tick(
 			average_us / 1000, (average_us % 1000) / 10, worst_us / 1000, (worst_us % 1000) / 10, window_ms);
 		n64_log(line);
 		{
-			char phases[200];
+			char phases[320];
 			int length = 0;
 			int i;
 
@@ -686,6 +689,13 @@ void n64_game_tick(
 					n64_stage_type, n64_unmoved_reasons[0], n64_unmoved_reasons[1], n64_unmoved_reasons[2],
 					n64_unmoved_reasons[3]);
 				n64_unmoved_reasons[0] = n64_unmoved_reasons[1] = n64_unmoved_reasons[2] = n64_unmoved_reasons[3] = 0;
+			}
+			for (i = 0; i < 5; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "part%d %lu.%02lu ", i,
+					(unsigned long)((unsigned long long)n64_part_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_part_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				n64_part_time[i] = 0;
 			}
 			for (i = 0; i < 5; i++)
 			{

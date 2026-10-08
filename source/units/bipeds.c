@@ -1586,8 +1586,15 @@ static void biped_verify_object_vectors(
 	long biped_index,
 	char const *state)
 {
-	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_datum *biped;
 
+#ifdef HALO_N64
+	/* (an assertion only, about ten times a biped a tick) */
+	(void)biped_index;
+	(void)state;
+	return;
+#endif
+	biped = biped_get(biped_index);
 	if (!valid_real_vector3d_axes2(&biped->object.forward, &biped->object.up))
 	{
 		struct biped_definition *definition = biped_definition_get(biped->definition_index);
@@ -4261,7 +4268,18 @@ boolean biped_update(
 			biped_verify_object_vectors(biped_index, "post-turning");
 		}
 
+#ifdef HALO_N64
+		{
+			extern unsigned long n64_part_time[8];
+			extern unsigned long n64_ticks(void);
+			unsigned long n64_start = n64_ticks();
+
+			biped_update_moving(biped_index, &animation);
+			n64_part_time[4] += n64_ticks() - n64_start;
+		}
+#else
 		biped_update_moving(biped_index, &animation);
+#endif
 		biped_verify_object_vectors(biped_index, "post-moving");
 #ifdef HALO_N64
 		{

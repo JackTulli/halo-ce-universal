@@ -835,13 +835,28 @@ boolean object_type_update(
 	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
 	result = FALSE;
 
+#ifdef HALO_N64
+	/* (measuring: each part's update for the type n64_game.c logs apart) */
+	extern int n64_stage_type;
+	extern unsigned long n64_part_time[8];
+	extern unsigned long n64_ticks(void);
+	boolean timed = object_get(object_index)->object.type == n64_stage_type;
+#endif
+
 	for (i = 0; definition->part_definitions[i]; i++)
 	{
 		struct object_type_definition *current_definition = definition->part_definitions[i];
+#ifdef HALO_N64
+		unsigned long start = timed ? n64_ticks() : 0;
+#endif
 		if (current_definition->datum_update && current_definition->datum_update(object_index))
 		{
 			result = TRUE;
 		}
+#ifdef HALO_N64
+		if (timed && i < 4)
+			n64_part_time[i] += n64_ticks() - start;
+#endif
 	}
 
 	return result;
