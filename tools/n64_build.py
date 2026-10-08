@@ -232,7 +232,7 @@ def main():
     # every debug switch the cartridge can carry (n64_debug_flag): the ones
     # port.json does not ask for are removed, so none lingers in a build
     known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
-                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time")
+                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time", "profile_tick")
     # a flag "name=value" is a setting: a file holding the value
     flag_names = [flag.split("=", 1)[0] for flag in port.get("flags", [])]
     for flag in known_flags:

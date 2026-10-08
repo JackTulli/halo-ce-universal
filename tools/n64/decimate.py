@@ -7,10 +7,11 @@ result drawable as it was:
 
 - vertices are welded by position within their node first, so a texture
   seam (two vertices, one position) moves as one and never opens a crack;
-- an edge between vertices of two nodes collapses too, at CROSS_NODE_COST
-  times its error (after the edges within a node): the moved vertex's
-  triangles take the other node's vertex, as rigid skinning stretches a
-  joint anyway (a hand's 36 finger nodes left little to collapse otherwise);
+- with cross_nodes, an edge between vertices of two nodes collapses too,
+  at CROSS_NODE_COST times its error (after the edges within a node): the
+  moved vertex's triangles take the other node's vertex, as rigid skinning
+  stretches a joint anyway. Not for first-person models: it melted the
+  hands' fingers (36 nodes) together;
 - a vertex moves onto its neighbour's position (half-edge collapse), and
   each corner of a remaining triangle takes, from the vertices at that
   position, the one its own vertex already shares a triangle with: the same
@@ -25,7 +26,7 @@ result drawable as it was:
   groups) never moves: the meshes would open there. A model's parts are
   simplified one by one, so their shared edges must stay where they are.
 
-decimate(vertices, triangles, target) takes vertices as (node, position,
+decimate(vertices, triangles, target, cross_nodes) takes vertices as (node, position,
 uv, ...) tuples and triangles as vertex index triples, and returns the
 simplified triangles (still indices into the same vertices).
 """
@@ -64,7 +65,7 @@ def _normal(a, b, c):
 CROSS_NODE_COST = 8.0
 
 
-def decimate(vertices, triangles, target):
+def decimate(vertices, triangles, target, cross_nodes=False):
     if len(triangles) <= target:
         return list(triangles)
     # weld by node and position
@@ -130,7 +131,7 @@ def decimate(vertices, triangles, target):
         neighbours = set()
         for t in by_group[g]:
             for h in tris[t][1]:
-                if h != g:
+                if h != g and (cross_nodes or nodes[h] == nodes[g]):
                     neighbours.add(h)
         for h in neighbours:
             q = [x + y for x, y in zip(quadric[g], quadric[h])]

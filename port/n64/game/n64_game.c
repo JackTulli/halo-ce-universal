@@ -416,7 +416,9 @@ void __wrap_game_tick(
 
 	if (!n64_tick_profile.window_start)
 		n64_tick_profile.window_start = n64_ticks64();
+	n64_profile_zone = n64_debug_flag("profile_tick");
 	__real_game_tick();
+	n64_profile_zone = 0;
 	elapsed = n64_ticks() - start;
 	{
 		extern unsigned long n64_last_tick_us;

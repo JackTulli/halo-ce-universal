@@ -63,8 +63,8 @@ SKY_LIGHT = (0.3, 0.2, 0.93)
 # triangles a model may keep (tools/n64/decimate.py): the first-person
 # models are drawn in every view
 FIRST_PERSON_BUDGET = 500
-# the first-person hands: mostly behind the weapon
-HANDS_BUDGET = 350
+# the first-person hands (their fingers need the triangles)
+HANDS_BUDGET = FIRST_PERSON_BUDGET
 MODEL_BUDGET = 400
 # a far version keeps this share of the model's triangles (at least
 # FAR_MINIMUM)
@@ -364,7 +364,7 @@ class ModelConverter:
         triangles = [(a, c, b) for a, b, c in strip_triangles(indices)
                      if a < vertex_count and b < vertex_count and c < vertex_count]
         if keep < 1.0:
-            triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)))
+            triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)), cross_nodes=not detail)
 
         groups = self.texture_windows(bitmap, vertices, triangles) if detail and texture >= 0 and DETAIL_WINDOWS else None
         if not groups:
@@ -410,7 +410,7 @@ class ModelConverter:
             return
         target = max(FAR_MINIMUM, int(budget * FAR_SHARE))
         if len(triangles) > target:
-            triangles = decimate(vertices, triangles, target)
+            triangles = decimate(vertices, triangles, target, cross_nodes=True)
         self.build_batches(vertices, triangles, -1, MATERIAL_UNTEXTURED, lambda uv: (0.0, 0.0), batches, vertex_data,
                            index_data)
 
