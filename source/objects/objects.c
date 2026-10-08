@@ -3729,6 +3729,35 @@ static boolean n64_vehicle_unmoved(
 	return FALSE;
 }
 
+/* a biped no player controls (Firefight's Covenant) far from every local
+player poses every other tick, staggered: at that distance 15 poses a
+second look the same, and its hits are tested against a pose a tick old */
+#define N64_FAR_BIPED_DISTANCE 15.f
+
+static boolean n64_far_ai_biped(
+	long object_index,
+	struct object_datum *object)
+{
+	struct unit_datum *unit = (struct unit_datum *)object;
+	short local_player_index;
+
+	if (unit->unit.player_index != NONE || object->object.parent_object_index != NONE ||
+		((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
+		return FALSE;
+	for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
+	{
+		long player_index = local_player_get_player_index(local_player_index);
+		long unit_index = player_index != NONE ? player_get(player_index)->unit_index : NONE;
+
+		if (unit_index != NONE &&
+			distance_squared3d(&object_get(unit_index)->object.position, &object->object.position) <
+				N64_FAR_BIPED_DISTANCE * N64_FAR_BIPED_DISTANCE)
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
 static boolean n64_object_unmoved(
 	long object_index,
 	struct object_datum *object,
@@ -3736,6 +3765,8 @@ static boolean n64_object_unmoved(
 {
 	if (object->object.type == _object_type_vehicle)
 		return n64_vehicle_unmoved(object_index, object);
+	if (object->object.type == _object_type_biped)
+		return n64_far_ai_biped(object_index, object);
 
 	static struct
 	{
