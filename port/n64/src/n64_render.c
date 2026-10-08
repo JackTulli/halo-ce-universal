@@ -1405,7 +1405,8 @@ static void render_object(const struct n64_object *object)
 			{m[10] * WORLD_SCALE, m[11] * WORLD_SCALE, m[12] * WORLD_SCALE, 1.0f},
 		}};
 
-		t3d_mat4_to_fixed(&matrices[n], &matrix);
+		/* (the last column is 0, 0, 0, 1: the 3x4 conversion, the same numbers) */
+		t3d_mat4_to_fixed_3x4(&matrices[n], &matrix);
 	}
 	/* nodes the game does not have (a model with more nodes than its
 	animation drives) keep the first node's matrix */

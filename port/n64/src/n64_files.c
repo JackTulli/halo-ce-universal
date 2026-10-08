@@ -66,13 +66,23 @@ int n64_debug_flag(const char *name)
 	each time, and there are more than its first 16) */
 	static struct { const char *name; int value; } cache[64];
 	static int count;
+	/* (and a slot by the pointer in front: some are asked for per object,
+	per ray, per sound) */
+	static struct { const char *name; int value; } slots[64];
+	unsigned slot = ((unsigned long)name >> 2) & 63;
 	char path[64];
 	FILE *file;
 
+	if (slots[slot].name == name)
+		return slots[slot].value;
 	for (int i = 0; i < count; i++)
 	{
 		if (cache[i].name == name)
+		{
+			slots[slot].name = name;
+			slots[slot].value = cache[i].value;
 			return cache[i].value;
+		}
 	}
 	for (int i = 0; i < count; i++)
 	{

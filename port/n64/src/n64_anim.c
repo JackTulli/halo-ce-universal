@@ -42,6 +42,7 @@ static struct
 	struct chunk chunks[CHUNK_COUNT];
 	unsigned long clock;
 	unsigned long misses, requests;
+	int last_hit;
 } anim;
 
 void n64_animation_open(const char *map_name)
@@ -103,6 +104,17 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 
 	anim.requests++;
 	anim.clock++;
+	/* (the chunk the last frame came from first: a tick's frames come mostly
+	from the same few) */
+	{
+		struct chunk *c = &anim.chunks[anim.last_hit];
+
+		if (c->start >= 0 && offset >= c->start && offset + frame_size <= c->start + c->length)
+		{
+			c->last_used = anim.clock;
+			return c->data + (offset - c->start);
+		}
+	}
 	/* a chunk that holds the whole frame */
 	for (int i = 0; i < CHUNK_COUNT; i++)
 	{
@@ -113,6 +125,7 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 		if (c->start >= 0 && offset >= c->start && offset + frame_size <= c->start + c->length)
 		{
 			chunk = c;
+			anim.last_hit = i;
 			break;
 		}
 		if (c->last_used < oldest->last_used)
@@ -135,6 +148,7 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 		dma_read(chunk->data, start, (length + 1) & ~1L);
 		chunk->start = start;
 		chunk->length = length;
+		anim.last_hit = (int)(chunk - anim.chunks);
 	}
 	chunk->last_used = anim.clock;
 	if ((anim.requests & 4095) == 0)
