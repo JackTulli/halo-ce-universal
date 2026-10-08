@@ -62,10 +62,14 @@ OBJECT_GROUPS = ("bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach",
 SKY_LIGHT = (0.3, 0.2, 0.93)
 # triangles a model may keep (tools/n64/decimate.py): the first-person
 # models are drawn in every view
-FIRST_PERSON_BUDGET = 500
+FIRST_PERSON_BUDGET = int(os.environ.get("N64_FIRST_PERSON_BUDGET", "500"))
 # the first-person hands (their fingers need the triangles)
 HANDS_BUDGET = FIRST_PERSON_BUDGET
 MODEL_BUDGET = 400
+# how far (a share of the part's size) the simplifier may move a
+# first-person weapon's surface (with the budget alone the pistol lost its
+# muzzle); the others keep their budget alone
+FIRST_PERSON_DEVIATION = float(os.environ.get("N64_FIRST_PERSON_DEVIATION", "0.015"))
 # a far version keeps this share of the model's triangles (at least
 # FAR_MINIMUM)
 FAR_SHARE = 0.25
@@ -94,6 +98,17 @@ def transform_point(m, p):
     return (u[0] * z + l[0] * y + f[0] * x + t[0],
             u[1] * z + l[1] * y + f[1] * x + t[1],
             u[2] * z + l[2] * y + f[2] * x + t[2])
+
+
+def part_size(vertices, triangles):
+    """the diagonal of the box around a part's triangles (node space, which
+    for a part on few nodes is close enough)"""
+    used = {i for t in triangles for i in t}
+    if not used:
+        return 0.0
+    lo = [min(vertices[i][1][k] for i in used) for k in range(3)]
+    hi = [max(vertices[i][1][k] for i in used) for k in range(3)]
+    return math.sqrt(sum((b - a) ** 2 for a, b in zip(lo, hi)))
 
 
 def weld_nodes(vertices, world, nodes_inverse):
@@ -153,6 +168,7 @@ class ModelConverter:
         found = []
         self.budgets = {}
         self.first_person = set()
+        self.hands = set()
         # models a unit (a player) uses keep their textures at any distance
         # (a player's colour)
         self.units = set()
@@ -192,6 +208,7 @@ class ModelConverter:
                     if model is not None:
                         self.budgets[model.index] = HANDS_BUDGET
                         self.first_person.add(model.index)
+                        self.hands.add(model.index)
         return found
 
     def shader_texture(self, shader_datum):
@@ -325,7 +342,7 @@ class ModelConverter:
         return len(strip_triangles(indices))
 
     def convert_part(self, part_address, nodes_inverse, u_scale, v_scale, shaders, batches, vertex_data, index_data,
-                     keep=1.0, detail=False):
+                     keep=1.0, detail=False, hands=False):
         pf = self.f("ModelGeometryPart")
         raw = self.map.read(part_address, self.defs.size("ModelGeometryPart"))
         shader_index = struct.unpack_from("<h", raw, pf["shader index"])[0]
@@ -364,7 +381,11 @@ class ModelConverter:
         triangles = [(a, c, b) for a, b, c in strip_triangles(indices)
                      if a < vertex_count and b < vertex_count and c < vertex_count]
         if keep < 1.0:
-            triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)), cross_nodes=not detail)
+            # (the hands keep their budget alone: the bound kept them at
+            # ~1,300 triangles)
+            deviation = part_size(vertices, triangles) * FIRST_PERSON_DEVIATION if detail and not hands else None
+            triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)), cross_nodes=not detail,
+                                 max_deviation=deviation)
 
         groups = self.texture_windows(bitmap, vertices, triangles) if detail and texture >= 0 and DETAIL_WINDOWS else None
         if not groups:
@@ -631,7 +652,7 @@ class ModelConverter:
                 for p in range(pc):
                     self.convert_part(pp + p * part_size, nodes_inverse, u_scale, v_scale,
                                       shaders, batches, vertex_data, index_data, keep,
-                                      detail=tag.index in self.first_person)
+                                      detail=tag.index in self.first_person, hands=tag.index in self.hands)
                 geometry_map[gi] = len(geometry_records)
                 geometry_records.append((first, len(batches) - first))
                 return geometry_map[gi]

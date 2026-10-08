@@ -7,6 +7,10 @@ result drawable as it was:
 
 - vertices are welded by position within their node first, so a texture
   seam (two vertices, one position) moves as one and never opens a crack;
+- with max_deviation, a collapse that moves the surface further than that
+  off any of the moved vertex's triangles' planes is refused: the budget is
+  a most, the shape comes first (a budget alone flattened the front of the
+  first-person pistol's slide, its muzzle);
 - with cross_nodes, an edge between vertices of two nodes collapses too,
   at CROSS_NODE_COST times its error (after the edges within a node): the
   moved vertex's triangles take the other node's vertex, as rigid skinning
@@ -65,7 +69,7 @@ def _normal(a, b, c):
 CROSS_NODE_COST = 8.0
 
 
-def decimate(vertices, triangles, target, cross_nodes=False):
+def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None):
     if len(triangles) <= target:
         return list(triangles)
     # weld by node and position
@@ -162,13 +166,20 @@ def decimate(vertices, triangles, target, cross_nodes=False):
         cost, g, h, vg, vh = heapq.heappop(heap)
         if not alive_group[g] or not alive_group[h] or version[g] != vg or version[h] != vh:
             continue
-        # refuse a collapse that turns a remaining triangle too far
+        # refuse a collapse that turns a remaining triangle too far, or moves
+        # the surface too far off its planes
         flips = False
+        move = [positions[h][k] - positions[g][k] for k in range(3)]
         for t in by_group[g]:
             corners = tris[t][1]
+            before = _normal(*(positions[c] for c in corners))
+            if max_deviation is not None:
+                length = math.sqrt(before[0] ** 2 + before[1] ** 2 + before[2] ** 2)
+                if length > 1e-20 and abs(before[0] * move[0] + before[1] * move[1] + before[2] * move[2]) > max_deviation * length:
+                    flips = True
+                    break
             if h in corners:
                 continue
-            before = _normal(*(positions[c] for c in corners))
             after = _normal(*(positions[h] if c == g else positions[c] for c in corners))
             dot = before[0] * after[0] + before[1] * after[1] + before[2] * after[2]
             lengths = math.sqrt((before[0] ** 2 + before[1] ** 2 + before[2] ** 2) *
