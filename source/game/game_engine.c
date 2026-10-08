@@ -7654,6 +7654,12 @@ static void handle_custom_starting_equipment(
 				long definition_index = random_item(*item_collection);
 				struct object_placement_data placement_data;
 				long weapon_index;
+#ifdef HALO_N64
+				/* debugging: port/n64/game/n64_render_game.c */
+				extern long n64_debug_spawn_weapon(long definition_index, boolean first_weapon);
+
+				definition_index = n64_debug_spawn_weapon(definition_index, first_weapon);
+#endif
 
 				object_placement_data_new(
 					&placement_data,

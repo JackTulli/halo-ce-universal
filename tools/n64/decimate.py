@@ -17,8 +17,10 @@ result drawable as it was:
   one that would join the mesh to itself (g and h may share no neighbour
   but the far corners of the triangles on their edge);
 - a vertex on an open edge (where the part meets another part, or the
-  mesh simply ends) or where two nodes meet (the same position in two
-  groups) never moves: the meshes would open there. A model's parts are
+  mesh simply ends), where two nodes meet (the same position in two
+  groups) or on a texture seam (one position, two texture coordinates)
+  never moves: the meshes would open there, or a triangle would take its
+  texture from another island of the atlas. A model's parts are
   simplified one by one, so their shared edges must stay where they are.
 
 decimate(vertices, triangles, target) takes vertices as (node, position,
@@ -110,6 +112,10 @@ def decimate(vertices, triangles, target):
     for shared in groups_at.values():
         if len(shared) > 1:
             locked.update(shared)
+    for g, group_members in enumerate(members):
+        uvs = {(round(vertices[v][2][0], 4), round(vertices[v][2][1], 4)) for v in group_members}
+        if len(uvs) > 1:
+            locked.add(g)
     alive_group = [True] * len(members)
     version = [0] * len(members)
     heap = []

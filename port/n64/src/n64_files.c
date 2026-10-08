@@ -83,3 +83,31 @@ int n64_debug_flag(const char *name)
 	}
 	return file != NULL;
 }
+
+/* a debug setting's text: a file on the cartridge (port.json "flags" entry
+"name=value"), its first line; 0 when there is none */
+int n64_debug_text(const char *name, char *buffer, int size)
+{
+	char path[64];
+	FILE *file;
+	int length;
+
+	snprintf(path, sizeof(path), "rom:/%s", name);
+	file = fopen(path, "rb");
+	if (!file)
+		return 0;
+	length = (int)fread(buffer, 1, size - 1, file);
+	fclose(file);
+	if (length < 0)
+		length = 0;
+	buffer[length] = 0;
+	for (int i = 0; i < length; i++)
+	{
+		if (buffer[i] == '\n' || buffer[i] == '\r')
+		{
+			buffer[i] = 0;
+			break;
+		}
+	}
+	return buffer[0] != 0;
+}

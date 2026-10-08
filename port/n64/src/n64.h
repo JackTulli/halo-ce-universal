@@ -38,6 +38,8 @@ unsigned long n64_heap_free(void);
 /* TRUE when the cartridge carries the file rom:/<name> (debug switches,
 port.json "flags"); looked up once per name */
 int n64_debug_flag(const char *name);
+/* a debug setting's value (port.json flag "name=value"): 0 when unset */
+int n64_debug_text(const char *name, char *buffer, int size);
 /* the profiler samples only inside a zone with the flag profile_zone */
 extern volatile int n64_profile_zone;
 

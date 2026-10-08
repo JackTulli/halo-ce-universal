@@ -43,6 +43,11 @@ MATERIAL_ALPHA_TEST = 1
 MATERIAL_TWO_SIDED = 2
 MATERIAL_TRANSPARENT = 4
 MATERIAL_UNTEXTURED = 8
+# a model batch whose texture's palette is split for a player's colour
+# (split_palette)
+MATERIAL_CHANGE_COLOR = 16
+# a transparent model shader drawn as a cut-out glow (models.py glow_texture)
+MATERIAL_GLOW = 32
 
 MKSPRITE = str(Path(os.environ.get("N64_INST", Path.home() / "n64/toolchain")) / "bin/mksprite")
 
@@ -71,6 +76,37 @@ def pack_normal(n):
 class Texture:
     def __init__(self, name, width, height):
         self.name, self.width, self.height = name, width, height
+
+
+def split_palette(img, mask):
+    """img (RGBA) as a 16-colour paletted image: the texels where mask < 128
+    take entries 0-7, the others 8-15, each half the image's own colours
+    there (median cut)"""
+    pixels = list(img.convert("RGB").getdata())
+    inside = [m >= 128 for m in mask.getdata()]
+    palette = []
+    for half in (False, True):
+        colours = [p for p, m in zip(pixels, inside) if m == half] or [(0, 0, 0)]
+        sample = Image.new("RGB", (len(colours), 1))
+        sample.putdata(colours)
+        quantized = sample.quantize(colors=8, method=Image.Quantize.MEDIANCUT)
+        entries = quantized.getpalette()[:24]
+        entries += entries[-3:] * ((24 - len(entries)) // 3)
+        palette.append([tuple(entries[i:i + 3]) for i in range(0, 24, 3)])
+    out = Image.new("P", img.size)
+    out.putpalette([c for half in palette for colour in half for c in colour])
+    cache = {}
+    indices = []
+    for p, m in zip(pixels, inside):
+        key = (p, m)
+        index = cache.get(key)
+        if index is None:
+            half = palette[1 if m else 0]
+            best = min(range(8), key=lambda i: (half[i][0] - p[0]) ** 2 + (half[i][1] - p[1]) ** 2 + (half[i][2] - p[2]) ** 2)
+            index = cache[key] = best + (8 if m else 0)
+        indices.append(index)
+    out.putdata(indices)
+    return out
 
 
 class LevelBuilder:
@@ -110,15 +146,22 @@ class LevelBuilder:
         self.texture_by_bitmap[bitmap_datum] = index
         return index
 
-    def write_texture(self, img, tag_name):
+    def write_texture(self, img, tag_name, mask=None, fmt=None):
+        """a texture from an image; with a mask (L, the image's size: a
+        player's colour change), a CI4 texture's palette is split: entries
+        0-7 for the texels outside the mask, 8-15 for those in it (the
+        renderer tints the upper half)"""
         # at most 64 texels a side and 4 KB of TMEM with mipmaps: CI4 64x64
         # is 2 KB, its mipmaps about 0.7 KB more
+        fmt = fmt or TEXTURE_FORMAT
         w, h = img.size
-        limit = 32.0 if TEXTURE_FORMAT == "RGBA16" else 64.0
+        limit = 32.0 if fmt == "RGBA16" else 64.0
         scale = min(1.0, limit / max(w, h))
         w2 = max(4, 1 << int(math.log2(max(1, int(w * scale)))))
         h2 = max(4, 1 << int(math.log2(max(1, int(h * scale)))))
         img = img.resize((w2, h2), Image.LANCZOS)
+        if mask is not None:
+            mask = mask.resize((w2, h2), Image.BILINEAR)
         if self.texture_brightness != 1.0:
             k = self.texture_brightness
             r, g, b, a = img.split()
@@ -129,14 +172,17 @@ class LevelBuilder:
         tex_dir = self.out_dir / "tex" / self.map_name
         tex_dir.mkdir(parents=True, exist_ok=True)
         png = tex_dir / f"{name}.png"
-        img.save(png)
+        if mask is not None and fmt == "CI4":
+            split_palette(img, mask).save(png)
+        else:
+            img.save(png)
         # a colour-indexed texture and its mipmaps must fit the lower 2 KB
         # of TMEM (its palette takes the upper half)
-        bits = 16 if TEXTURE_FORMAT == "RGBA16" else 4
+        bits = 16 if fmt == "RGBA16" else 4
         # no mipmaps yet: the renderer's doubling combiner needs both RDP
         # cycles, and interpolated mipmapping would need one of them
         mipmaps = False
-        subprocess.run([MKSPRITE, "--format", TEXTURE_FORMAT, "--mipmap", "BOX" if mipmaps else "NONE",
+        subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
                         "--compress", "1", "-o", str(tex_dir), str(png)], check=True, capture_output=True)
         png.unlink()
         self.textures.append(Texture(name, w2, h2))

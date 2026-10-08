@@ -31,6 +31,11 @@ enum
 	MATERIAL_TWO_SIDED = 2,
 	MATERIAL_TRANSPARENT = 4,
 	MATERIAL_UNTEXTURED = 8,
+	/* a model texture whose palette's upper half is a player's colour
+	(tools/n64/level.py split_palette) */
+	MATERIAL_CHANGE_COLOR = 16,
+	/* a transparent model shader drawn as a cut-out glow, unlit */
+	MATERIAL_GLOW = 32,
 };
 
 /* ---------- the level file */
@@ -106,7 +111,15 @@ struct models_header
 	uint32_t vertices_offset, indices_offset;
 };
 
-struct model_record { uint16_t tag_index; uint8_t node_count, region_count; uint16_t first_region, pad; };
+struct model_record
+{
+	uint16_t tag_index;
+	uint8_t node_count, region_count;
+	uint16_t first_region, pad;
+	uint16_t first_batch, batch_count;
+	/* the model's vertices, then its indices, in the file */
+	uint32_t data_offset, vertex_bytes, index_bytes;
+};
 struct region_record { uint16_t permutation_count, first_permutation; };
 struct geometry_record { uint16_t first_batch, batch_count; };
 struct model_batch
@@ -119,9 +132,24 @@ struct model_batch
 };
 struct model_segment { uint8_t node, slot, count, pad; uint32_t vertex_pair_offset; };
 
+/* Models and their textures are read from the cartridge when first drawn
+and dropped, least recently drawn first, past these sizes (a model or
+texture drawn in the last frames in flight stays) */
+#define MODEL_CACHE_BYTES (256 * 1024)
+#define MODEL_TEXTURE_CACHE_BYTES (192 * 1024)
+
+struct loaded_model
+{
+	/* its vertices and indices; each batch's loads (node matrices from the
+	segment the object sets) and triangles, recorded once */
+	uint8_t *data;
+	rspq_block_t **blocks;
+	unsigned long last_drawn;
+};
+
 static struct
 {
-	uint8_t *data;
+	uint8_t *data; /* the tables */
 	struct models_header *header;
 	struct level_texture *textures;
 	struct model_record *models;
@@ -130,15 +158,16 @@ static struct
 	struct geometry_record *geometries;
 	struct model_batch *batches;
 	struct model_segment *segments;
-	T3DVertPacked *vertices;
-	uint8_t *indices;
+	char path[64], map_name[32];
+	struct loaded_model *loaded;
+	unsigned long loaded_bytes;
 	sprite_t **sprites;
+	unsigned long *texture_last_used, *texture_size;
+	unsigned long texture_bytes;
 	/* tag index -> model record, or NULL */
 	struct model_record **by_tag;
 	int tag_count;
-	/* each batch's loads (node matrices from the segment the object sets)
-	and triangles, recorded once */
-	rspq_block_t **blocks;
+	unsigned long reads, texture_reads;
 } models;
 
 #define SEGMENT_NODE_MATRICES T3D_SEGMENT_1
@@ -199,45 +228,204 @@ void n64_render_initialize(void)
 	}
 }
 
-static void load_models(const char *map_name)
+/* a model's data and recordings, freed once the RSP is done with them */
+struct model_release
+{
+	uint8_t *data;
+	rspq_block_t **blocks;
+	int count;
+};
+
+static void release_model(void *argument)
+{
+	struct model_release *release = argument;
+
+	for (int i = 0; i < release->count; i++)
+	{
+		if (release->blocks[i])
+			rspq_block_free(release->blocks[i]);
+	}
+	free(release->blocks);
+	free(release->data);
+	free(release);
+}
+
+static void drop_model(int index)
+{
+	struct loaded_model *loaded = &models.loaded[index];
+	struct model_record *model = &models.models[index];
+	struct model_release *release;
+
+	if (!loaded->data)
+		return;
+	release = malloc(sizeof(*release));
+	release->data = loaded->data;
+	release->blocks = loaded->blocks;
+	release->count = model->batch_count;
+	rdpq_call_deferred(release_model, release);
+	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
+	loaded->data = NULL;
+	loaded->blocks = NULL;
+}
+
+/* a model's data in memory (read from the cartridge and its batches
+recorded the first time), or 0 */
+static int load_model(int index)
+{
+	struct model_record *model = &models.models[index];
+	struct loaded_model *loaded = &models.loaded[index];
+	unsigned long size = model->vertex_bytes + model->index_bytes;
+	FILE *file;
+
+	loaded->last_drawn = renderer.frame_index;
+	if (loaded->data)
+		return 1;
+	/* room: drop the models drawn longest ago, none drawn in the frames
+	still in flight */
+	while (models.loaded_bytes + size > MODEL_CACHE_BYTES)
+	{
+		int oldest = -1;
+
+		for (int i = 0; i < models.header->model_count; i++)
+		{
+			if (models.loaded[i].data && models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index &&
+				(oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn))
+				oldest = i;
+		}
+		if (oldest < 0)
+			break;
+		drop_model(oldest);
+	}
+	loaded->data = memalign(16, size);
+	loaded->blocks = calloc(model->batch_count, sizeof(rspq_block_t *));
+	if (!loaded->data || !loaded->blocks)
+	{
+		free(loaded->data);
+		free(loaded->blocks);
+		loaded->data = NULL;
+		loaded->blocks = NULL;
+		return 0;
+	}
+	file = fopen(models.path, "rb");
+	if (!file || fseek(file, model->data_offset, SEEK_SET) || fread(loaded->data, 1, size, file) != size)
+	{
+		if (file)
+			fclose(file);
+		free(loaded->data);
+		free(loaded->blocks);
+		loaded->data = NULL;
+		loaded->blocks = NULL;
+		return 0;
+	}
+	fclose(file);
+	data_cache_hit_writeback_invalidate(loaded->data, size);
+	models.loaded_bytes += size;
+	models.reads++;
+	for (int b = 0; b < model->batch_count; b++)
+	{
+		struct model_batch *batch = &models.batches[model->first_batch + b];
+		uint8_t *index = loaded->data + model->vertex_bytes + batch->index_offset;
+
+		rspq_block_begin();
+		for (int g = 0; g < batch->segment_count; g++)
+		{
+			struct model_segment *segment = &models.segments[batch->first_segment + g];
+
+			t3d_matrix_push(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))));
+			t3d_vert_load((T3DVertPacked *)loaded->data + segment->vertex_pair_offset, segment->slot, segment->count);
+			t3d_matrix_pop(1);
+		}
+		for (int t = 0; t < batch->triangle_count; t++, index += 3)
+			t3d_tri_draw(index[0], index[1], index[2]);
+		t3d_tri_sync();
+		loaded->blocks[b] = rspq_block_end();
+	}
+	return 1;
+}
+
+/* a model texture in memory (read the first time it is drawn), or NULL */
+static sprite_t *model_texture(int texture)
 {
 	char path[64];
+
+	if (texture < 0 || texture >= models.header->texture_count)
+		return NULL;
+	models.texture_last_used[texture] = renderer.frame_index;
+	if (models.sprites[texture])
+		return models.sprites[texture];
+	while (models.texture_bytes > MODEL_TEXTURE_CACHE_BYTES)
+	{
+		int oldest = -1;
+
+		for (int i = 0; i < models.header->texture_count; i++)
+		{
+			if (models.sprites[i] && models.texture_last_used[i] + FRAMES_IN_FLIGHT < renderer.frame_index &&
+				(oldest < 0 || models.texture_last_used[i] < models.texture_last_used[oldest]))
+				oldest = i;
+		}
+		if (oldest < 0)
+			break;
+		rdpq_call_deferred((void (*)(void *))sprite_free, models.sprites[oldest]);
+		models.sprites[oldest] = NULL;
+		models.texture_bytes -= models.texture_size[oldest];
+	}
+	snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", models.map_name, models.textures[texture].name);
+	models.sprites[texture] = sprite_load(path);
+	if (models.sprites[texture])
+	{
+		surface_t pixels = sprite_get_pixels(models.sprites[texture]);
+
+		models.texture_size[texture] = pixels.stride * pixels.height + 512;
+		models.texture_bytes += models.texture_size[texture];
+		models.texture_reads++;
+	}
+	return models.sprites[texture];
+}
+
+static void load_models(const char *map_name)
+{
+	struct models_header header;
 	FILE *file;
-	long size;
 
 	if (models.data)
 	{
 		rspq_wait();
-		for (int i = 0; i < models.header->batch_count; i++)
-			rspq_block_free(models.blocks[i]);
-		free(models.blocks);
+		for (int i = 0; i < models.header->model_count; i++)
+			drop_model(i);
 		for (int i = 0; i < models.header->texture_count; i++)
 		{
 			if (models.sprites[i])
-				sprite_free(models.sprites[i]);
+				rdpq_call_deferred((void (*)(void *))sprite_free, models.sprites[i]);
 		}
+		rspq_wait();
 		free(models.sprites);
+		free(models.texture_last_used);
+		free(models.texture_size);
+		free(models.loaded);
 		free(models.by_tag);
 		free(models.data);
 		memset(&models, 0, sizeof(models));
 	}
-	snprintf(path, sizeof(path), "rom:/levels/%s.mdl", map_name);
-	file = fopen(path, "rb");
+	snprintf(models.path, sizeof(models.path), "rom:/levels/%s.mdl", map_name);
+	snprintf(models.map_name, sizeof(models.map_name), "%s", map_name);
+	file = fopen(models.path, "rb");
 	if (!file)
 	{
-		debugf("n64: no models %s\n", path);
+		debugf("n64: no models %s\n", models.path);
 		return;
 	}
-	fseek(file, 0, SEEK_END);
-	size = ftell(file);
+	/* the tables stay in memory; vertices_offset is where they end */
+	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64O", 4) || header.version != 2)
+	{
+		fclose(file);
+		assertf(0, "%s was converted for another build", models.path);
+		return;
+	}
+	models.data = memalign(16, header.vertices_offset);
 	fseek(file, 0, SEEK_SET);
-	models.data = memalign(16, size);
-	fread(models.data, 1, size, file);
+	fread(models.data, 1, header.vertices_offset, file);
 	fclose(file);
-	data_cache_hit_writeback_invalidate(models.data, size);
 	models.header = (struct models_header *)models.data;
-	assertf(!memcmp(models.header->magic, "H64O", 4) && models.header->version == 1,
-		"%s was converted for another build", path);
 	models.textures = (struct level_texture *)(models.data + models.header->textures_offset);
 	models.models = (struct model_record *)(models.data + models.header->models_offset);
 	models.regions = (struct region_record *)(models.data + models.header->regions_offset);
@@ -245,14 +433,10 @@ static void load_models(const char *map_name)
 	models.geometries = (struct geometry_record *)(models.data + models.header->geometries_offset);
 	models.batches = (struct model_batch *)(models.data + models.header->batches_offset);
 	models.segments = (struct model_segment *)(models.data + models.header->segments_offset);
-	models.vertices = (T3DVertPacked *)(models.data + models.header->vertices_offset);
-	models.indices = models.data + models.header->indices_offset;
 	models.sprites = calloc(models.header->texture_count, sizeof(sprite_t *));
-	for (int i = 0; i < models.header->texture_count; i++)
-	{
-		snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", map_name, models.textures[i].name);
-		models.sprites[i] = sprite_load(path);
-	}
+	models.texture_last_used = calloc(models.header->texture_count, sizeof(unsigned long));
+	models.texture_size = calloc(models.header->texture_count, sizeof(unsigned long));
+	models.loaded = calloc(models.header->model_count, sizeof(struct loaded_model));
 	models.tag_count = 0;
 	for (int i = 0; i < models.header->model_count; i++)
 	{
@@ -262,27 +446,7 @@ static void load_models(const char *map_name)
 	models.by_tag = calloc(models.tag_count, sizeof(struct model_record *));
 	for (int i = 0; i < models.header->model_count; i++)
 		models.by_tag[models.models[i].tag_index] = &models.models[i];
-	models.blocks = calloc(models.header->batch_count, sizeof(rspq_block_t *));
-	for (int b = 0; b < models.header->batch_count; b++)
-	{
-		struct model_batch *batch = &models.batches[b];
-		uint8_t *index = models.indices + batch->index_offset;
-
-		rspq_block_begin();
-		for (int g = 0; g < batch->segment_count; g++)
-		{
-			struct model_segment *segment = &models.segments[batch->first_segment + g];
-
-			t3d_matrix_push(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))));
-			t3d_vert_load(models.vertices + segment->vertex_pair_offset, segment->slot, segment->count);
-			t3d_matrix_pop(1);
-		}
-		for (int t = 0; t < batch->triangle_count; t++, index += 3)
-			t3d_tri_draw(index[0], index[1], index[2]);
-		t3d_tri_sync();
-		models.blocks[b] = rspq_block_end();
-	}
-	debugf("n64: %d models, %ld KB\n", models.header->model_count, size / 1024);
+	debugf("n64: %d models, %ld KB of tables\n", models.header->model_count, (long)header.vertices_offset / 1024);
 }
 
 int n64_render_load_level(const char *map_name)
@@ -357,6 +521,9 @@ int n64_render_load_level(const char *map_name)
 	return 1;
 }
 
+/* the tinted palettes made this frame (set_model_texture) */
+static int palette_count;
+
 void n64_render_frame_begin(void)
 {
 	unsigned long before_display = TICKS_READ();
@@ -371,6 +538,7 @@ void n64_render_frame_begin(void)
 	renderer.view_count = 0;
 	renderer.frame_index++;
 	renderer.matrix_count = 0;
+	palette_count = 0;
 }
 
 static void set_material(int index)
@@ -496,21 +664,59 @@ void n64_render_view(const struct n64_view *view)
 	renderer.current_texture = -2;
 }
 
-/* models: textured (the doubling is in the texture), shaded by their baked
-sky light; one RDP cycle, or two with a player's tint. Halo's two-sided
-shaders (tools/n64/models.py) are drawn without back-face culling. */
-static int current_tinted, current_two_sided;
+/* models: textured, shaded by their baked sky light, one RDP cycle. Halo's
+two-sided shaders (tools/n64/models.py) are drawn without back-face
+culling. A player's colour is the upper half of a texture's palette times
+that colour (Halo tints where the multipurpose map says): a palette of its
+own, made for the draw, in a ring that lasts the frames in flight. */
+#define PALETTES_PER_FRAME 256
 
-static void set_model_texture(int texture, int flags, int tinted)
+static int current_two_sided, current_glow;
+static unsigned long current_color;
+static uint16_t palettes[FRAMES_IN_FLIGHT][PALETTES_PER_FRAME][16] __attribute__((aligned(16)));
+
+static uint16_t *tinted_palette(sprite_t *sprite, unsigned long color)
 {
-	int textured = texture >= 0 && models.sprites[texture] && !debug_untextured;
-	int two_sided = (flags & MATERIAL_TWO_SIDED) != 0;
+	uint16_t *source = sprite_get_palette(sprite), *palette;
+	unsigned r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
 
-	if (texture == renderer.current_texture && tinted == current_tinted && two_sided == current_two_sided)
+	if (!source || palette_count >= PALETTES_PER_FRAME)
+		return NULL;
+	palette = palettes[renderer.frame_index % FRAMES_IN_FLIGHT][palette_count++];
+	for (int i = 0; i < 16; i++)
+	{
+		uint16_t c = source[i];
+
+		if (i >= 8)
+		{
+			unsigned cr = ((c >> 11) & 31) * r / 255, cg = ((c >> 6) & 31) * g / 255, cb = ((c >> 1) & 31) * b / 255;
+
+			c = (uint16_t)((cr << 11) | (cg << 6) | (cb << 1) | (c & 1));
+		}
+		palette[i] = c;
+	}
+	data_cache_hit_writeback(palette, sizeof(uint16_t) * 16);
+	return palette;
+}
+
+/* color: 0xRRGGBB, the player's colour for MATERIAL_CHANGE_COLOR textures
+(white leaves them as they are) */
+static void set_model_texture(int texture, int flags, unsigned long color)
+{
+	sprite_t *sprite = debug_untextured ? NULL : model_texture(texture);
+	int textured = sprite != NULL;
+	int two_sided = (flags & MATERIAL_TWO_SIDED) != 0;
+	int glow = (flags & MATERIAL_GLOW) != 0;
+
+	if (!(flags & MATERIAL_CHANGE_COLOR))
+		color = 0xFFFFFF;
+	if (texture == renderer.current_texture && color == current_color && two_sided == current_two_sided &&
+		glow == current_glow)
 		return;
 	renderer.current_texture = texture;
-	current_tinted = tinted;
+	current_color = color;
 	current_two_sided = two_sided;
+	current_glow = glow;
 	rdpq_sync_pipe();
 	rdpq_sync_tile();
 	rdpq_mode_begin();
@@ -518,9 +724,11 @@ static void set_model_texture(int texture, int flags, int tinted)
 	rdpq_mode_zbuf(true, true);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
-	if (textured && tinted)
-		rdpq_mode_combiner(RDPQ_COMBINER2((TEX0, 0, SHADE, 0), (TEX0, 0, SHADE, 0),
-			(COMBINED, 0, PRIM, 0), (0, 0, 0, COMBINED)));
+	if (textured && glow)
+	{
+		rdpq_mode_combiner(RDPQ_COMBINER_TEX);
+		rdpq_mode_alphacompare(128);
+	}
 	else if (textured)
 		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
 	else
@@ -528,9 +736,16 @@ static void set_model_texture(int texture, int flags, int tinted)
 	rdpq_mode_end();
 	if (textured)
 	{
-		rdpq_sprite_upload(TILE0, models.sprites[texture], &(rdpq_texparms_t){
+		rdpq_sprite_upload(TILE0, sprite, &(rdpq_texparms_t){
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
 		});
+		if (color != 0xFFFFFF)
+		{
+			uint16_t *palette = tinted_palette(sprite, color);
+
+			if (palette)
+				rdpq_tex_upload_tlut(palette, 0, 16);
+		}
 	}
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | (two_sided ? 0 : T3D_FLAG_CULL_BACK) |
 		(textured ? T3D_FLAG_TEXTURED : 0));
@@ -568,6 +783,8 @@ void n64_render_object(const struct n64_object *object)
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
+	if (!load_model(model - models.models))
+		return;
 	matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
 	renderer.matrix_count += model->node_count;
 	for (int n = 0; n < node_count; n++)
@@ -589,10 +806,7 @@ void n64_render_object(const struct n64_object *object)
 		matrices[n] = matrices[0];
 	t3d_segment_set(SEGMENT_NODE_MATRICES, matrices);
 	renderer.objects++;
-	int tinted = object->tint[0] != 0xFF || object->tint[1] != 0xFF || object->tint[2] != 0xFF;
-
-	if (tinted)
-		rdpq_set_prim_color(RGBA32(object->tint[0], object->tint[1], object->tint[2], 0xFF));
+	unsigned long color = ((unsigned long)object->tint[0] << 16) | ((unsigned long)object->tint[1] << 8) | object->tint[2];
 	for (int r = 0; r < model->region_count; r++)
 	{
 		struct region_record *region = &models.regions[model->first_region + r];
@@ -611,10 +825,9 @@ void n64_render_object(const struct n64_object *object)
 		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b++)
 		{
 			struct model_batch *batch = &models.batches[b];
-			uint8_t *index = models.indices + batch->index_offset;
 
-			set_model_texture(batch->texture, batch->flags, tinted);
-			rspq_block_run(models.blocks[b]);
+			set_model_texture(batch->texture, batch->flags, color);
+			rspq_block_run(models.loaded[model - models.models].blocks[b - model->first_batch]);
 			renderer.triangles += batch->triangle_count;
 		}
 	}
@@ -680,9 +893,11 @@ void n64_render_frame_end(void)
 		heap_stats_t heap;
 
 		sys_get_heap_stats(&heap);
-		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used\n",
+		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
+			"models %lu KB (%lu reads), textures %lu KB (%lu reads)\n",
 			renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,
-			renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024);
+			renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024,
+			models.loaded_bytes / 1024, models.reads, models.texture_bytes / 1024, models.texture_reads);
 		renderer.clusters = renderer.batches = renderer.triangles = renderer.objects = 0;
 	}
 }

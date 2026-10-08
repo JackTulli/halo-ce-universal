@@ -22,6 +22,8 @@ renderer's (port/n64/src/n64_render.c).
 #include "objects/objects.h"
 #include "objects/object_definitions.h"
 #include "models/model_definitions.h"
+#include "items/weapon_definitions.h"
+#include "tag_files/tag_groups.h"
 
 #include "../src/n64.h"
 
@@ -130,11 +132,34 @@ void render_initialize(void) { return; }
 void render_dispose(void) { return; }
 void render_dispose_from_old_map(void) { return; }
 
+/* debugging (port.json flag "debug_weapon=<weapon tag name>"): players
+spawn with that weapon first (game_engine.c's starting equipment) */
+static long debug_weapon = NONE;
+
+static void n64_debug_starting_weapon(
+	void)
+{
+	char name[128];
+
+	debug_weapon = NONE;
+	if (n64_debug_text("debug_weapon", name, sizeof(name)))
+		debug_weapon = tag_loaded(WEAPON_DEFINITION_TAG, name);
+	return;
+}
+
+long n64_debug_spawn_weapon(
+	long definition_index,
+	boolean first_weapon)
+{
+	return first_weapon && debug_weapon != NONE ? debug_weapon : definition_index;
+}
+
 void render_initialize_for_new_map(
 	void)
 {
 	n64_render_load_level(n64_loaded_map_name());
 	n64_hud_set_map(n64_loaded_map_name());
+	n64_debug_starting_weapon();
 	return;
 }
 
@@ -177,13 +202,14 @@ static void render_objects_for_view(
 		n64.tint[0] = n64.tint[1] = n64.tint[2] = n64.tint[3] = 0xFF;
 		if (TEST_FLAG(_object_mask_unit, object->object.type) || TEST_FLAG(_object_mask_unit, object_get(object_get_ultimate_parent(iterator.index))->object.type))
 		{
-			/* a player (or what a player holds): the armour colour, kept light */
+			/* a player (or what a player holds): the armour colour, where the
+			model's textures take it */
 			struct object_datum *owner = object_get(object_get_ultimate_parent(iterator.index));
 			real_rgb_color const *color = &owner->object.base_change_colors[_object_change_color_a];
 
-			n64.tint[0] = (unsigned char)PIN(color->red * 160.f + 95.f, 0.f, 255.f);
-			n64.tint[1] = (unsigned char)PIN(color->green * 160.f + 95.f, 0.f, 255.f);
-			n64.tint[2] = (unsigned char)PIN(color->blue * 160.f + 95.f, 0.f, 255.f);
+			n64.tint[0] = (unsigned char)PIN(color->red * 255.f, 0.f, 255.f);
+			n64.tint[1] = (unsigned char)PIN(color->green * 255.f, 0.f, 255.f);
+			n64.tint[2] = (unsigned char)PIN(color->blue * 255.f, 0.f, 255.f);
 		}
 		n64_render_object(&n64);
 	}
@@ -218,8 +244,11 @@ void n64_first_person_model_draw(
 	n64.center[1] = render.camera.position.y;
 	n64.center[2] = render.camera.position.z;
 	n64.radius = 4.f;
-	n64.tint[0] = n64.tint[1] = n64.tint[2] = n64.tint[3] = 0xFF;
-	(void)tint; /* first person: one RDP cycle, no tint */
+	/* the player's colour, where the model's textures take it */
+	n64.tint[0] = tint ? (unsigned char)PIN(tint->red * 255.f, 0.f, 255.f) : 0xFF;
+	n64.tint[1] = tint ? (unsigned char)PIN(tint->green * 255.f, 0.f, 255.f) : 0xFF;
+	n64.tint[2] = tint ? (unsigned char)PIN(tint->blue * 255.f, 0.f, 255.f) : 0xFF;
+	n64.tint[3] = 0xFF;
 	n64_render_object(&n64);
 }
 

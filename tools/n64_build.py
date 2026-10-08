@@ -232,13 +232,21 @@ def main():
     # every debug switch the cartridge can carry (n64_debug_flag): the ones
     # port.json does not ask for are removed, so none lingers in a build
     known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
-                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud")
+                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon")
+    # a flag "name=value" is a setting: a file holding the value
+    flag_names = [flag.split("=", 1)[0] for flag in port.get("flags", [])]
     for flag in known_flags:
-        if flag not in port.get("flags", []) and (fsdir / flag).exists():
+        if flag not in flag_names and (fsdir / flag).exists():
             (fsdir / flag).unlink()
     for flag in port.get("flags", []):
-        out_flag = fsdir / flag
-        n.build(str(out_flag), "touch")
+        name, _, value = flag.partition("=")
+        out_flag = fsdir / name
+        if value:
+            fsdir.mkdir(parents=True, exist_ok=True)
+            if not out_flag.exists() or out_flag.read_text() != value + "\n":
+                out_flag.write_text(value + "\n")
+        else:
+            n.build(str(out_flag), "touch")
         fs_files.append(str(out_flag))
     dfs = BUILD_DIR / "halo.dfs"
     n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(port.get("flags", []))})

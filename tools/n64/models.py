@@ -9,34 +9,49 @@ loaded under that node's matrix. A batch is a list of segments -- (node,
 vertices) -- loaded into the RSP's 70-vertex cache, then triangles that may
 use vertices of several nodes, which stretches the skin between them.
 
+A first-person model's texture is usually one atlas for the whole weapon
+(512x512), far more than the 64x64 a texture can be in TMEM. Its triangles
+are grouped into windows of the atlas (at DETAIL_ATLAS texels a side) that
+fit 64x64, each window its own texture with its own palette; triangles too
+big for any window keep the whole atlas at 64x64.
+
 There is no lighting on the RSP for models (the first milestone): each
 vertex carries a sky light from above, baked against its default-pose
 normal, which stays right while a model turns about its up axis.
 
 The output file (big-endian):
 
-    header        'H64O', version, counts, offsets
+    header        'H64O', version, counts, offsets (the tables: everything up to
+                  the first model's data, which the N64 keeps in memory)
     textures[]    name[24] (rom:/tex/<map>/<name>.sprite), width, height
-    models[]      tag index, node count, region count, first region, first permutation...
+    models[]      tag index, node count, region count, first region, first
+                  batch, batch count, data offset, vertex bytes, index bytes
     regions[]     permutation count, first permutation
     permutations[] geometry (index into geometries, -1 for none)
     geometries[]  first batch, batch count
     batches[]     texture, flags, segment count, triangle count, first segment, index offset
     segments[]    node, cache slot, vertex count, vertex pair offset
-    vertices      T3DVertPacked, positions in node space * MODEL_SCALE
-    indices       three u8 per triangle (cache slots)
+    model data    per model: its vertices (T3DVertPacked, positions in node
+                  space * MODEL_SCALE), then its indices (three u8 per
+                  triangle: cache slots); a batch's segments and indices are
+                  offsets into its model's data. The N64 reads a model's data
+                  from the cartridge when it is first drawn.
 """
 
 import math
 import struct
 from pathlib import Path
 
+from PIL import Image
+
+from .bitmaps import bitmap_images, decode
 from .decimate import decimate
-from .level import LevelBuilder, MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, pack_normal, unpack_normal
+from .level import (LevelBuilder, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW, MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED,
+                    pack_normal, unpack_normal)
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
-VERSION = 1
+VERSION = 2
 LOD_PREFERENCE = ("low", "super low", "medium", "high", "super high")
 OBJECT_GROUPS = ("bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach", "ctrl", "lifi", "plac", "ssce")
 SKY_LIGHT = (0.3, 0.2, 0.93)
@@ -44,6 +59,11 @@ SKY_LIGHT = (0.3, 0.2, 0.93)
 # models are drawn in every view
 FIRST_PERSON_BUDGET = 500
 MODEL_BUDGET = 800
+# first-person textures: the atlas at this size, cut into windows of at most
+# WINDOW texels a side (CI4, 2 KB of TMEM); a window keeps a texel of
+# margin for the filtering
+DETAIL_ATLAS = 256
+WINDOW = 64
 
 
 def matrix4x3(values):
@@ -78,9 +98,11 @@ class ModelConverter:
         # textures go through the level builder's writer, named m00...
         self.textures = LevelBuilder(xmap, defs, map_name, out_dir)
         self.textures.texture_prefix = "m"
-        # the shader's doubling in the texture too (one RDP cycle); a
-        # player's tint is the only second cycle
-        self.textures.texture_brightness = 2.0
+        # Halo doubles a model's colour, its lighting being kept at half;
+        # the sky light baked here is whole, so the texture is not doubled
+        self.textures.texture_brightness = 1.0
+        # (base map, multipurpose map) -> texture with a split palette
+        self.masked = {}
         self.models = []
 
     def f(self, name):
@@ -125,35 +147,114 @@ class ModelConverter:
         return found
 
     def shader_texture(self, shader_datum):
-        """(texture, material flags) of a model's shader (tools/n64/level.py's
+        """(texture, material flags, base map's bitmap or None) of a model's shader (tools/n64/level.py's
         MATERIAL_* bits): two-sided shaders are drawn without culling"""
         tag = self.map.tag(shader_datum)
         if tag is None:
-            return -1, 0
+            return -1, 0, None
         if tag.group_name == "soso":
             so = self.f("ShaderModel")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
             model_flags = struct.unpack("<H", self.map.read(tag.address + so["shader model flags"], 2))[0]
-            return self.textures.texture(base), MATERIAL_TWO_SIDED if model_flags & 2 else 0
+            flags = MATERIAL_TWO_SIDED if model_flags & 2 else 0
+            # a player's colour where the multipurpose map's blue says (the
+            # Xbox's channel order)
+            change_source = struct.unpack("<H", self.map.read(tag.address + so["change color source"], 2))[0]
+            multipurpose = struct.unpack("<I", self.map.read(tag.address + so["multipurpose map"] + 12, 4))[0]
+            if change_source and self.map.tag(multipurpose) is not None:
+                texture = self.masked_texture(base, multipurpose)
+                if texture >= 0:
+                    return texture, flags | MATERIAL_CHANGE_COLOR, (base, multipurpose)
+            return self.textures.texture(base), flags, (base, None)
         if tag.group_name == "senv":
             so = self.f("ShaderEnvironment")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
-            return self.textures.texture(base), 0
-        flags = MATERIAL_TRANSPARENT
-        # the transparent shaders' own flags: "two sided" is bit 2 (bit 1
-        # for meters)
-        for struct_name, field, bit in (("ShaderTransparentChicago", "shader transparent chicago flags", 4),
-                                        ("ShaderTransparentChicagoExtended", "shader transparent chicago extended flags", 4),
-                                        ("ShaderTransparentGeneric", "shader transparent generic flags", 4),
-                                        ("ShaderTransparentGlass", "shader transparent glass flags", 4),
-                                        ("ShaderTransparentMeter", "shader transparent meter flags", 2)):
-            if tag.group_name == {"ShaderTransparentChicago": "schi", "ShaderTransparentChicagoExtended": "scex",
-                                  "ShaderTransparentGeneric": "sotr", "ShaderTransparentGlass": "sgla",
-                                  "ShaderTransparentMeter": "smet"}[struct_name]:
+            return self.textures.texture(base), 0, (base, None)
+        # transparent shaders (glowing screens, sights, meters): meters and
+        # numeric displays need Halo's own drawing and are left out (texture
+        # None: the part is not converted);
+        # the rest are cut-out glows of their first map
+        if tag.group_name == "smet":
+            return None, 0, None
+        flags = MATERIAL_TRANSPARENT | MATERIAL_GLOW
+        # the transparent shaders' own flags: "two sided" is bit 2, "numeric"
+        # bit 7
+        for struct_name, field, group in (("ShaderTransparentChicago", "shader transparent chicago flags", "schi"),
+                                          ("ShaderTransparentChicagoExtended", "shader transparent chicago extended flags", "scex"),
+                                          ("ShaderTransparentGeneric", "shader transparent generic flags", "sotr"),
+                                          ("ShaderTransparentGlass", "shader transparent glass flags", "sgla")):
+            if tag.group_name == group:
                 fields = self.f(struct_name)
-                if field in fields and self.map.read(tag.address + fields[field], 1)[0] & bit:
+                value = self.map.read(tag.address + fields[field], 1)[0] if field in fields else 0
+                if value & 4:
                     flags |= MATERIAL_TWO_SIDED
-        return self.textures.first_map(tag), flags
+                if value & 0x80 and group != "sgla":
+                    return None, 0, None
+        return self.glow_texture(tag), flags, None
+
+    def glow_texture(self, shader_tag):
+        """a transparent shader's first map as a cut-out glow (RGBA16): its
+        brighter texels, the rest transparent (the RDP's additive blending
+        wraps around)"""
+        found = []
+
+        def on_dependency(t, address, f, path, group, datum):
+            if group == 0x6269746D and datum != 0xFFFFFFFF and not found:  # 'bitm'
+                found.append(datum)
+
+        from .walk import Walker
+        Walker(self.map, self.defs).walk(shader_tag, on_dependency=on_dependency)
+        if not found:
+            return -1
+        key = ("glow", found[0])
+        if key in self.masked:
+            return self.masked[key]
+        index = -1
+        tag = self.map.tag(found[0])
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        if images:
+            try:
+                img = decode(self.map, images[0], 32)
+            except ValueError:
+                img = None
+            if img is not None:
+                r, g, b, a = img.convert("RGBA").split()
+                brightness = Image.merge("RGB", (r, g, b)).convert("L").point(lambda v: 255 if v >= 48 else 0)
+                index = self.textures.write_texture(Image.merge("RGBA", (r, g, b, brightness)), tag.name, fmt="RGBA16")
+        self.masked[key] = index
+        return index
+
+    def change_mask(self, multipurpose, size):
+        """the colour-change mask (the multipurpose map's blue) at size"""
+        tag = self.map.tag(multipurpose)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        if not images:
+            return None
+        try:
+            img = decode(self.map, images[0], max(size))
+        except ValueError:
+            return None
+        return img.getchannel("B").resize(size, Image.BILINEAR)
+
+    def masked_texture(self, base, multipurpose):
+        """the base map whole at 64x64, its palette split by the colour-change
+        mask, or -1"""
+        key = (base, multipurpose)
+        if key in self.masked:
+            return self.masked[key]
+        index = -1
+        tag = self.map.tag(base)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        if images:
+            try:
+                img = decode(self.map, images[0], 64)
+            except ValueError:
+                img = None
+            mask = self.change_mask(multipurpose, img.size) if img is not None else None
+            if img is not None:
+                index = self.textures.write_texture(img, tag.name, mask=mask)
+        self.masked[key] = index
+        return index
 
     def part_triangle_count(self, part_address):
         pf = self.f("ModelGeometryPart")
@@ -166,7 +267,7 @@ class ModelConverter:
         return len(strip_triangles(indices))
 
     def convert_part(self, part_address, nodes_inverse, u_scale, v_scale, shaders, batches, vertex_data, index_data,
-                     keep=1.0):
+                     keep=1.0, detail=False):
         pf = self.f("ModelGeometryPart")
         raw = self.map.read(part_address, self.defs.size("ModelGeometryPart"))
         shader_index = struct.unpack_from("<h", raw, pf["shader index"])[0]
@@ -179,7 +280,9 @@ class ModelConverter:
         vertex_pointer = struct.unpack("<I", self.map.read(vertex_entry + 4, 4))[0]
         data = self.map.read(vertex_pointer, vertex_count * 32)
         indices = struct.unpack(f"<{triangle_count + 2}H", self.map.read(triangle_pointer, 2 * (triangle_count + 2)))
-        texture, flags = shaders[shader_index] if 0 <= shader_index < len(shaders) else (-1, 8)
+        texture, flags, bitmap = shaders[shader_index] if 0 <= shader_index < len(shaders) else (-1, 8, None)
+        if texture is None:
+            return
 
         vertices = []
         for v in range(vertex_count):
@@ -201,13 +304,93 @@ class ModelConverter:
                      if a < vertex_count and b < vertex_count and c < vertex_count]
         if keep < 1.0:
             triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)))
-        # triangles of the same nodes together: fewer segments per batch
-        triangles.sort(key=lambda t: tuple(sorted({vertices[i][0] for i in t})))
 
+        groups = self.texture_windows(bitmap, vertices, triangles) if detail and texture >= 0 else None
+        if not groups:
+            groups = [(texture, None, triangles)]
+        for group_texture, st_of, group_triangles in groups:
+            self.build_batches(vertices, group_triangles, group_texture, flags, st_of, batches, vertex_data, index_data)
+
+    def texture_windows(self, bitmap, vertices, triangles):
+        """a first-person part's triangles grouped by window of its atlas:
+        [(texture, uv -> texels, triangles)], or None to keep the atlas
+        whole"""
+        if bitmap is None:
+            return None
+        bitmap, multipurpose = bitmap
+        tag = self.map.tag(bitmap)
+        if tag is None:
+            return None
+        images = bitmap_images(self.map, tag, self.defs)
+        if not images or max(images[0].width, images[0].height) <= WINDOW:
+            return None
+        try:
+            atlas = decode(self.map, images[0], DETAIL_ATLAS)
+        except ValueError:
+            return None
+        scale = min(1.0, DETAIL_ATLAS / max(atlas.size))
+        aw, ah = max(1, int(atlas.width * scale)), max(1, int(atlas.height * scale))
+        atlas = atlas.resize((aw, ah), Image.LANCZOS)
+        mask = self.change_mask(multipurpose, (aw, ah)) if multipurpose is not None else None
+        whole = self.masked_texture(bitmap, multipurpose) if multipurpose is not None else self.textures.texture(bitmap)
+
+        def extent(tri):
+            us = [vertices[i][2][0] * aw for i in tri]
+            vs = [vertices[i][2][1] * ah for i in tri]
+            return min(us), min(vs), max(us), max(vs)
+
+        # windows filled first-fit, the triangles taken in Z order of their
+        # centres in the atlas
+        def z_order(tri):
+            x0, y0, x1, y1 = extent(tri)
+            x, y = int(max(0, min(aw - 1, (x0 + x1) / 2))), int(max(0, min(ah - 1, (y0 + y1) / 2)))
+            key = 0
+            for bit in range(10):
+                key |= ((x >> bit) & 1) << (2 * bit) | ((y >> bit) & 1) << (2 * bit + 1)
+            return key
+
+        windows = []  # [x0, y0, x1, y1, triangles]
+        coarse = []
+        span = WINDOW - 2
+        for tri in sorted(triangles, key=z_order):
+            x0, y0, x1, y1 = extent(tri)
+            if x1 - x0 > span or y1 - y0 > span or x0 < 0 or y0 < 0 or x1 > aw or y1 > ah:
+                coarse.append(tri)
+                continue
+            for w in windows:
+                nx0, ny0, nx1, ny1 = min(w[0], x0), min(w[1], y0), max(w[2], x1), max(w[3], y1)
+                if nx1 - nx0 <= span and ny1 - ny0 <= span:
+                    w[0:4] = [nx0, ny0, nx1, ny1]
+                    w[4].append(tri)
+                    break
+            else:
+                windows.append([x0, y0, x1, y1, [tri]])
+
+        groups = []
+        for x0, y0, x1, y1, tris in windows:
+            # a power-of-two window around the triangles, a texel of margin,
+            # inside the atlas where it can be
+            ww = 1 << max(2, math.ceil(math.log2(max(1.0, x1 - x0 + 2))))
+            wh = 1 << max(2, math.ceil(math.log2(max(1.0, y1 - y0 + 2))))
+            ox = int(max(0, min(math.floor(x0) - 1, aw - ww)))
+            oy = int(max(0, min(math.floor(y0) - 1, ah - wh)))
+            crop = atlas.crop((ox, oy, ox + ww, oy + wh))
+            texture = self.textures.write_texture(crop, f"{tag.name} window",
+                                                  mask=mask.crop((ox, oy, ox + ww, oy + wh)) if mask else None)
+            groups.append((texture, lambda uv, ox=ox, oy=oy: (uv[0] * aw - ox, uv[1] * ah - oy), tris))
+        if coarse:
+            groups.append((whole, None, coarse))
+        return groups
+
+    def build_batches(self, vertices, triangles, texture, flags, st_of, batches, vertex_data, index_data):
+        """batches of triangles while the per-node groups (padded to pairs)
+        fit the vertex cache; st_of maps a texture coordinate to texels of
+        the batch's texture (None: the texture's texels from the batch's
+        lowest whole coordinate)"""
+        # triangles of the same nodes together: fewer segments per batch
+        triangles = sorted(triangles, key=lambda t: tuple(sorted({vertices[i][0] for i in t})))
         tw, th = (self.textures.textures[texture].width, self.textures.textures[texture].height) if texture >= 0 else (32, 32)
         while triangles:
-            # a batch: triangles while the per-node groups (padded to pairs)
-            # fit the vertex cache
             groups = {}
             taken = []
             rest = []
@@ -225,8 +408,11 @@ class ModelConverter:
                 groups = trial
                 taken.append(tri)
             triangles = rest
-            u0 = math.floor(min(vertices[i][2][0] for s in groups.values() for i in s))
-            v0 = math.floor(min(vertices[i][2][1] for s in groups.values() for i in s))
+            batch_st = st_of
+            if batch_st is None:
+                u0 = math.floor(min(vertices[i][2][0] for t in taken for i in t))
+                v0 = math.floor(min(vertices[i][2][1] for t in taken for i in t))
+                batch_st = lambda uv, u0=u0, v0=v0: ((uv[0] - u0) * tw, (uv[1] - v0) * th)
             slot_of = {}
             segments = []
             slot = 0
@@ -238,7 +424,7 @@ class ModelConverter:
                 for i, a in enumerate(members):
                     slot_of.setdefault(a, slot + i)
                 for a, b in zip(members[0::2], members[1::2]):
-                    vertex_data += self.pack_pair(vertices[a], vertices[b], u0, v0, tw, th)
+                    vertex_data += self.pack_pair(vertices[a], vertices[b], batch_st)
                 segments.append((node, slot, len(members), pair_offset))
                 slot += len(members)
             index_offset = len(index_data)
@@ -247,13 +433,13 @@ class ModelConverter:
             batches.append((texture, flags, segments, len(taken), index_offset))
 
     @staticmethod
-    def pack_pair(a, b, u0, v0, tw, th):
+    def pack_pair(a, b, st_of):
         def pos(v):
             return [max(-32768, min(32767, int(round(c * MODEL_SCALE)))) for c in v[1]]
 
         def st(v):
-            return [max(-32768, min(32767, int(round((v[2][0] - u0) * tw * 32)))),
-                    max(-32768, min(32767, int(round((v[2][1] - v0) * th * 32))))]
+            s_, t_ = st_of(v[2])
+            return [max(-32768, min(32767, int(round(s_ * 32)))), max(-32768, min(32767, int(round(t_ * 32))))]
 
         def rgba(v):
             c = int(round(v[3] * 255))
@@ -266,8 +452,11 @@ class ModelConverter:
         nsize, rsize, psize, gsize = (self.defs.size(s) for s in ("ModelNode", "ModelRegion", "ModelRegionPermutation", "ModelGeometry"))
         lod_fields = {"super low": "super low", "low": "low", "medium": "medium", "high": "high", "super high": "super high"}
         model_records, region_records, permutation_records, geometry_records = [], [], [], []
-        batches, vertex_data, index_data = [], bytearray(), bytearray()
+        batches = []
+        model_data = []
         for tag in self.object_models():
+            vertex_data, index_data = bytearray(), bytearray()
+            first_batch = len(batches)
             a = tag.address
             u_scale, v_scale = struct.unpack("<2f", self.map.read(a + mf["base map u scale"], 8))
             u_scale = u_scale or 1.0
@@ -300,7 +489,8 @@ class ModelConverter:
                 keep = min(1.0, budget / total) if total else 1.0
                 for p in range(pc):
                     self.convert_part(pp + p * part_size, nodes_inverse, u_scale, v_scale,
-                                      shaders, batches, vertex_data, index_data, keep)
+                                      shaders, batches, vertex_data, index_data, keep,
+                                      detail=budget == FIRST_PERSON_BUDGET)
                 geometry_map[gi] = len(geometry_records)
                 geometry_records.append((first, len(batches) - first))
                 return geometry_map[gi]
@@ -320,7 +510,8 @@ class ModelConverter:
                             break
                     permutation_records.append(choice)
                 region_records.append((max(pc, 0), first_permutation))
-            model_records.append((tag.index, nc, rc, first_region))
+            model_records.append((tag.index, nc, rc, first_region, first_batch, len(batches) - first_batch))
+            model_data.append((vertex_data, index_data))
 
         textures = self.textures.textures
         segments = []
@@ -329,21 +520,25 @@ class ModelConverter:
             batch_records.append((texture, flags, len(segs), tri_count, len(segments), index_offset))
             segments.extend(segs)
 
-        sizes = [len(textures) * 28, len(model_records) * 8, len(region_records) * 4, len(permutation_records) * 2,
+        sizes = [len(textures) * 28, len(model_records) * 24, len(region_records) * 4, len(permutation_records) * 2,
                  len(geometry_records) * 4, len(batch_records) * 12, len(segments) * 8]
         offset = 64
         offsets = []
         for size in sizes:
             offsets.append(offset)
             offset = (offset + size + 3) & ~3
-        offset = (offset + 7) & ~7
-        vertices_offset = offset
-        indices_offset = vertices_offset + len(vertex_data)
+        tables_size = (offset + 15) & ~15
+        # each model's data, 16-byte aligned (the RSP loads its vertices by DMA)
+        data_offsets = []
+        offset = tables_size
+        for vertex_data, index_data in model_data:
+            data_offsets.append(offset)
+            offset = (offset + len(vertex_data) + len(index_data) + 15) & ~15
 
         out = bytearray()
         out += b"H64O" + struct.pack(">I HHHHHHH xx", VERSION, len(textures), len(model_records), len(region_records),
                                      len(permutation_records), len(geometry_records), len(batch_records), len(segments))
-        out += struct.pack(">7I II", *offsets, vertices_offset, indices_offset)
+        out += struct.pack(">7I II", *offsets, tables_size, 0)
         out += b"\0" * (64 - len(out))
 
         def pad_to(o):
@@ -354,8 +549,10 @@ class ModelConverter:
             name = t.name.encode()
             out += name + b"\0" * (24 - len(name)) + struct.pack(">HH", t.width, t.height)
         pad_to(offsets[1])
-        for tag_index, nc, rc, first_region in model_records:
-            out += struct.pack(">HBBHH", tag_index, min(nc, 255), rc, first_region, 0)
+        for (tag_index, nc, rc, first_region, first_batch, batch_count), (vertex_data, index_data), data_offset in \
+                zip(model_records, model_data, data_offsets):
+            out += struct.pack(">HBBHHHHIII", tag_index, min(nc, 255), rc, first_region, 0, first_batch, batch_count,
+                               data_offset, len(vertex_data), len(index_data))
         pad_to(offsets[2])
         for count, first in region_records:
             out += struct.pack(">HH", count, first)
@@ -371,11 +568,13 @@ class ModelConverter:
         pad_to(offsets[6])
         for node, slot, count, pair_offset in segments:
             out += struct.pack(">BBBxI", node, slot, count, pair_offset)
-        pad_to(vertices_offset)
-        out += vertex_data
-        out += index_data
+        for (vertex_data, index_data), data_offset in zip(model_data, data_offsets):
+            pad_to(data_offset)
+            out += vertex_data
+            out += index_data
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(out)
         return {"models": len(model_records), "geometries": len(geometry_records), "batches": len(batch_records),
-                "segments": len(segments), "vertices": len(vertex_data) // 16, "triangles": len(index_data) // 3,
-                "textures": len(textures), "bytes": len(out)}
+                "segments": len(segments), "vertices": sum(len(v) for v, i in model_data) // 16,
+                "triangles": sum(len(i) for v, i in model_data) // 3, "textures": len(textures), "bytes": len(out),
+                "tables": tables_size}

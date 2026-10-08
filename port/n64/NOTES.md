@@ -111,3 +111,30 @@ running notebook. Paths are relative to `source/`.
 - Model shaders can be two-sided (shader_model flags bit 1; transparent
   shaders bit 2, meters bit 1): those batches draw without back-face
   culling. In Wizard only the needler's core is.
+
+## First-person textures (October 2026)
+
+- A weapon's first-person texture is one 512x512 atlas; squeezed into one
+  64x64 CI4 texture it turned to coloured noise. First-person parts are now
+  cut into windows of the atlas at 256x256 (models.py texture_windows),
+  each its own 64x64-or-smaller CI4 texture with its own palette.
+- The simplifier must not move a vertex on a texture seam either: a
+  triangle could take its corner's texture coordinate from another island
+  of the atlas.
+- Halo doubles a model's colour against half-intensity lighting; the baked
+  sky light here is whole, so model textures are no longer doubled (they
+  saturated to white).
+- Colour change (shader_model "change color source", the multipurpose map's
+  blue on the Xbox): the texture's 16 colours are split, 0-7 outside the
+  mask, 8-15 inside (level.py split_palette; mksprite keeps a paletted PNG's
+  palette), and the renderer uploads a palette with 8-15 times the player's
+  colour. No second RDP cycle for players any more.
+- Transparent model shaders: meters (the plasma rifle's heat gauge, which
+  drew as white noise) and numeric displays are left out; the rest are
+  cut-out RGBA16 glows, unlit.
+- Models and their textures are read from the cartridge when first drawn
+  (the models file keeps per-model data after its tables) and dropped
+  least recently drawn first past 256 KB / 192 KB: the heap went from
+  145 KB free to ~770 KB.
+- Debugging: port.json flag "debug_weapon=<weapon tag>" makes it the
+  spawn weapon (n64_files.c n64_debug_text reads name=value settings).
