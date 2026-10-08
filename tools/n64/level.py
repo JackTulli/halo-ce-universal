@@ -172,8 +172,11 @@ def split_palette(img, mask):
 
 
 class LevelBuilder:
-    def __init__(self, xmap, defs, map_name, out_dir):
+    def __init__(self, xmap, defs, map_name, out_dir, split_depth=None):
         self.map = xmap
+        # how many times a triangle may be halved where the lightmap changes
+        # across it (0: the BSP's own triangles, for 3-4 player games)
+        self.split_depth = LIGHTMAP_SPLIT_DEPTH if split_depth is None else split_depth
         self.defs = defs
         self.map_name = map_name
         self.out_dir = Path(out_dir)
@@ -411,7 +414,7 @@ class LevelBuilder:
     def split_by_lightmap(self, triangle, depth=0):
         """a level triangle (three vertices) split where the lightmap changes
         across it, as a list of triangles"""
-        if depth >= LIGHTMAP_SPLIT_DEPTH:
+        if depth >= self.split_depth:
             return [triangle]
         split = []
         for i in range(3):

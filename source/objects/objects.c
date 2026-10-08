@@ -3635,9 +3635,13 @@ boolean object_force_inside_bsp(
 }
 
 #ifdef HALO_N64
-/* An item at rest with no animation and no parent keeps the node matrices it
-had while its position, orientation and scale stay as they were (the
-N64's netgame equipment, two dozen items, recomputed them every tick) */
+/* An object whose node matrices cannot have changed keeps the ones it has:
+no parent, not a unit or projectile (their aiming, suspension and flight
+change them), its position, orientation and scale as they were, its
+animation (if any) on the same frame and not running by itself, and no
+overlays driven by its functions. Items must also be at rest. (Blood
+Gulch's 46 scenery objects and the netgame items recomputed theirs every
+tick: half the tick.) */
 static boolean n64_object_unmoved(
 	long object_index,
 	struct object_datum *object,
@@ -3649,15 +3653,25 @@ static boolean n64_object_unmoved(
 		real_point3d position;
 		real_vector3d forward, up;
 		real scale;
+		struct animation_state animation;
 	} last[256];
 	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & 255);
+	struct object_animation_state const *animation = &object->object.animation;
+	boolean still =
+		!TEST_FLAG(_object_mask_unit | _object_mask_projectile, object->object.type) &&
+		(!TEST_FLAG(_object_mask_item, object->object.type) || TEST_FLAG(object->object.flags, _object_at_rest_bit)) &&
+		object->object.parent_object_index == NONE &&
+		!animation->interpolation_frame_count &&
+		(animation->animation_graph_index == NONE ||
+			!TEST_FLAG(object->object.flags, _object_animates_automatically_bit));
 
-	if (!TEST_FLAG(_object_mask_item, object->object.type) ||
-		!TEST_FLAG(object->object.flags, _object_at_rest_bit) ||
-		object->object.parent_object_index != NONE ||
-		object->object.animation.animation_graph_index != NONE ||
-		object_definition->object.animation_graph.index != NONE ||
-		object->object.animation.interpolation_frame_count)
+	if (still && object_definition->object.animation_graph.index != NONE)
+	{
+		struct animation_graph *graph = animation_graph_definition_get(object_definition->object.animation_graph.index);
+
+		still = graph->object_overlays.count == 0;
+	}
+	if (!still)
 	{
 		if (last[slot].object_index == object_index)
 			last[slot].object_index = NONE;
@@ -3667,7 +3681,9 @@ static boolean n64_object_unmoved(
 		!csmemcmp(&last[slot].position, &object->object.position, sizeof(real_point3d)) &&
 		!csmemcmp(&last[slot].forward, &object->object.forward, sizeof(real_vector3d)) &&
 		!csmemcmp(&last[slot].up, &object->object.up, sizeof(real_vector3d)) &&
-		last[slot].scale == object->object.scale)
+		last[slot].scale == object->object.scale &&
+		(animation->animation_graph_index == NONE ||
+			!csmemcmp(&last[slot].animation, &animation->state, sizeof(struct animation_state))))
 	{
 		return TRUE;
 	}
@@ -3676,6 +3692,7 @@ static boolean n64_object_unmoved(
 	last[slot].forward = object->object.forward;
 	last[slot].up = object->object.up;
 	last[slot].scale = object->object.scale;
+	last[slot].animation = animation->state;
 	return FALSE;
 }
 #endif

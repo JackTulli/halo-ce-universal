@@ -330,11 +330,21 @@ static void motion_sensor_update(
 	}
 	else
 	{
+#ifdef HALO_N64
+		/* each local player's blip count, then the players in turn: the
+		decompiled array (and the cameras') held two players and overran with
+		four, corrupting the stack */
+		short local_player_slots[2 * MAXIMUM_LOCAL_PLAYERS] = { 0 };
+		real_point3d camera_positions[MAXIMUM_LOCAL_PLAYERS];
+#define MOTION_SENSOR_PLAYER_LIST MAXIMUM_LOCAL_PLAYERS
+#else
 		short local_player_slots[4] = { 0 };
+		real_point3d camera_positions[2];
+#define MOTION_SENSOR_PLAYER_LIST 2
+#endif
 		short player_count = local_player_count();
 		short local_player_index = local_player_get_next(NONE);
 		struct object_iterator iterator;
-		real_point3d camera_positions[2];
 		boolean done = FALSE;
 		short player_scan_index;
 
@@ -353,7 +363,7 @@ static void motion_sensor_update(
 					local_player_get_player_index(local_player_index))->unit_index;
 			short blip_index;
 
-			local_player_slots[player_scan_index + 2] = local_player_index;
+			local_player_slots[player_scan_index + MOTION_SENSOR_PLAYER_LIST] = local_player_index;
 			camera_positions[local_player_index].x = 0.0f;
 			camera_positions[local_player_index].y = 0.0f;
 			camera_positions[local_player_index].z = 0.0f;
@@ -395,7 +405,7 @@ static void motion_sensor_update(
 					player_scan_index++)
 				{
 					short scan_player_index =
-						local_player_slots[player_scan_index + 2];
+						local_player_slots[player_scan_index + MOTION_SENSOR_PLAYER_LIST];
 					long player_index =
 						local_player_get_player_index(scan_player_index);
 

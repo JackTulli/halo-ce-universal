@@ -21,7 +21,10 @@ def main():
     maps = sys.argv[2:]
     for directory, suffix, list_name in SHARED:
         used = set()
-        for m in maps:
+        # (each map's lighter models of 3-4 player games list theirs as
+        # <map>-low)
+        names = maps + [f"{m}-low" for m in maps]
+        for m in names:
             listing = root / list_name.format(map=m)
             if listing.exists():
                 used.update(line.strip() for line in listing.read_text().splitlines() if line.strip())
@@ -34,7 +37,7 @@ def main():
                 shutil.rmtree(path)
             elif path.suffix == suffix and path.stem not in used:
                 path.unlink()
-            elif path.suffix == ".list" and path.stem not in maps:
+            elif path.suffix == ".list" and path.stem not in names:
                 path.unlink()
     # earlier builds' per-map animation files
     for path in (root / "maps").glob("*.anim"):

@@ -131,8 +131,9 @@ struct n64_object
 };
 
 void n64_render_initialize(void);
-/* loads rom:/levels/<map>.lvl and its textures; FALSE if there is none */
-int n64_render_load_level(const char *map_name);
+/* loads rom:/levels/<map>.lvl and its textures (with low, the lighter
+<map>-low.lvl where there is one); FALSE if there is none */
+int n64_render_load_level(const char *map_name, int low);
 void n64_render_frame_begin(void);
 void n64_render_view(const struct n64_view *view);
 /* after n64_render_view: objects in that view */
@@ -142,9 +143,18 @@ none), the colour a frame is cleared to (0xRRGGBB) */
 void n64_render_load_scene(const char *name);
 void n64_render_unload_level(void);
 void n64_render_set_clear_color(unsigned long rgb);
+/* how far the views see (world units): fog from start, the colour (0xRRGGBB)
+reached at end, nothing drawn past it (the frame cleared to the colour);
+end 0: no fog, the views' own far planes */
+void n64_render_set_fog(unsigned long rgb, float start, float end);
+/* the views this frame: small views draw objects' far versions sooner */
+void n64_render_set_view_count(int count);
 /* then the first-person weapon: its own near plane, drawn over the world */
 void n64_render_first_person_begin(void);
 void n64_render_frame_end(void);
+/* draws the objects queued so far (n64_render_object queues them, sorted
+by texture): before 2D drawn over them */
+void n64_render_flush(void);
 /* chunky mode (the menu's settings): from the next frame on, the views'
 3D is drawn half as wide and its pixels doubled across (the HUD and text
 stay at full width) */
@@ -219,6 +229,8 @@ shown until the view's next one), 0 when the last one is shown again (the
 game's HUD code runs for each view every other frame) */
 int n64_hud_begin(int view, int x0, int y0, int x1, int y1);
 void n64_hud_end(void);
+/* the views this frame (more views: each one's HUD code runs less often) */
+void n64_hud_set_view_count(int count);
 void n64_hud_quad(const struct n64_hud_quad *quad);
 void n64_hud_text(int x, int y, unsigned long color, const char *text);
 /* a motion sensor blip: centre in pixels, position and size in pixels */

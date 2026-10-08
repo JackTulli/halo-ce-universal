@@ -100,7 +100,10 @@ player), `debug_overview`, `debug_untextured`, `debug_no_level`,
 crosshair instead), `debug_map=<map>` (straight into a two-player Slayer
 game there, as `autotest` does, without the menu), `debug_menu=<script>`
 (drives the menu: a press every 20 frames, `u d l r a b z s` on port 1,
-upper case on port 2, `.` none), `profile` (samples at the vertical blank from 20 to
+upper case on port 2, `.` none), `debug_players=<1-4>` (with `debug_map`),
+`debug_gpu_time` (each render phase waits for the RSP/RDP: their times),
+`debug_guard=<n>`, `debug_cull_front`, `debug_level_parts=<1|2>` (level
+measurements: vertices alone, materials alone), `profile` (samples at the vertical blank from 20 to
 80 s; `tools/n64_profile.py <log> build/n64/halo.elf`), `profile_zone` (with
 `profile`: only while the HUD draws, with return addresses).
 `devtools/n64_timing.c` times chosen game functions through `--wrap`.
@@ -110,6 +113,22 @@ Xvfb display (`:97`) with the debug log captured; `ares-gdb.sh` + `rsp.py`
 read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
+
+8 October, performance: the views see 55 world units (one player), 45
+(two) or 32 (three or four) into fog of the map's own colour (its sky's
+outdoor fog), nothing past it; three or four players get lighter levels
+(`<map>-low.lvl`, no lightmap splitting) and models (`<map>-low.mdl`: the
+objects at half their triangles, first-person views at 350); the level's
+visible batches are drawn a material at a time and the objects' batches
+sorted by mode and texture (switching between rdpq's and tiny3d's RSP code
+was costly); each level material's mode and texture are recorded once (the
+CPU worked them out every change, ~7 ms a frame with four views); objects
+whose node matrices cannot have changed keep them (scenery too: half of
+Blood Gulch's tick); with three or four views each view's HUD code runs
+every fourth frame. In ares: Wizard 30 / 27 / 11 fps with 1 / 2 / 4
+players, Blood Gulch 30 / 18 / 9 (were 30 / 19 / 8 and 27 / 12 / 6). Four
+players also crashed in the motion sensor (a decompiled array sized for
+two players), fixed.
 
 8 October: the menu and all 13 multiplayer maps (Battle Creek, Sidewinder,
 Damnation, Rat Race, Prisoner, Hang 'em High, Chill Out, Derelict, Boarding

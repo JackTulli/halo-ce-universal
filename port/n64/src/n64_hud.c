@@ -56,6 +56,7 @@ static struct
 	sprite_t *sprites[MAXIMUM_SPRITES];
 	int missing[MAXIMUM_SPRITES];
 	int x0, y0, x1, y1;
+	int view_count;
 	int mode;
 	surface_t blip;
 	rspq_block_t *recordings[MAXIMUM_VIEWS];
@@ -176,6 +177,11 @@ static sprite_t *hud_sprite(int number)
 
 void n64_render_hud_phase(void);
 
+void n64_hud_set_view_count(int count)
+{
+	hud.view_count = count;
+}
+
 int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 {
 	n64_render_hud_phase();
@@ -189,7 +195,9 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	hud.view = view;
 	if (view < 0 || view >= MAXIMUM_VIEWS)
 		return 0;
-	if (hud.recordings[view] && (hud.view_frames[view]++ + view) % HUD_INTERVAL)
+	/* with three or four views, each view's every fourth frame: one view's
+	HUD code a frame */
+	if (hud.recordings[view] && (hud.view_frames[view]++ + view) % (hud.view_count > 2 ? 4 : HUD_INTERVAL))
 		return 0;
 	hud.recording = view;
 	hud.dump = hud.views == 600 || hud.views == 601;

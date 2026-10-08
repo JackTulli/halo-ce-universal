@@ -109,7 +109,9 @@ void n64_game_setup(
 		n64_choice.map = n64_menu_map_from_folder("wizard");
 	n64_choice.game_type = 0;
 	n64_choice.score = 0;
-	n64_choice.player_count = N64_TEST_PLAYER_COUNT;
+	/* (port.json flag "debug_players=<1-4>": another count) */
+	n64_choice.player_count = n64_debug_text("debug_players", name, sizeof(name)) ? PIN(atoi(name), 1, 4) :
+		N64_TEST_PLAYER_COUNT;
 	for (i = 0; i < 4; i++)
 	{
 		static short const colors[4] = {2, 3, 6, 5};

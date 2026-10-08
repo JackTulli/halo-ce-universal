@@ -163,6 +163,10 @@ class ModelConverter:
         self.current_scale = 1.0
         self.current_flags = 0
         self.models = []
+        # the lighter set of 3-4 player games: the objects' budgets scaled,
+        # the first-person models' (weapons and hands) set
+        self.budget_scale = 1.0
+        self.first_person_budget = FIRST_PERSON_BUDGET
 
     def f(self, name):
         return {fl.name: o for o, fl in self.defs.fields(name)}
@@ -189,7 +193,7 @@ class ModelConverter:
                 if model not in found:
                     found.append(model)
                 # a model several groups use keeps the largest budget
-                budget = GROUP_BUDGETS.get(tag.group_name, MODEL_BUDGET)
+                budget = int(GROUP_BUDGETS.get(tag.group_name, MODEL_BUDGET) * self.budget_scale)
                 self.budgets[model.index] = max(self.budgets.get(model.index, 0), budget)
                 if tag.group_name in ("bipd", "vehi"):
                     self.units.add(model.index)
@@ -202,7 +206,7 @@ class ModelConverter:
                 if model is not None and model.group_name == "mode" and model not in found:
                     found.append(model)
                 if model is not None:
-                    self.budgets[model.index] = FIRST_PERSON_BUDGET
+                    self.budgets[model.index] = self.first_person_budget
                     self.first_person.add(model.index)
         gf = self.f("Globals")
         for tag in self.map.tags:
@@ -214,7 +218,7 @@ class ModelConverter:
                     if model is not None and model.group_name == "mode" and model not in found:
                         found.append(model)
                     if model is not None:
-                        self.budgets[model.index] = HANDS_BUDGET
+                        self.budgets[model.index] = self.first_person_budget
                         self.first_person.add(model.index)
                         self.hands.add(model.index)
         return found

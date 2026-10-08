@@ -241,14 +241,26 @@ def main():
         builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)
         stats = builder.write(args.filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        # the lighter level of 3-4 player games: the BSP's own triangles,
+        # lit at their corners
+        low = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem, split_depth=0)
+        stats = low.write(args.filesystem / "levels" / f"{xmap.name}-low.lvl", xmap.bsps[0][0])
+        print(f"{xmap.name} low level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         from .models import ModelConverter
         models = ModelConverter(xmap, repacker.defs, xmap.name, args.filesystem)
         stats = models.write(args.filesystem / "levels" / f"{xmap.name}.mdl")
         print(f"{xmap.name} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        # the lighter models of 3-4 player games (the objects at half their
+        # triangles, the first-person views at 350)
+        low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low", args.filesystem)
+        low_models.budget_scale = 0.5
+        low_models.first_person_budget = 350
+        stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low.mdl")
+        print(f"{xmap.name} low models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the shared files the map uses (tools/n64/prune.py removes the rest)
         from .level import write_list
         write_list(args.filesystem / "tex" / f"{xmap.name}.list",
-                   sorted(builder.used_textures | models.textures.used_textures))
+                   sorted(builder.used_textures | models.textures.used_textures | low_models.textures.used_textures))
     if args.stats:
         for g, s in sorted(repacker.stats.items(), key=lambda x: -x[1])[:25]:
             print(f"  {g} {s / 1024:8.1f} KB")

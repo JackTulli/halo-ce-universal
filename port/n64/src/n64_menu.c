@@ -166,6 +166,7 @@ static void menu_load(void)
 	/* the game's level and models give way to the scene's */
 	n64_render_load_scene("ui");
 	n64_render_set_clear_color(0x000000);
+	n64_render_set_fog(0, 0.f, 0.f);
 }
 
 /* the menu's things give their memory back to the game (once the RSP and
@@ -250,6 +251,8 @@ static void draw_scene(void)
 
 		n64_render_object(&ring);
 	}
+	/* the scene before the menu over it */
+	n64_render_flush();
 }
 
 static void panel(int x0, int y0, int x1, int y1, unsigned long argb)

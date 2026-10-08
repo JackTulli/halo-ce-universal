@@ -30,6 +30,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "scenario/scenario.h"
 #include "structures/structures.h"
 #include "structures/structure_bsp_definitions.h"
+#include "scenario/sky_definitions.h"
 
 #include "../src/n64.h"
 
@@ -160,10 +161,69 @@ long n64_debug_spawn_weapon(
 	return first_weapon && debug_weapon != NONE ? debug_weapon : definition_index;
 }
 
+/* ---------- how far the views see
+
+The N64 draws the world to a distance that shrinks with the number of
+views, into fog of the map's own colour (its first sky's outdoor fog;
+nearer where Halo's own fog is opaque nearer); past it, nothing. */
+
+#define N64_DRAW_DISTANCE_1 55.f
+#define N64_DRAW_DISTANCE_2 45.f
+#define N64_DRAW_DISTANCE_4 32.f
+/* the fog starts at this share of the distance */
+#define N64_FOG_START 0.5f
+
+static struct
+{
+	unsigned long color;
+	real opaque_distance;
+} n64_fog;
+
+static void n64_fog_for_new_map(
+	void)
+{
+	struct sky *sky = global_scenario_get() ? scenario_get_sky(0) : NULL;
+	char line[128];
+
+	n64_fog.color = 0x60708C;
+	n64_fog.opaque_distance = 0.f;
+	if (sky)
+	{
+		real_rgb_color const *color = &sky->outdoor_fog.color;
+		unsigned long r = (unsigned long)(PIN(color->red, 0.f, 1.f) * 255.f);
+		unsigned long g = (unsigned long)(PIN(color->green, 0.f, 1.f) * 255.f);
+		unsigned long b = (unsigned long)(PIN(color->blue, 0.f, 1.f) * 255.f);
+
+		/* (a sky without fog has a black colour: the default then) */
+		if (r + g + b > 48)
+			n64_fog.color = (r << 16) | (g << 8) | b;
+		if (sky->outdoor_fog.maximum_density >= 1.f && sky->outdoor_fog.opaque_distance > 1.f)
+			n64_fog.opaque_distance = sky->outdoor_fog.opaque_distance;
+		snprintf(line, sizeof(line), "n64: fog %06lx (Halo's: density %.2f, %.1f to %.1f)", n64_fog.color,
+			sky->outdoor_fog.maximum_density, sky->outdoor_fog.start_distance, sky->outdoor_fog.opaque_distance);
+		n64_log(line);
+	}
+}
+
+static void n64_fog_for_views(
+	short view_count)
+{
+	real distance = view_count <= 1 ? N64_DRAW_DISTANCE_1 : view_count == 2 ? N64_DRAW_DISTANCE_2 :
+		N64_DRAW_DISTANCE_4;
+
+	if (n64_fog.opaque_distance > 0.f && n64_fog.opaque_distance < distance)
+		distance = n64_fog.opaque_distance;
+	n64_render_set_fog(n64_fog.color, distance * N64_FOG_START, distance);
+}
+
 void render_initialize_for_new_map(
 	void)
 {
-	n64_render_load_level(n64_loaded_map_name());
+	extern short player_spawn_count;
+
+	n64_fog_for_new_map();
+	/* three or four views: the level's lighter version */
+	n64_render_load_level(n64_loaded_map_name(), player_spawn_count > 2);
 	n64_hud_set_map(n64_loaded_map_name());
 	n64_debug_starting_weapon();
 	return;
@@ -301,6 +361,15 @@ void render_frame(
 	(void)screenshot_bitmap;
 	render.frame_index++;
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	{
+		short views = 0;
+
+		for (window_index = 0; window_index < window_count; window_index++)
+			views += !windows[window_index].console_window;
+		n64_fog_for_views(views);
+		n64_hud_set_view_count(views);
+		n64_render_set_view_count(views);
+	}
 	render_frame_begin();
 	for (window_index = 0; window_index < window_count; window_index++)
 	{

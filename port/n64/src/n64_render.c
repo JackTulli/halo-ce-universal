@@ -15,6 +15,7 @@ units" everything here is drawn in), already lit.
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <t3d/t3d.h>
 #include <t3d/t3dmath.h>
 
@@ -99,6 +100,12 @@ static struct
 	sprite_t **sprites;
 	/* each batch's vertex load and triangles, recorded once */
 	rspq_block_t **blocks;
+	/* a view's batches in view, then in material order (draw_level) */
+	uint16_t *visible, *sorted;
+	uint16_t *material_starts;
+	/* each material's render mode and texture, recorded once without fog
+	and once with (set_material) */
+	rspq_block_t **material_blocks[2];
 } level;
 
 /* ---------- the models file (tools/n64/models.py) */
@@ -208,6 +215,12 @@ done with it) */
 enum { PHASE_NONE, PHASE_LEVEL, PHASE_OBJECTS, PHASE_FIRST_PERSON, PHASE_HUD };
 static void render_phase(int phase);
 static int debug_untextured;
+/* measuring: the level's front faces culled (what transforming and
+rejecting its triangles costs) */
+static int debug_cull_front;
+/* measuring: 1, the level's vertices without its triangles; 2, its
+materials without its batches */
+static int debug_level_parts;
 
 static struct
 {
@@ -246,6 +259,12 @@ static struct
 	int unstretched;
 	/* the current view's width over its height */
 	float aspect;
+	/* the views this frame (n64_render_set_view_count) */
+	int view_total;
+	/* the draw distance and its fog (n64_render_set_fog) */
+	int fog;
+	color_t fog_color;
+	float fog_start, fog_end;
 } renderer;
 
 /* the game's last tick, in microseconds (n64_game.c), for the counter */
@@ -260,6 +279,31 @@ void n64_render_set_clear_color(unsigned long rgb)
 }
 
 static void load_models(const char *map_name);
+static void flush_draws(void);
+
+void n64_render_set_view_count(int count)
+{
+	renderer.view_total = count;
+}
+
+void n64_render_set_fog(unsigned long rgb, float start, float end)
+{
+	renderer.fog = end > 0.f;
+	renderer.fog_color = RGBA32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 0xFF);
+	renderer.fog_start = start;
+	renderer.fog_end = end;
+}
+
+/* the view's fog for its current projection (tiny3d measures it in the
+projection's depth) */
+static void apply_fog(void)
+{
+	if (!renderer.fog)
+		return;
+	t3d_fog_set_range(renderer.fog_start * WORLD_SCALE, renderer.fog_end * WORLD_SCALE);
+	t3d_fog_set_enabled(true);
+	rdpq_set_fog_color(renderer.fog_color);
+}
 
 void n64_render_set_chunky(int on)
 {
@@ -327,6 +371,19 @@ void n64_render_initialize(void)
 		RDP's scissor trims the rest): Halo's big floors and walls near the
 		eye made the RSP clip a lot with tiny3d's default of two */
 		renderer.viewports[i].guardBandScale = GUARD_BAND_SCALE;
+	}
+	{
+		/* measuring (port.json flag "debug_guard=<1-15>"): another guard band */
+		char text[16];
+
+		if (n64_debug_text("debug_guard", text, sizeof(text)) && atoi(text) > 0)
+		{
+			for (int i = 0; i < MAXIMUM_VIEWS; i++)
+				renderer.viewports[i].guardBandScale = atoi(text) & 15;
+		}
+		debug_cull_front = n64_debug_flag("debug_cull_front");
+		if (n64_debug_text("debug_level_parts", text, sizeof(text)))
+			debug_level_parts = atoi(text);
 	}
 	renderer.identity = malloc_uncached(sizeof(T3DMat4FP));
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
@@ -434,28 +491,33 @@ glows unlit and cut out; untextured */
 enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, MODEL_MODES_WITH_DEPTH,
 	/* the same, for skies: no depth */
 	NUMBER_OF_MODEL_MODES = MODEL_MODES_WITH_DEPTH * 2 };
-static rspq_block_t *model_modes[NUMBER_OF_MODEL_MODES];
+/* each mode without fog, then with (n64_render_set_fog) */
+static rspq_block_t *model_modes[2 * NUMBER_OF_MODEL_MODES];
 
 static int model_mode(sprite_t *sprite, int flags)
 {
 	int mode = !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : MODEL_MODE_TEXTURED;
 
-	return (flags & MATERIAL_SKY) ? mode + MODEL_MODES_WITH_DEPTH : mode;
+	if (flags & MATERIAL_SKY)
+		mode += MODEL_MODES_WITH_DEPTH;
+	return renderer.fog ? mode + NUMBER_OF_MODEL_MODES : mode;
 }
 
 static void record_model_modes(void)
 {
-	for (int mode = 0; mode < NUMBER_OF_MODEL_MODES; mode++)
+	for (int mode = 0; mode < 2 * NUMBER_OF_MODEL_MODES; mode++)
 	{
 		if (model_modes[mode])
 			continue;
 		int kind = mode % MODEL_MODES_WITH_DEPTH;
+		int depth = mode % NUMBER_OF_MODEL_MODES < MODEL_MODES_WITH_DEPTH;
 
 		rspq_block_begin();
 		rdpq_mode_begin();
 		rdpq_set_mode_standard();
-		rdpq_mode_zbuf(mode < MODEL_MODES_WITH_DEPTH, mode < MODEL_MODES_WITH_DEPTH);
+		rdpq_mode_zbuf(depth, depth);
 		rdpq_mode_persp(true);
+		rdpq_mode_fog(mode >= NUMBER_OF_MODEL_MODES ? RDPQ_FOG_STANDARD : 0);
 		rdpq_mode_filter(FILTER_BILINEAR);
 		if (kind == MODEL_MODE_GLOW)
 		{
@@ -651,6 +713,18 @@ void n64_render_unload_level(void)
 		for (int i = 0; i < level.header->batch_count; i++)
 			rspq_block_free(level.blocks[i]);
 		free(level.blocks);
+		for (int fog = 0; fog < 2; fog++)
+		{
+			for (int m = 0; level.material_blocks[fog] && m < level.header->material_count; m++)
+			{
+				if (level.material_blocks[fog][m])
+					rspq_block_free(level.material_blocks[fog][m]);
+			}
+			free(level.material_blocks[fog]);
+		}
+		free(level.visible);
+		free(level.sorted);
+		free(level.material_starts);
 		for (int i = 0; i < level.header->texture_count; i++)
 		{
 			if (level.sprites[i])
@@ -662,16 +736,24 @@ void n64_render_unload_level(void)
 	}
 }
 
-int n64_render_load_level(const char *map_name)
+int n64_render_load_level(const char *map_name, int low)
 {
 	char path[64];
-	FILE *file;
+	FILE *file = NULL;
 	long size;
 
 	n64_render_unload_level();
-	snprintf(path, sizeof(path), "rom:/levels/%s.lvl", map_name);
-	debugf("n64: loading level %s, %lu KB of heap left\n", map_name, n64_heap_free() / 1024);
-	file = fopen(path, "rb");
+	debugf("n64: loading level %s%s, %lu KB of heap left\n", map_name, low ? " (low)" : "", n64_heap_free() / 1024);
+	if (low)
+	{
+		snprintf(path, sizeof(path), "rom:/levels/%s-low.lvl", map_name);
+		file = fopen(path, "rb");
+	}
+	if (!file)
+	{
+		snprintf(path, sizeof(path), "rom:/levels/%s.lvl", map_name);
+		file = fopen(path, "rb");
+	}
 	if (!file)
 	{
 		debugf("n64: no level geometry %s\n", path);
@@ -696,6 +778,9 @@ int n64_render_load_level(const char *map_name)
 	level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
 	level.indices = level.data + level.header->indices_offset;
 	level.blocks = calloc(level.header->batch_count, sizeof(rspq_block_t *));
+	level.visible = malloc(level.header->batch_count * sizeof(uint16_t));
+	level.sorted = malloc(level.header->batch_count * sizeof(uint16_t));
+	level.material_starts = malloc((level.header->material_count + 1) * sizeof(uint16_t));
 	for (int b = 0; b < level.header->batch_count; b++)
 	{
 		struct level_batch *batch = &level.batches[b];
@@ -703,7 +788,8 @@ int n64_render_load_level(const char *map_name)
 
 		rspq_block_begin();
 		t3d_vert_load(level.vertices + batch->vertex_pair_offset, 0, batch->vertex_count);
-		for (int t = 0; t < batch->triangle_count; t++, index += 3)
+		/* (measuring, "debug_level_parts=1": the vertices alone) */
+		for (int t = 0; t < batch->triangle_count && debug_level_parts != 1; t++, index += 3)
 			t3d_tri_draw(index[0], index[1], index[2]);
 		t3d_tri_sync();
 		level.blocks[b] = rspq_block_end();
@@ -715,7 +801,16 @@ int n64_render_load_level(const char *map_name)
 		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", level.textures[i].name);
 		level.sprites[i] = sprite_load(path);
 	}
-	load_models(map_name);
+	/* (with low, the objects' lighter models too) */
+	if (low)
+	{
+		char low_name[48];
+
+		snprintf(low_name, sizeof(low_name), "%s-low", map_name);
+		load_models(low_name);
+	}
+	if (!models.data)
+		load_models(map_name);
 	debugf("n64: level %s: %d clusters, %d batches, %lu KB, %lu KB of heap left\n", map_name,
 		level.header->cluster_count, level.header->batch_count, (unsigned long)size / 1024,
 		n64_heap_free() / 1024);
@@ -736,7 +831,8 @@ void n64_render_frame_begin(void)
 	render_start_ticks = TICKS_READ();
 	rdpq_attach(renderer.surface, display_get_zbuf());
 	t3d_frame_start();
-	t3d_screen_clear_color(renderer.clear_color);
+	/* past the draw distance: the fog's colour */
+	t3d_screen_clear_color(renderer.fog ? renderer.fog_color : renderer.clear_color);
 	t3d_screen_clear_depth();
 	renderer.view_count = 0;
 	renderer.frame_index++;
@@ -744,7 +840,26 @@ void n64_render_frame_begin(void)
 	palette_count = 0;
 }
 
+static void record_material(int index);
+
+/* a material's mode and texture: recorded the first time it is used (the
+CPU's work of working out the RDP's modes and texture upload, once) */
 static void set_material(int index)
+{
+	int fog = renderer.fog != 0;
+
+	if (!level.material_blocks[fog])
+		level.material_blocks[fog] = calloc(level.header->material_count, sizeof(rspq_block_t *));
+	if (!level.material_blocks[fog][index])
+	{
+		rspq_block_begin();
+		record_material(index);
+		level.material_blocks[fog][index] = rspq_block_end();
+	}
+	rspq_block_run(level.material_blocks[fog][index]);
+}
+
+static void record_material(int index)
 {
 	struct level_material *material = &level.materials[index];
 	int textured = material->texture >= 0 && level.sprites[material->texture] && !debug_untextured;
@@ -757,6 +872,9 @@ static void set_material(int index)
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_mode_dithering(DITHER_SQUARE_SQUARE);
+	/* (rdpq keeps the shade's alpha, the fog, out of the standard
+	combiners' alpha) */
+	rdpq_mode_fog(renderer.fog ? RDPQ_FOG_STANDARD : 0);
 	/* Halo's environment shader doubles texture x light; the converter
 	doubled the textures, so one combiner cycle does */
 	if (textured)
@@ -781,16 +899,19 @@ static void set_material(int index)
 	}
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH |
 		(textured ? T3D_FLAG_TEXTURED : 0) |
-		((material->flags & MATERIAL_TWO_SIDED) ? 0 : T3D_FLAG_CULL_BACK));
+		(debug_cull_front ? T3D_FLAG_CULL_FRONT : (material->flags & MATERIAL_TWO_SIDED) ? 0 : T3D_FLAG_CULL_BACK));
 }
 
 static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 {
-	int current_material = -1;
+	int visible_count = 0;
+	int material_count;
 
 	if (!level.data || n64_debug_flag("debug_no_level"))
 		return;
-	t3d_matrix_push(renderer.identity);
+	material_count = level.header->material_count;
+	/* the batches in view (the eye's potentially visible set of clusters,
+	the frustum)... */
 	for (int c = 0; c < level.header->cluster_count; c++)
 	{
 		struct level_cluster *cluster = &level.clusters[c];
@@ -810,18 +931,43 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 		for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
 		{
 			struct level_batch *batch = &level.batches[b];
-			uint8_t *index = level.indices + batch->index_offset;
 
-			if (!t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum))
+			if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum))
+				level.visible[visible_count++] = (uint16_t)b;
+		}
+	}
+	/* ...drawn a material at a time: changing material runs rdpq's RSP
+	code in place of tiny3d's and back, which cost more than the batch
+	itself when the materials alternated cluster by cluster */
+	memset(level.material_starts, 0, (material_count + 1) * sizeof(uint16_t));
+	for (int i = 0; i < visible_count; i++)
+		level.material_starts[level.batches[level.visible[i]].material + 1]++;
+	for (int m = 0; m < material_count; m++)
+		level.material_starts[m + 1] += level.material_starts[m];
+	for (int i = 0; i < visible_count; i++)
+		level.sorted[level.material_starts[level.batches[level.visible[i]].material]++] = level.visible[i];
+	/* (material m's batches end at material_starts[m] now); the opaque
+	materials first, then the transparent ones */
+	t3d_matrix_push(renderer.identity);
+	for (int pass = 0; pass < 2; pass++)
+	{
+		for (int m = 0; m < material_count; m++)
+		{
+			int first = m ? level.material_starts[m - 1] : 0;
+
+			if (first == level.material_starts[m] || !(level.materials[m].flags & MATERIAL_TRANSPARENT) != !pass)
 				continue;
-			if (batch->material != current_material)
+			set_material(m);
+			for (int i = first; i < level.material_starts[m]; i++)
 			{
-				current_material = batch->material;
-				set_material(current_material);
+				int b = level.sorted[i];
+
+				/* (measuring, "debug_level_parts=2": the materials alone) */
+				if (debug_level_parts != 2)
+					rspq_block_run(level.blocks[b]);
+				renderer.triangles += level.batches[b].triangle_count;
+				renderer.batches++;
 			}
-			rspq_block_run(level.blocks[b]);
-			renderer.triangles += batch->triangle_count;
-			renderer.batches++;
 		}
 	}
 	t3d_matrix_pop(1);
@@ -835,6 +981,7 @@ void n64_render_view(const struct n64_view *view)
 
 	if (renderer.view_count >= MAXIMUM_VIEWS)
 		return;
+	flush_draws();
 	stretch_view();
 	renderer.rects[renderer.view_count][0] = view->x0;
 	renderer.rects[renderer.view_count][1] = view->y0;
@@ -853,8 +1000,11 @@ void n64_render_view(const struct n64_view *view)
 	renderer.unstretched = renderer.chunky;
 	/* the view's shape on the screen (in chunky mode drawn half as wide) */
 	renderer.aspect = (float)(view->x1 - view->x0) / (float)(view->y1 - view->y0);
+	/* nothing past the fog's end: the far plane culls the level's batches
+	and the objects beyond it */
 	t3d_viewport_set_perspective(viewport, view->vertical_field_of_view, renderer.aspect,
-		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
+		view->z_near * WORLD_SCALE,
+		(renderer.fog && renderer.fog_end < view->z_far ? renderer.fog_end : view->z_far) * WORLD_SCALE);
 	renderer.fov = view->vertical_field_of_view;
 	renderer.eye[0] = view->position[0];
 	renderer.eye[1] = view->position[1];
@@ -873,6 +1023,7 @@ void n64_render_view(const struct n64_view *view)
 	}
 	t3d_viewport_look_at(viewport, &eye, &target, &up);
 	t3d_viewport_attach(viewport);
+	apply_fog();
 
 	/* the vertex colours are the lighting: no lights, a white ambient */
 	rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
@@ -962,10 +1113,13 @@ void n64_render_first_person_begin(void)
 
 	if (!viewport)
 		return;
+	/* the world's objects first, with the world's projection */
+	flush_draws();
 	/* the game's first-person near and far planes (rasterizer.c), and the
 	weapon in front of whatever the world put in this view's depth */
 	t3d_viewport_set_perspective(viewport, renderer.fov, renderer.aspect, 0.01171875f * WORLD_SCALE, 16.0f * WORLD_SCALE);
 	t3d_viewport_attach(viewport);
+	apply_fog();
 	t3d_screen_clear_depth();
 	renderer.current_texture = -2;
 	renderer.first_person = 1;
@@ -1004,10 +1158,95 @@ static void render_phase(int phase)
 	renderer.phase_start = now;
 }
 
+void n64_render_flush(void)
+{
+	flush_draws();
+	stretch_view();
+}
+
 void n64_render_hud_phase(void)
 {
+	flush_draws();
 	stretch_view();
 	render_phase(PHASE_HUD);
+}
+
+/* A view's object batches are queued and drawn sorted by their render
+mode, texture and colour (skies first): each change of mode or texture
+runs rdpq's RSP code in place of tiny3d's and back, which cost more than
+the batches themselves when every object changed it a few times. */
+#define MAXIMUM_QUEUED_DRAWS 768
+
+static struct queued_draw
+{
+	uint32_t order;
+	uint32_t color;
+	T3DMat4FP *matrices;
+	uint16_t model, batch;
+} queued_draws[MAXIMUM_QUEUED_DRAWS];
+static uint16_t queued_order[MAXIMUM_QUEUED_DRAWS];
+static int queued_count;
+
+static void flush_draws(void);
+
+static void queue_draw(int model_index, int b, unsigned long color, T3DMat4FP *matrices)
+{
+	struct model_record *model = &models.models[model_index];
+	struct model_batch *batch = &models.batches[model->first_batch + b];
+	sprite_t *sprite = debug_untextured || batch->texture < 0 ? NULL : models.sprites[batch->texture];
+	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags);
+	struct queued_draw *draw;
+
+	if (queued_count == MAXIMUM_QUEUED_DRAWS)
+		flush_draws();
+	draw = &queued_draws[queued_count];
+	draw->order = ((uint32_t)!(batch->flags & MATERIAL_SKY) << 31) | ((uint32_t)mode << 26) |
+		((uint32_t)(batch->texture & 0xFFFF) << 10) | (batch->flags & 0x3FF);
+	draw->color = batch->flags & MATERIAL_CHANGE_COLOR ? color & 0xFFFFFF : 0xFFFFFF;
+	draw->matrices = matrices;
+	draw->model = (uint16_t)model_index;
+	draw->batch = (uint16_t)b;
+	queued_order[queued_count] = (uint16_t)queued_count;
+	queued_count++;
+}
+
+static int compare_draws(const void *a, const void *b)
+{
+	const struct queued_draw *x = &queued_draws[*(const uint16_t *)a], *y = &queued_draws[*(const uint16_t *)b];
+
+	if (x->order != y->order)
+		return x->order < y->order ? -1 : 1;
+	if (x->color != y->color)
+		return x->color < y->color ? -1 : 1;
+	return x->matrices < y->matrices ? -1 : x->matrices > y->matrices;
+}
+
+static void flush_draws(void)
+{
+	T3DMat4FP *current_matrices = NULL;
+
+	if (!queued_count)
+		return;
+	qsort(queued_order, queued_count, sizeof(queued_order[0]), compare_draws);
+	for (int i = 0; i < queued_count; i++)
+	{
+		struct queued_draw *draw = &queued_draws[queued_order[i]];
+		struct model_record *model = &models.models[draw->model];
+		struct loaded_model *loaded = &models.loaded[draw->model];
+		struct model_batch *batch = &models.batches[model->first_batch + draw->batch];
+
+		if (!loaded->blocks)
+			continue;
+		if (draw->matrices != current_matrices)
+		{
+			t3d_segment_set(SEGMENT_NODE_MATRICES, draw->matrices);
+			current_matrices = draw->matrices;
+		}
+		use_setup(loaded, draw->batch, batch, draw->color);
+		rspq_block_run(loaded->blocks[draw->batch]);
+		renderer.triangles += batch->triangle_count;
+	}
+	queued_count = 0;
 }
 
 static void render_object(const struct n64_object *object)
@@ -1036,6 +1275,9 @@ static void render_object(const struct n64_object *object)
 		float distance = sqrtf(dx * dx + dy * dy + dz * dz);
 		float pixels = distance > object->radius ? object->radius * 2.0f * renderer.pixels_per_unit / distance : 1e9f;
 
+		/* (a quarter of the screen: the far versions sooner) */
+		if (renderer.view_total > 2)
+			pixels *= 0.6f;
 		if (pixels < 1.5f)
 			return;
 		far = model->far_count && pixels < FAR_PIXELS;
@@ -1097,22 +1339,13 @@ static void render_object(const struct n64_object *object)
 	for (int n = node_count; n < model->node_count; n++)
 		matrices[n] = matrices[0];
 converted_already:
-	t3d_segment_set(SEGMENT_NODE_MATRICES, matrices);
 	renderer.objects++;
 	unsigned long color = ((unsigned long)object->tint[0] << 16) | ((unsigned long)object->tint[1] << 8) | object->tint[2];
 
 	if (far)
 	{
-		struct loaded_model *loaded = &models.loaded[model - models.models];
-
 		for (int b = model->far_first; b < model->far_first + model->far_count; b++)
-		{
-			struct model_batch *batch = &models.batches[model->first_batch + b];
-
-			use_setup(loaded, b, batch, color);
-			rspq_block_run(loaded->blocks[b]);
-			renderer.triangles += batch->triangle_count;
-		}
+			queue_draw(model - models.models, b, color, matrices);
 		return;
 	}
 	for (int r = 0; r < model->region_count; r++)
@@ -1130,16 +1363,8 @@ converted_already:
 		if (geometry_index < 0)
 			continue;
 		geometry = &models.geometries[geometry_index];
-		struct loaded_model *loaded = &models.loaded[model - models.models];
-
 		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b++)
-		{
-			struct model_batch *batch = &models.batches[b];
-
-			use_setup(loaded, b - model->first_batch, batch, color);
-			rspq_block_run(loaded->blocks[b - model->first_batch]);
-			renderer.triangles += batch->triangle_count;
-		}
+			queue_draw(model - models.models, b - model->first_batch, color, matrices);
 	}
 }
 
@@ -1194,6 +1419,7 @@ void n64_profile_poll(void);
 
 void n64_render_frame_end(void)
 {
+	flush_draws();
 	stretch_view();
 	render_phase(PHASE_NONE);
 	n64_profile_poll();
