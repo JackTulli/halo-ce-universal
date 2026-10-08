@@ -58,7 +58,10 @@ SKY_LIGHT = (0.3, 0.2, 0.93)
 # triangles a model may keep (tools/n64/decimate.py): the first-person
 # models are drawn in every view
 FIRST_PERSON_BUDGET = 500
-MODEL_BUDGET = 800
+MODEL_BUDGET = 400
+# by the object's group: players matter most; what lies on the floor or
+# flies is small on screen
+GROUP_BUDGETS = {"bipd": 600, "vehi": 600, "weap": 250, "eqip": 250, "garb": 250, "proj": 150}
 # first-person textures: the atlas at this size, cut into windows of at most
 # WINDOW texels a side (CI4, 2 KB of TMEM); a window keeps a texel of
 # margin for the filtering
@@ -115,14 +118,18 @@ class ModelConverter:
         """the model tags the map's objects use"""
         of = self.f("Object")
         found = []
+        self.budgets = {}
         for tag in self.map.tags:
             if tag.group_name not in OBJECT_GROUPS:
                 continue
             datum = struct.unpack("<I", self.map.read(tag.address + of["model"] + 12, 4))[0]
             model = self.map.tag(datum)
-            if model is not None and model.group_name == "mode" and model not in found:
-                found.append(model)
-        self.budgets = {m.index: MODEL_BUDGET for m in found}
+            if model is not None and model.group_name == "mode":
+                if model not in found:
+                    found.append(model)
+                # a model several groups use keeps the largest budget
+                budget = GROUP_BUDGETS.get(tag.group_name, MODEL_BUDGET)
+                self.budgets[model.index] = max(self.budgets.get(model.index, 0), budget)
         # the first-person views: each weapon's model, and the hands
         wf = self.f("Weapon")
         for tag in self.map.tags:

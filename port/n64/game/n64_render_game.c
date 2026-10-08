@@ -332,11 +332,11 @@ void render_frame(
 				view.up[2] = 1.f;
 			}
 		}
-		if (window_index == 0)
 		{
 			/* debugging (port.json flag "debug_spin=x y z [yaw]"): the first
-			view stands there, turning once every 16 seconds (or facing yaw
-			degrees) */
+			view stands there, turning once every 16 seconds; with a yaw,
+			every view stands there facing yaw degrees (and 180 more for each
+			further view) -- the same frames for measurements */
 			static int spin = -1;
 			static float spin_at[4];
 			char text[64];
@@ -348,9 +348,9 @@ void render_frame(
 				if (spin < 3)
 					spin = 0;
 			}
-			if (spin)
+			if (spin == 4 || (spin && window_index == 0))
 			{
-				float angle = spin == 4 ? spin_at[3] * (6.2831853f / 360.f) :
+				float angle = spin == 4 ? (spin_at[3] + 180.f * window_index) * (6.2831853f / 360.f) :
 					(float)(game_time_get() % 480) * (6.2831853f / 480.f);
 
 				view.position[0] = spin_at[0];

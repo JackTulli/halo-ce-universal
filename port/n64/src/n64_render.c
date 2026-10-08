@@ -133,17 +133,18 @@ struct model_batch
 struct model_segment { uint8_t node, slot, count, pad; uint32_t vertex_pair_offset; };
 
 /* Models and their textures are read from the cartridge when first drawn
-and dropped, least recently drawn first, past these sizes (a model or
-texture drawn in the last frames in flight stays) */
-#define MODEL_CACHE_BYTES (256 * 1024)
-#define MODEL_TEXTURE_CACHE_BYTES (192 * 1024)
+and dropped, least recently drawn first, past this size (a model drawn in
+the last frames in flight stays). A texture stays while a loaded model
+uses it: each batch's texture and render mode are recorded with it. */
+#define MODEL_CACHE_BYTES (448 * 1024)
 
 struct loaded_model
 {
-	/* its vertices and indices; each batch's loads (node matrices from the
-	segment the object sets) and triangles, recorded once */
+	/* its vertices and indices; each batch's setup (render mode, texture)
+	and its loads (node matrices from the segment the object sets) and
+	triangles, recorded once */
 	uint8_t *data;
-	rspq_block_t **blocks;
+	rspq_block_t **setups, **blocks;
 	unsigned long last_drawn;
 };
 
@@ -162,7 +163,8 @@ static struct
 	struct loaded_model *loaded;
 	unsigned long loaded_bytes;
 	sprite_t **sprites;
-	unsigned long *texture_last_used, *texture_size;
+	unsigned short *texture_users;
+	unsigned long *texture_size;
 	unsigned long texture_bytes;
 	/* tag index -> model record, or NULL */
 	struct model_record **by_tag;
@@ -174,6 +176,18 @@ static struct
 
 /* debug switches: files on the cartridge (port.json "flags") */
 static int debug_overview;
+/* debugging: wait for the RSP and RDP after each part of a view, so that
+the parts' times include the hardware's (and the frame is slower) */
+static int debug_gpu_time;
+
+static void gpu_time_sync(void)
+{
+	if (debug_gpu_time)
+	{
+		rdpq_fence();
+		rspq_wait();
+	}
+}
 static int debug_untextured;
 
 static struct
@@ -184,6 +198,13 @@ static struct
 	surface_t *surface;
 	unsigned long frame_index;
 	unsigned long triangles, batches, clusters, objects;
+	/* microseconds of CPU in the level, objects and first-person models,
+	and frames, over the statistics window */
+	unsigned long long level_ticks, object_ticks, first_person_ticks, draw_ticks, window_start;
+	int first_person;
+	/* the view's eye (world units) and how many pixels a unit at distance
+	one covers, for leaving out objects too small to see */
+	float eye[3], pixels_per_unit;
 	T3DMat4FP *matrices[FRAMES_IN_FLIGHT];
 	int matrix_count;
 	T3DViewport *viewport;
@@ -218,6 +239,7 @@ void n64_render_initialize(void)
 		FILE *flag;
 
 		if ((flag = fopen("rom:/debug_overview", "rb"))) { debug_overview = 1; fclose(flag); }
+		debug_gpu_time = n64_debug_flag("debug_gpu_time");
 		if ((flag = fopen("rom:/debug_untextured", "rb"))) { debug_untextured = 1; fclose(flag); }
 	}
 	{
@@ -228,11 +250,45 @@ void n64_render_initialize(void)
 	}
 }
 
+/* a model texture: read when a model that uses it is loaded, freed (once
+the RSP is done with it) when the last such model is dropped */
+static sprite_t *acquire_texture(int texture)
+{
+	char path[64];
+
+	if (texture < 0 || texture >= models.header->texture_count)
+		return NULL;
+	if (!models.sprites[texture])
+	{
+		snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", models.map_name, models.textures[texture].name);
+		models.sprites[texture] = sprite_load(path);
+		if (!models.sprites[texture])
+			return NULL;
+		surface_t pixels = sprite_get_pixels(models.sprites[texture]);
+
+		models.texture_size[texture] = pixels.stride * pixels.height + 512;
+		models.texture_bytes += models.texture_size[texture];
+		models.texture_reads++;
+	}
+	models.texture_users[texture]++;
+	return models.sprites[texture];
+}
+
+static void release_texture(int texture)
+{
+	if (texture < 0 || texture >= models.header->texture_count || !models.sprites[texture] ||
+		--models.texture_users[texture])
+		return;
+	rdpq_call_deferred((void (*)(void *))sprite_free, models.sprites[texture]);
+	models.sprites[texture] = NULL;
+	models.texture_bytes -= models.texture_size[texture];
+}
+
 /* a model's data and recordings, freed once the RSP is done with them */
 struct model_release
 {
 	uint8_t *data;
-	rspq_block_t **blocks;
+	rspq_block_t **setups, **blocks;
 	int count;
 };
 
@@ -242,9 +298,12 @@ static void release_model(void *argument)
 
 	for (int i = 0; i < release->count; i++)
 	{
-		if (release->blocks[i])
+		if (release->setups && release->setups[i])
+			rspq_block_free(release->setups[i]);
+		if (release->blocks && release->blocks[i])
 			rspq_block_free(release->blocks[i]);
 	}
+	free(release->setups);
 	free(release->blocks);
 	free(release->data);
 	free(release);
@@ -260,16 +319,58 @@ static void drop_model(int index)
 		return;
 	release = malloc(sizeof(*release));
 	release->data = loaded->data;
+	release->setups = loaded->setups;
 	release->blocks = loaded->blocks;
 	release->count = model->batch_count;
 	rdpq_call_deferred(release_model, release);
+	for (int b = 0; b < model->batch_count; b++)
+		release_texture(models.batches[model->first_batch + b].texture);
 	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
 	loaded->data = NULL;
+	loaded->setups = NULL;
 	loaded->blocks = NULL;
 }
 
-/* a model's data in memory (read from the cartridge and its batches
-recorded the first time), or 0 */
+/* a batch's render mode and texture, recorded: textured (the doubling is in
+the texture), shaded by the baked sky light, one RDP cycle; Halo's
+two-sided shaders without back-face culling; glows unlit and cut out */
+static rspq_block_t *record_setup(sprite_t *sprite, int flags)
+{
+	int textured = sprite != NULL;
+	int two_sided = (flags & MATERIAL_TWO_SIDED) != 0;
+	int glow = (flags & MATERIAL_GLOW) != 0;
+
+	rspq_block_begin();
+	rdpq_sync_pipe();
+	rdpq_sync_tile();
+	rdpq_mode_begin();
+	rdpq_set_mode_standard();
+	rdpq_mode_zbuf(true, true);
+	rdpq_mode_persp(true);
+	rdpq_mode_filter(FILTER_BILINEAR);
+	if (textured && glow)
+	{
+		rdpq_mode_combiner(RDPQ_COMBINER_TEX);
+		rdpq_mode_alphacompare(128);
+	}
+	else if (textured)
+		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
+	else
+		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
+	rdpq_mode_end();
+	if (textured)
+	{
+		rdpq_sprite_upload(TILE0, sprite, &(rdpq_texparms_t){
+			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
+		});
+	}
+	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | (two_sided ? 0 : T3D_FLAG_CULL_BACK) |
+		(textured ? T3D_FLAG_TEXTURED : 0));
+	return rspq_block_end();
+}
+
+/* a model's data in memory (read from the cartridge, its textures read and
+its batches recorded the first time), or 0 */
 static int load_model(int index)
 {
 	struct model_record *model = &models.models[index];
@@ -281,8 +382,8 @@ static int load_model(int index)
 	if (loaded->data)
 		return 1;
 	/* room: drop the models drawn longest ago, none drawn in the frames
-	still in flight */
-	while (models.loaded_bytes + size > MODEL_CACHE_BYTES)
+	still in flight (their textures go with the last model using them) */
+	while (models.loaded_bytes + models.texture_bytes + size > MODEL_CACHE_BYTES)
 	{
 		int oldest = -1;
 
@@ -297,23 +398,18 @@ static int load_model(int index)
 		drop_model(oldest);
 	}
 	loaded->data = memalign(16, size);
+	loaded->setups = calloc(model->batch_count, sizeof(rspq_block_t *));
 	loaded->blocks = calloc(model->batch_count, sizeof(rspq_block_t *));
-	if (!loaded->data || !loaded->blocks)
-	{
-		free(loaded->data);
-		free(loaded->blocks);
-		loaded->data = NULL;
-		loaded->blocks = NULL;
-		return 0;
-	}
-	file = fopen(models.path, "rb");
+	file = loaded->data && loaded->setups && loaded->blocks ? fopen(models.path, "rb") : NULL;
 	if (!file || fseek(file, model->data_offset, SEEK_SET) || fread(loaded->data, 1, size, file) != size)
 	{
 		if (file)
 			fclose(file);
 		free(loaded->data);
+		free(loaded->setups);
 		free(loaded->blocks);
 		loaded->data = NULL;
+		loaded->setups = NULL;
 		loaded->blocks = NULL;
 		return 0;
 	}
@@ -325,7 +421,9 @@ static int load_model(int index)
 	{
 		struct model_batch *batch = &models.batches[model->first_batch + b];
 		uint8_t *index = loaded->data + model->vertex_bytes + batch->index_offset;
+		sprite_t *sprite = acquire_texture(batch->texture);
 
+		loaded->setups[b] = record_setup(debug_untextured ? NULL : sprite, batch->flags);
 		rspq_block_begin();
 		for (int g = 0; g < batch->segment_count; g++)
 		{
@@ -343,45 +441,6 @@ static int load_model(int index)
 	return 1;
 }
 
-/* a model texture in memory (read the first time it is drawn), or NULL */
-static sprite_t *model_texture(int texture)
-{
-	char path[64];
-
-	if (texture < 0 || texture >= models.header->texture_count)
-		return NULL;
-	models.texture_last_used[texture] = renderer.frame_index;
-	if (models.sprites[texture])
-		return models.sprites[texture];
-	while (models.texture_bytes > MODEL_TEXTURE_CACHE_BYTES)
-	{
-		int oldest = -1;
-
-		for (int i = 0; i < models.header->texture_count; i++)
-		{
-			if (models.sprites[i] && models.texture_last_used[i] + FRAMES_IN_FLIGHT < renderer.frame_index &&
-				(oldest < 0 || models.texture_last_used[i] < models.texture_last_used[oldest]))
-				oldest = i;
-		}
-		if (oldest < 0)
-			break;
-		rdpq_call_deferred((void (*)(void *))sprite_free, models.sprites[oldest]);
-		models.sprites[oldest] = NULL;
-		models.texture_bytes -= models.texture_size[oldest];
-	}
-	snprintf(path, sizeof(path), "rom:/tex/%s/%s.sprite", models.map_name, models.textures[texture].name);
-	models.sprites[texture] = sprite_load(path);
-	if (models.sprites[texture])
-	{
-		surface_t pixels = sprite_get_pixels(models.sprites[texture]);
-
-		models.texture_size[texture] = pixels.stride * pixels.height + 512;
-		models.texture_bytes += models.texture_size[texture];
-		models.texture_reads++;
-	}
-	return models.sprites[texture];
-}
-
 static void load_models(const char *map_name)
 {
 	struct models_header header;
@@ -392,14 +451,9 @@ static void load_models(const char *map_name)
 		rspq_wait();
 		for (int i = 0; i < models.header->model_count; i++)
 			drop_model(i);
-		for (int i = 0; i < models.header->texture_count; i++)
-		{
-			if (models.sprites[i])
-				rdpq_call_deferred((void (*)(void *))sprite_free, models.sprites[i]);
-		}
 		rspq_wait();
 		free(models.sprites);
-		free(models.texture_last_used);
+		free(models.texture_users);
 		free(models.texture_size);
 		free(models.loaded);
 		free(models.by_tag);
@@ -434,7 +488,7 @@ static void load_models(const char *map_name)
 	models.batches = (struct model_batch *)(models.data + models.header->batches_offset);
 	models.segments = (struct model_segment *)(models.data + models.header->segments_offset);
 	models.sprites = calloc(models.header->texture_count, sizeof(sprite_t *));
-	models.texture_last_used = calloc(models.header->texture_count, sizeof(unsigned long));
+	models.texture_users = calloc(models.header->texture_count, sizeof(unsigned short));
 	models.texture_size = calloc(models.header->texture_count, sizeof(unsigned long));
 	models.loaded = calloc(models.header->model_count, sizeof(struct loaded_model));
 	models.tag_count = 0;
@@ -521,7 +575,7 @@ int n64_render_load_level(const char *map_name)
 	return 1;
 }
 
-/* the tinted palettes made this frame (set_model_texture) */
+/* the tinted palettes made this frame (use_setup) */
 static int palette_count;
 
 void n64_render_frame_begin(void)
@@ -641,6 +695,10 @@ void n64_render_view(const struct n64_view *view)
 	t3d_viewport_set_projection(viewport, view->vertical_field_of_view,
 		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
 	renderer.fov = view->vertical_field_of_view;
+	renderer.eye[0] = view->position[0];
+	renderer.eye[1] = view->position[1];
+	renderer.eye[2] = view->position[2];
+	renderer.pixels_per_unit = (view->y1 - view->y0) * 0.5f / tanf(view->vertical_field_of_view * 0.5f);
 	eye = (T3DVec3){{view->position[0] * WORLD_SCALE, view->position[1] * WORLD_SCALE, view->position[2] * WORLD_SCALE}};
 	target = (T3DVec3){{eye.v[0] + view->forward[0] * WORLD_SCALE, eye.v[1] + view->forward[1] * WORLD_SCALE,
 		eye.v[2] + view->forward[2] * WORLD_SCALE}};
@@ -659,7 +717,16 @@ void n64_render_view(const struct n64_view *view)
 	rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
 	t3d_light_set_ambient(white);
 	t3d_light_set_count(0);
-	draw_level(viewport);
+	{
+		unsigned long start;
+
+		gpu_time_sync();
+		start = TICKS_READ();
+		draw_level(viewport);
+		gpu_time_sync();
+		renderer.level_ticks += TICKS_READ() - start;
+	}
+	renderer.first_person = 0;
 	renderer.viewport = viewport;
 	renderer.current_texture = -2;
 }
@@ -671,7 +738,6 @@ that colour (Halo tints where the multipurpose map says): a palette of its
 own, made for the draw, in a ring that lasts the frames in flight. */
 #define PALETTES_PER_FRAME 256
 
-static int current_two_sided, current_glow;
 static unsigned long current_color;
 static uint16_t palettes[FRAMES_IN_FLIGHT][PALETTES_PER_FRAME][16] __attribute__((aligned(16)));
 
@@ -699,56 +765,28 @@ static uint16_t *tinted_palette(sprite_t *sprite, unsigned long color)
 	return palette;
 }
 
-/* color: 0xRRGGBB, the player's colour for MATERIAL_CHANGE_COLOR textures
-(white leaves them as they are) */
-static void set_model_texture(int texture, int flags, unsigned long color)
+/* a batch's setup, unless it is the one in force; a player's colour on a
+MATERIAL_CHANGE_COLOR texture (color 0xRRGGBB; white leaves it as it is) */
+static void use_setup(struct loaded_model *loaded, int b, struct model_batch *batch, unsigned long color)
 {
-	sprite_t *sprite = debug_untextured ? NULL : model_texture(texture);
-	int textured = sprite != NULL;
-	int two_sided = (flags & MATERIAL_TWO_SIDED) != 0;
-	int glow = (flags & MATERIAL_GLOW) != 0;
+	int key = (batch->texture << 8) | batch->flags;
 
-	if (!(flags & MATERIAL_CHANGE_COLOR))
+	if (!(batch->flags & MATERIAL_CHANGE_COLOR))
 		color = 0xFFFFFF;
-	if (texture == renderer.current_texture && color == current_color && two_sided == current_two_sided &&
-		glow == current_glow)
-		return;
-	renderer.current_texture = texture;
-	current_color = color;
-	current_two_sided = two_sided;
-	current_glow = glow;
-	rdpq_sync_pipe();
-	rdpq_sync_tile();
-	rdpq_mode_begin();
-	rdpq_set_mode_standard();
-	rdpq_mode_zbuf(true, true);
-	rdpq_mode_persp(true);
-	rdpq_mode_filter(FILTER_BILINEAR);
-	if (textured && glow)
+	if (key != renderer.current_texture || (color == 0xFFFFFF && current_color != 0xFFFFFF))
 	{
-		rdpq_mode_combiner(RDPQ_COMBINER_TEX);
-		rdpq_mode_alphacompare(128);
+		rspq_block_run(loaded->setups[b]);
+		renderer.current_texture = key;
+		current_color = 0xFFFFFF;
 	}
-	else if (textured)
-		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
-	else
-		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
-	rdpq_mode_end();
-	if (textured)
+	if (color != current_color && models.sprites[batch->texture] && !debug_untextured)
 	{
-		rdpq_sprite_upload(TILE0, sprite, &(rdpq_texparms_t){
-			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
-		});
-		if (color != 0xFFFFFF)
-		{
-			uint16_t *palette = tinted_palette(sprite, color);
+		uint16_t *palette = tinted_palette(models.sprites[batch->texture], color);
 
-			if (palette)
-				rdpq_tex_upload_tlut(palette, 0, 16);
-		}
+		if (palette)
+			rdpq_tex_upload_tlut(palette, 0, 16);
+		current_color = color;
 	}
-	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | (two_sided ? 0 : T3D_FLAG_CULL_BACK) |
-		(textured ? T3D_FLAG_TEXTURED : 0));
 }
 
 void n64_render_first_person_begin(void)
@@ -763,9 +801,26 @@ void n64_render_first_person_begin(void)
 	t3d_viewport_attach(viewport);
 	t3d_screen_clear_depth();
 	renderer.current_texture = -2;
+	renderer.first_person = 1;
 }
 
+static void render_object(const struct n64_object *object);
+
 void n64_render_object(const struct n64_object *object)
+{
+	unsigned long start;
+
+	gpu_time_sync();
+	start = TICKS_READ();
+	render_object(object);
+	gpu_time_sync();
+	if (renderer.first_person)
+		renderer.first_person_ticks += TICKS_READ() - start;
+	else
+		renderer.object_ticks += TICKS_READ() - start;
+}
+
+static void render_object(const struct n64_object *object)
 {
 	struct model_record *model;
 	T3DMat4FP *matrices;
@@ -780,6 +835,16 @@ void n64_render_object(const struct n64_object *object)
 	center = (T3DVec3){{object->center[0] * WORLD_SCALE, object->center[1] * WORLD_SCALE, object->center[2] * WORLD_SCALE}};
 	if (!t3d_frustum_vs_sphere(&renderer.viewport->viewFrustum, &center, object->radius * WORLD_SCALE + 8.0f))
 		return;
+	if (!renderer.first_person)
+	{
+		/* smaller than a pixel and a half across: not drawn */
+		float dx = object->center[0] - renderer.eye[0], dy = object->center[1] - renderer.eye[1];
+		float dz = object->center[2] - renderer.eye[2];
+		float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+
+		if (distance > object->radius && object->radius * 2.0f * renderer.pixels_per_unit < 1.5f * distance)
+			return;
+	}
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
@@ -822,12 +887,14 @@ void n64_render_object(const struct n64_object *object)
 		if (geometry_index < 0)
 			continue;
 		geometry = &models.geometries[geometry_index];
+		struct loaded_model *loaded = &models.loaded[model - models.models];
+
 		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b++)
 		{
 			struct model_batch *batch = &models.batches[b];
 
-			set_model_texture(batch->texture, batch->flags, color);
-			rspq_block_run(models.loaded[model - models.models].blocks[b - model->first_batch]);
+			use_setup(loaded, b - model->first_batch, batch, color);
+			rspq_block_run(loaded->blocks[b - model->first_batch]);
 			renderer.triangles += batch->triangle_count;
 		}
 	}
@@ -887,11 +954,23 @@ void n64_render_frame_end(void)
 	draw_counter();
 	rdpq_detach_show();
 	render_cpu_us = TICKS_TO_US(TICKS_READ() - render_start_ticks);
+	renderer.draw_ticks += TICKS_READ() - render_start_ticks;
 	if (!(renderer.frame_index % 120))
 	{
 		unsigned long n64_stack_used(void);
 		heap_stats_t heap;
+		unsigned long long now = get_ticks();
 
+		if (renderer.window_start)
+		{
+			debugf("frames: %lu.%lu fps; per frame: draw %llu us (level %llu, objects %llu, first person %llu), tick %lu us\n",
+				(unsigned long)(120ULL * TICKS_PER_SECOND * 10 / (now - renderer.window_start) / 10),
+				(unsigned long)(120ULL * TICKS_PER_SECOND * 10 / (now - renderer.window_start) % 10),
+				TICKS_TO_US(renderer.draw_ticks) / 120, TICKS_TO_US(renderer.level_ticks) / 120,
+				TICKS_TO_US(renderer.object_ticks) / 120, TICKS_TO_US(renderer.first_person_ticks) / 120, n64_last_tick_us);
+		}
+		renderer.window_start = now;
+		renderer.draw_ticks = renderer.level_ticks = renderer.object_ticks = renderer.first_person_ticks = 0;
 		sys_get_heap_stats(&heap);
 		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
 			"models %lu KB (%lu reads), textures %lu KB (%lu reads)\n",

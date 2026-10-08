@@ -83,10 +83,12 @@ LIGHTMAP_FILL = ((255, 255, 0), (255, 0, 0))
 # a level triangle is split where its lightmap changes across it (shadows,
 # pools of light), an edge at most this many times: at an edge of more than
 # LIGHTMAP_SPLIT_TEXELS texels whose middle differs from its ends' average
-# by more than LIGHTMAP_SPLIT_DIFFERENCE
-LIGHTMAP_SPLIT_DEPTH = int(os.environ.get("N64_LIGHTMAP_SPLIT_DEPTH", "3"))
-LIGHTMAP_SPLIT_TEXELS = 2.0
-LIGHTMAP_SPLIT_DIFFERENCE = 0.06
+# by more than LIGHTMAP_SPLIT_DIFFERENCE. Each triangle costs the RSP and RDP:
+# Wizard's 2,972 become 3,649 (depth 3, 2 texels, 0.06 made 5,090 and cost
+# ~10 ms a frame)
+LIGHTMAP_SPLIT_DEPTH = int(os.environ.get("N64_LIGHTMAP_SPLIT_DEPTH", "2"))
+LIGHTMAP_SPLIT_TEXELS = 4.0
+LIGHTMAP_SPLIT_DIFFERENCE = 0.1
 
 
 def sample_lightmap(page, u, v):

@@ -11,16 +11,16 @@ result drawable as it was:
   skinning stays as it was);
 - a vertex moves onto its neighbour's position (half-edge collapse), and
   each corner of a remaining triangle takes, from the vertices at that
-  position, the one whose texture coordinate is nearest its own;
+  position, the one its own vertex already shares a triangle with: the same
+  island of the texture (a collapse where some corner has none is
+  refused, so a vertex on a texture seam moves only along the seam);
 - a collapse that would turn a triangle more than 60 degrees is refused (it
   would fold over its neighbours, and a folded triangle faces away), as is
   one that would join the mesh to itself (g and h may share no neighbour
   but the far corners of the triangles on their edge);
 - a vertex on an open edge (where the part meets another part, or the
-  mesh simply ends), where two nodes meet (the same position in two
-  groups) or on a texture seam (one position, two texture coordinates)
-  never moves: the meshes would open there, or a triangle would take its
-  texture from another island of the atlas. A model's parts are
+  mesh simply ends) or where two nodes meet (the same position in two
+  groups) never moves: the meshes would open there. A model's parts are
   simplified one by one, so their shared edges must stay where they are.
 
 decimate(vertices, triangles, target) takes vertices as (node, position,
@@ -112,10 +112,11 @@ def decimate(vertices, triangles, target):
     for shared in groups_at.values():
         if len(shared) > 1:
             locked.update(shared)
-    for g, group_members in enumerate(members):
-        uvs = {(round(vertices[v][2][0], 4), round(vertices[v][2][1], 4)) for v in group_members}
-        if len(uvs) > 1:
-            locked.add(g)
+    # which vertices share a triangle (for a corner's replacement)
+    adjacent = {}
+    for corners, _, _ in tris:
+        for x in corners:
+            adjacent.setdefault(x, set()).update(corners)
     alive_group = [True] * len(members)
     version = [0] * len(members)
     heap = []
@@ -137,9 +138,14 @@ def decimate(vertices, triangles, target):
     for g in range(len(members)):
         push_edges(g)
 
-    def nearest_member(target_group, uv):
+    def replacement(vertex, target_group):
+        """the vertex of target_group that vertex shares a triangle with
+        (nearest in texture space if several), or None"""
         best, best_d = None, None
+        uv = vertices[vertex][2]
         for v in members[target_group]:
+            if v not in adjacent.get(vertex, ()):
+                continue
             d = (vertices[v][2][0] - uv[0]) ** 2 + (vertices[v][2][1] - uv[1]) ** 2
             if best is None or d < best_d:
                 best, best_d = v, d
@@ -173,6 +179,17 @@ def decimate(vertices, triangles, target):
         h_neighbours = {c for t in by_group[h] for c in tris[t][1]} - {h}
         if (g_neighbours & h_neighbours) - far:
             continue
+        # every moved corner must find h in its own texture island
+        replacements = {}
+        for t in by_group[g]:
+            tri = tris[t]
+            if h in tri[1]:
+                continue
+            for i in range(3):
+                if tri[1][i] == g and tri[0][i] not in replacements:
+                    replacements[tri[0][i]] = replacement(tri[0][i], h)
+        if any(r is None for r in replacements.values()):
+            continue
         for t in list(by_group[g]):
             tri = tris[t]
             if h in tri[1]:
@@ -184,8 +201,11 @@ def decimate(vertices, triangles, target):
             for i in range(3):
                 if tri[1][i] == g:
                     tri[1][i] = h
-                    tri[0][i] = nearest_member(h, vertices[tri[0][i]][2])
+                    tri[0][i] = replacements[tri[0][i]]
             by_group[h].add(t)
+            # the triangle's vertices now share it
+            for x in tri[0]:
+                adjacent.setdefault(x, set()).update(tri[0])
         by_group[g] = set()
         alive_group[g] = False
         quadric[h] = [x + y for x, y in zip(quadric[h], quadric[g])]
