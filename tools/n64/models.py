@@ -167,6 +167,11 @@ class ModelConverter:
         # the first-person models' (weapons and hands) set
         self.budget_scale = 1.0
         self.first_person_budget = FIRST_PERSON_BUDGET
+        # by model tag index: another order of levels of detail to take
+        # (Firefight's Covenant: their lowest)
+        self.lod_preferences = {}
+        # by model tag index: a budget that overrides its group's
+        self.budget_overrides = {}
 
     def f(self, name):
         return {fl.name: o for o, fl in self.defs.fields(name)}
@@ -221,6 +226,7 @@ class ModelConverter:
                         self.budgets[model.index] = self.first_person_budget
                         self.first_person.add(model.index)
                         self.hands.add(model.index)
+        self.budgets.update(self.budget_overrides)
         return found
 
     def shader_texture(self, shader_datum):
@@ -687,7 +693,7 @@ class ModelConverter:
                 for p in range(max(pc, 0)):
                     raw = self.map.read(pp + p * psize, psize)
                     choice = -1
-                    for lod in LOD_PREFERENCE:
+                    for lod in self.lod_preferences.get(tag.index, LOD_PREFERENCE):
                         gi = struct.unpack_from("<h", raw, pf[lod_fields[lod]])[0]
                         if 0 <= gi < gc:
                             choice = geometry(gi)

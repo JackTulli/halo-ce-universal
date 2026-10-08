@@ -16,7 +16,9 @@ TAG_BASE = 0x803A6000
 
 
 class Tag:
-    __slots__ = ("index", "datum", "group", "parents", "name", "address", "map")
+    # (source: the map a tag was imported from, merge.py: its bitmaps'
+    # pixels are in that map's file)
+    __slots__ = ("index", "datum", "group", "parents", "name", "address", "map", "source")
 
     def __repr__(self):
         return f"<{self.group_name} {self.name} @{self.address:#x}>"

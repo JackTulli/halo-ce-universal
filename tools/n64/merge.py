@@ -89,6 +89,7 @@ def merge_tags(base, source, roots, defs=None):
         n.group, n.parents, n.name = t.group, t.parents, t.name
         n.address = rebase(source, t.address)
         n.map = base
+        n.source = source
         new[t.index] = n
 
     def renumber(datum):

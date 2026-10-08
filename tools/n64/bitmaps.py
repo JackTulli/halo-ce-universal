@@ -23,7 +23,9 @@ FLAG_LINEAR = 1 << 4
 class BitmapImage:
     """one image of a bitmap tag"""
 
-    def __init__(self, raw):
+    def __init__(self, raw, data=None):
+        # the cache file holding the pixels (an imported tag's own: merge.py)
+        self.data = data
         (self.signature, self.width, self.height, self.depth, self.type, fmt, self.flags,
          rx, ry, self.mipmaps, self.offset, self.size) = struct.unpack_from("<4sHHHHHHhhHxxII", raw, 0)
         self.format = FORMATS[fmt] if fmt < len(FORMATS) else str(fmt)
@@ -34,7 +36,9 @@ def bitmap_images(xmap, tag, defs):
     fields = {f.name: o for o, f in defs.fields("Bitmap")}
     count, pointer = struct.unpack("<iI", xmap.read(tag.address + fields["bitmap data"], 8))
     size = defs.size("BitmapData")
-    return [BitmapImage(xmap.read(pointer + i * size, size)) for i in range(max(count, 0))]
+    source = getattr(tag, "source", None)
+    data = source.data if source is not None else None
+    return [BitmapImage(xmap.read(pointer + i * size, size), data) for i in range(max(count, 0))]
 
 
 def _unswizzle(data, width, height, bpp):
@@ -99,7 +103,7 @@ def decode(xmap, image, target=64):
         width, height = max(1, width // 2), max(1, height // 2)
         level += 1
     size = _mip_size(image.format, width, height)
-    data = xmap.data[offset:offset + size]
+    data = (image.data if image.data is not None else xmap.data)[offset:offset + size]
     fmt = image.format
     if fmt in ('dxt1', 'dxt3', 'dxt5'):
         w4, h4 = max(4, width), max(4, height)

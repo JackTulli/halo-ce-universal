@@ -276,7 +276,13 @@ def main():
         stats = low.write(args.filesystem / "levels" / f"{xmap.name}-low.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} low level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         from .models import ModelConverter
+        # Firefight's Covenant (imported: merge.py): always their lowest
+        # level of detail, few triangles
+        covenant = [t.index for t in xmap.tags if getattr(t, "source", None) is not None and t.group_name == "mode"]
+        lowest = ("super low", "low", "medium", "high", "super high")
         models = ModelConverter(xmap, repacker.defs, xmap.name, args.filesystem)
+        models.lod_preferences = {i: lowest for i in covenant}
+        models.budget_overrides = {i: 250 for i in covenant}
         stats = models.write(args.filesystem / "levels" / f"{xmap.name}.mdl")
         print(f"{xmap.name} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the lighter models of 3-4 player games (the objects at half their
@@ -284,6 +290,8 @@ def main():
         low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low", args.filesystem)
         low_models.budget_scale = 0.5
         low_models.first_person_budget = 350
+        low_models.lod_preferences = {i: lowest for i in covenant}
+        low_models.budget_overrides = {i: 150 for i in covenant}
         stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low.mdl")
         print(f"{xmap.name} low models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the shared files the map uses (tools/n64/prune.py removes the rest)
