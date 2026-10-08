@@ -10,6 +10,9 @@ renderer's (port/n64/src/n64_render.c).
 
 #include "cseries.h"
 
+#include <math.h>
+#include <stdio.h>
+
 #include "game/game.h"
 #include "game/players.h"
 #include "game/local_players.h"
@@ -324,6 +327,38 @@ void render_frame(
 				view.forward[0] = forward.i * 0.94f;
 				view.forward[1] = forward.j * 0.94f;
 				view.forward[2] = -0.34f;
+				view.up[0] = 0.f;
+				view.up[1] = 0.f;
+				view.up[2] = 1.f;
+			}
+		}
+		if (window_index == 0)
+		{
+			/* debugging (port.json flag "debug_spin=x y z [yaw]"): the first
+			view stands there, turning once every 16 seconds (or facing yaw
+			degrees) */
+			static int spin = -1;
+			static float spin_at[4];
+			char text[64];
+
+			if (spin < 0)
+			{
+				spin = n64_debug_text("debug_spin", text, sizeof(text)) ?
+					sscanf(text, "%f %f %f %f", &spin_at[0], &spin_at[1], &spin_at[2], &spin_at[3]) : 0;
+				if (spin < 3)
+					spin = 0;
+			}
+			if (spin)
+			{
+				float angle = spin == 4 ? spin_at[3] * (6.2831853f / 360.f) :
+					(float)(game_time_get() % 480) * (6.2831853f / 480.f);
+
+				view.position[0] = spin_at[0];
+				view.position[1] = spin_at[1];
+				view.position[2] = spin_at[2];
+				view.forward[0] = cosf(angle);
+				view.forward[1] = sinf(angle);
+				view.forward[2] = -0.15f;
 				view.up[0] = 0.f;
 				view.up[1] = 0.f;
 				view.up[2] = 1.f;

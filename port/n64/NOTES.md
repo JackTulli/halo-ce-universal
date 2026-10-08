@@ -138,3 +138,24 @@ running notebook. Paths are relative to `source/`.
   145 KB free to ~770 KB.
 - Debugging: port.json flag "debug_weapon=<weapon tag>" makes it the
   spawn weapon (n64_files.c n64_debug_text reads name=value settings).
+
+## Level lighting from the lightmap (October 2026)
+
+- The level's vertex colours were the materials' lighting summaries (ambient
+  + two distant lights, clamped), which blew the centre out to white. They
+  are now Halo's lightmap: each lightmap vertex (8 bytes after the 32-byte
+  rendered vertices: a compressed normal, then u and v over 32767) samples
+  its page of the BSP's lightmap bitmap (r5g6b5), averaging the texels
+  within a texel and a half and skipping the fill (pure yellow and pure
+  red) that pads the pages. The level textures stay doubled (Halo's
+  lightmaps are half intensity).
+- Triangles are split where the lightmap changes across them (an edge over
+  2 texels whose middle differs from its ends by more than 0.06, up to 3
+  times; decisions shared per edge so no crack opens): Wizard goes from
+  2,972 to 5,090 triangles. N64_LIGHTMAP_SPLIT_DEPTH=0 turns it off.
+- The teleporters' portals are a scenery model (teleporter_shield) with a
+  transparent shader whose first map is a white energy mask: a glow whose
+  map is grey takes the shader's emitted light colour, solid (green).
+- Debugging: "debug_spin=x y z [yaw]" stands the first view there, turning
+  or facing yaw degrees. Without objects Wizard's centre draws at ~30 fps:
+  the objects (first-person models included) are the larger cost.

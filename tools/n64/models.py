@@ -206,7 +206,7 @@ class ModelConverter:
         Walker(self.map, self.defs).walk(shader_tag, on_dependency=on_dependency)
         if not found:
             return -1
-        key = ("glow", found[0])
+        key = ("glow", found[0], shader_tag.index)
         if key in self.masked:
             return self.masked[key]
         index = -1
@@ -219,8 +219,18 @@ class ModelConverter:
                 img = None
             if img is not None:
                 r, g, b, a = img.convert("RGBA").split()
-                brightness = Image.merge("RGB", (r, g, b)).convert("L").point(lambda v: 255 if v >= 48 else 0)
-                index = self.textures.write_texture(Image.merge("RGBA", (r, g, b, brightness)), tag.name, fmt="RGBA16")
+                # a grey map (a mask: its colour comes from the shader's
+                # other layers, as the teleporters' energy) takes the colour
+                # the shader emits, solid
+                emitted = struct.unpack("<3f", self.map.read(shader_tag.address + self.f("Shader")["color of emitted light"], 12))
+                spread = max(abs(x - y) for x, y in zip(r.getextrema() + g.getextrema(), g.getextrema() + b.getextrema()))
+                if spread < 24 and max(emitted) - min(emitted) > 0.2:
+                    colour = tuple(int(max(0.0, min(1.0, c)) * 255) for c in emitted) + (255,)
+                    img = Image.new("RGBA", (4, 4), colour)
+                    index = self.textures.write_texture(img, tag.name, fmt="RGBA16")
+                else:
+                    brightness = Image.merge("RGB", (r, g, b)).convert("L").point(lambda v: 255 if v >= 48 else 0)
+                    index = self.textures.write_texture(Image.merge("RGBA", (r, g, b, brightness)), tag.name, fmt="RGBA16")
         self.masked[key] = index
         return index
 

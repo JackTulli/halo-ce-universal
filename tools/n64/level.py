@@ -78,6 +78,44 @@ class Texture:
         self.name, self.width, self.height = name, width, height
 
 
+# the colours Halo fills a lightmap page's unused texels with
+LIGHTMAP_FILL = ((255, 255, 0), (255, 0, 0))
+# a level triangle is split where its lightmap changes across it (shadows,
+# pools of light), an edge at most this many times: at an edge of more than
+# LIGHTMAP_SPLIT_TEXELS texels whose middle differs from its ends' average
+# by more than LIGHTMAP_SPLIT_DIFFERENCE
+LIGHTMAP_SPLIT_DEPTH = int(os.environ.get("N64_LIGHTMAP_SPLIT_DEPTH", "3"))
+LIGHTMAP_SPLIT_TEXELS = 2.0
+LIGHTMAP_SPLIT_DIFFERENCE = 0.06
+
+
+def sample_lightmap(page, u, v):
+    """the lightmap's colour (0..1) around (u, v): the texels within a texel
+    and a half, weighted by distance, the page's unused texels left out
+    (a vertex is usually on the edge of its chart); None if there are none"""
+    width, height, pixels = page
+    x, y = u * width - 0.5, v * height - 0.5
+    for radius in (1.5, 3.0):
+        total = [0.0, 0.0, 0.0]
+        weight_sum = 0.0
+        for ty in range(int(math.floor(y - radius)), int(math.ceil(y + radius)) + 1):
+            for tx in range(int(math.floor(x - radius)), int(math.ceil(x + radius)) + 1):
+                if not (0 <= tx < width and 0 <= ty < height):
+                    continue
+                d = math.hypot(tx - x, ty - y)
+                if d > radius:
+                    continue
+                texel = pixels[ty * width + tx]
+                if texel in LIGHTMAP_FILL:
+                    continue
+                w = radius - d + 0.25
+                total = [t + c * w for t, c in zip(total, texel)]
+                weight_sum += w
+        if weight_sum > 0:
+            return [t / weight_sum / 255.0 for t in total]
+    return None
+
+
 def split_palette(img, mask):
     """img (RGBA) as a 16-colour paletted image: the texels where mask < 128
     take entries 0-7, the others 8-15, each half the image's own colours
@@ -241,10 +279,17 @@ class LevelBuilder:
 
         # every surface (triangle) with its world vertices, uvs, colours and material
         surface_info = [None] * surfaces_count
+        # split decisions by edge (its two ends' positions), shared by the
+        # triangles on both sides so that no crack opens between them
+        self.edge_splits = {}
+        self.midpoints = {}
         lightmap_count, lightmap_ptr = struct.unpack("<iI", x.read(base + bo["lightmaps"], 8))
         lsize, msize = self.defs.size("ScenarioStructureBSPLightmap"), self.defs.size("ScenarioStructureBSPMaterial")
+        lightmap_pages = self.lightmap_pages(bsp_tag, bo)
         for li in range(lightmap_count):
             la = lightmap_ptr + li * lsize
+            page_index = struct.unpack("<h", x.read(la + lo["bitmap"], 2))[0]
+            page = lightmap_pages[page_index] if 0 <= page_index < len(lightmap_pages) else None
             mc, mp = struct.unpack("<iI", x.read(la + lo["materials"], 8))
             for mi in range(mc):
                 ma = mp + mi * msize
@@ -264,20 +309,34 @@ class LevelBuilder:
                 material = self.material(shader_datum)
                 verts = []
                 data = x.read(cv_ptr, rv_count * 32)
+                # the lightmap's texture coordinates follow the rendered
+                # vertices: a compressed normal and u, v over 32767
+                lv_count = struct.unpack_from("<I", raw, mo["lightmap vertices count"])[0]
+                lightmap_uvs = []
+                if page is not None and lv_count >= rv_count:
+                    lv_data = x.read(cv_ptr + rv_count * 32, rv_count * 8)
+                    lightmap_uvs = [struct.unpack_from("<Ihh", lv_data, v * 8)[1:] for v in range(rv_count)]
                 for v in range(rv_count):
                     px, py, pz, normal, binormal, tangent, u, vv = struct.unpack_from("<3fIII2f", data, v * 32)
                     n = unpack_normal(normal)
-                    color = list(ambient)
-                    for (lc, ld) in lights:
-                        d = -(n[0] * ld[0] + n[1] * ld[1] + n[2] * ld[2])
-                        if d > 0:
-                            color = [c + l * d for c, l in zip(color, lc)]
-                    verts.append(((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color)))
+                    color = None
+                    if lightmap_uvs:
+                        lu, lv = lightmap_uvs[v]
+                        color = sample_lightmap(page, lu / 32767.0, lv / 32767.0)
+                    if color is None:
+                        # no lightmap: the material's lighting summary
+                        color = list(ambient)
+                        for (lc, ld) in lights:
+                            d = -(n[0] * ld[0] + n[1] * ld[1] + n[2] * ld[2])
+                            if d > 0:
+                                color = [c + l * d for c, l in zip(color, lc)]
+                    lightmap = (page, lightmap_uvs[v][0] / 32767.0, lightmap_uvs[v][1] / 32767.0) if lightmap_uvs else None
+                    verts.append(((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color), lightmap))
                 for s in range(first, first + count):
                     a, b, c = surfaces[s]
                     # Halo's front faces wind clockwise (Direct3D), tiny3d's
                     # counter-clockwise
-                    surface_info[s] = (material, verts[a], verts[c], verts[b])
+                    surface_info[s] = [(material,) + t for t in self.split_by_lightmap((verts[a], verts[c], verts[b]))]
 
         # clusters: their surfaces (surface indices), batched per material
         cluster_count, cluster_ptr = struct.unpack("<iI", x.read(base + bo["clusters"], 8))
@@ -295,6 +354,99 @@ class LevelBuilder:
         if leftover:
             clusters.append(leftover)
         return clusters, surface_info
+
+    def split_by_lightmap(self, triangle, depth=0):
+        """a level triangle (three vertices) split where the lightmap changes
+        across it, as a list of triangles"""
+        if depth >= LIGHTMAP_SPLIT_DEPTH:
+            return [triangle]
+        split = []
+        for i in range(3):
+            p, q = triangle[i], triangle[(i + 1) % 3]
+            key = tuple(sorted((tuple(round(c, 4) for c in p[0]), tuple(round(c, 4) for c in q[0]))))
+            decision = self.edge_splits.get(key)
+            if decision is None:
+                decision = self.edge_wants_split(p, q)
+                self.edge_splits[key] = decision
+            split.append(decision)
+        if not any(split):
+            return [triangle]
+        a, b, c = triangle
+        mab = self.midpoint(a, b) if split[0] else None
+        mbc = self.midpoint(b, c) if split[1] else None
+        mca = self.midpoint(c, a) if split[2] else None
+        count = sum(split)
+        if count == 3:
+            children = [(a, mab, mca), (mab, b, mbc), (mca, mbc, c), (mab, mbc, mca)]
+        elif count == 1:
+            if mab:
+                children = [(a, mab, c), (mab, b, c)]
+            elif mbc:
+                children = [(a, b, mbc), (a, mbc, c)]
+            else:
+                children = [(a, b, mca), (mca, b, c)]
+        else:
+            # two edges: the corner between them, and the rest in two
+            if not mab:
+                children = [(c, mca, mbc), (a, b, mbc), (a, mbc, mca)]
+            elif not mbc:
+                children = [(a, mab, mca), (b, c, mca), (b, mca, mab)]
+            else:
+                children = [(b, mbc, mab), (c, a, mab), (c, mab, mbc)]
+        out = []
+        for child in children:
+            out.extend(self.split_by_lightmap(child, depth + 1))
+        return out
+
+    def edge_wants_split(self, p, q):
+        if p[4] is None or q[4] is None or p[4][0] is not q[4][0]:
+            return False
+        page, pu, pv = p[4]
+        _, qu, qv = q[4]
+        width, height, _ = page
+        if math.hypot((pu - qu) * width, (pv - qv) * height) <= LIGHTMAP_SPLIT_TEXELS:
+            return False
+        middle = sample_lightmap(page, (pu + qu) / 2, (pv + qv) / 2)
+        if middle is None:
+            return False
+        return max(abs(m - (a + b) / 2) for m, a, b in zip(middle, p[3], q[3])) > LIGHTMAP_SPLIT_DIFFERENCE
+
+    def midpoint(self, p, q):
+        """the vertex halfway along p-q (one per edge and side), lit from the
+        lightmap there"""
+        key = (id(p), id(q)) if id(p) < id(q) else (id(q), id(p))
+        vertex = self.midpoints.get(key)
+        if vertex is None:
+            position = tuple((a + b) / 2 for a, b in zip(p[0], q[0]))
+            n = [a + b for a, b in zip(p[1], q[1])]
+            length = math.sqrt(sum(c * c for c in n)) or 1.0
+            uv = ((p[2][0] + q[2][0]) / 2, (p[2][1] + q[2][1]) / 2)
+            lightmap = None
+            color = tuple((a + b) / 2 for a, b in zip(p[3], q[3]))
+            if p[4] is not None and q[4] is not None and p[4][0] is q[4][0]:
+                lightmap = (p[4][0], (p[4][1] + q[4][1]) / 2, (p[4][2] + q[4][2]) / 2)
+                sampled = sample_lightmap(lightmap[0], lightmap[1], lightmap[2])
+                if sampled is not None:
+                    color = tuple(min(1.0, max(0.0, c)) for c in sampled)
+            vertex = (position, tuple(c / length for c in n), uv, color, lightmap)
+            self.midpoints[key] = vertex
+        return vertex
+
+    def lightmap_pages(self, bsp_tag, bo):
+        """the BSP's lightmap bitmap: each page as (width, height, pixels)"""
+        datum = struct.unpack("<I", self.map.read(bsp_tag.address + bo["lightmaps bitmap"] + 12, 4))[0]
+        tag = self.map.tag(datum)
+        pages = []
+        if tag is None:
+            return pages
+        for image in bitmap_images(self.map, tag, self.defs):
+            try:
+                img = decode(self.map, image, 4096).convert("RGB")
+            except ValueError:
+                pages.append(None)
+                continue
+            pages.append((img.width, img.height, list(img.getdata())))
+        return pages
 
     def batches(self, triangles):
         """splits (material, v0, v1, v2) triangles of one material into
@@ -345,8 +497,8 @@ class LevelBuilder:
             first = len(out_batches)
             by_material = {}
             for i in indices:
-                info = surface_info[i]
-                by_material.setdefault(info[0], []).append(info)
+                for info in surface_info[i]:
+                    by_material.setdefault(info[0], []).append(info)
             lo = [math.inf] * 3
             hi = [-math.inf] * 3
             for material in sorted(by_material):
