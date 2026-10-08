@@ -185,6 +185,10 @@ struct n64_menu_choice
 	Halo colour index */
 	int player_count;
 	int ports[4], teams[4], colors[4];
+	/* Firefight (port/n64/game/n64_firefight.c) instead of multiplayer:
+	the map, the difficulty (0 easy to 3 legendary) */
+	int firefight;
+	int difficulty;
 };
 
 /* runs the menu until a game is chosen (after a game, its results first:

@@ -43,6 +43,14 @@ void *memalign(size_t alignment, size_t size);
 
 extern short player_spawn_count;
 
+/* ---------- Firefight (n64_firefight.c) */
+
+void n64_firefight_begin(int difficulty, int player_count);
+void n64_firefight_stop(void);
+int n64_firefight_active(void);
+void n64_firefight_tick(void);
+int n64_firefight_results(char lines[][64], int maximum);
+
 /* ---------- a game straight from the start, for testing */
 
 #define N64_TEST_GAME_VARIANT "slayer"
@@ -60,10 +68,19 @@ static void n64_game_start(
 	char const *folder = n64_menu_map_folder(n64_choice.map);
 	char line[96];
 
-	variant = *game_engine_get_variant_by_name(&temporary_variant, n64_menu_game_variant(n64_choice.game_type));
-	if (n64_choice.score > 0)
+	/* Firefight: team slayer, every player on the red team, no score to
+	reach; the waves are n64_firefight.c's */
+	variant = *game_engine_get_variant_by_name(&temporary_variant,
+		n64_choice.firefight ? "team_slayer" : n64_menu_game_variant(n64_choice.game_type));
+	if (n64_choice.firefight)
+		variant.universal_variant.score_to_win = 9999;
+	else if (n64_choice.score > 0)
 		variant.universal_variant.score_to_win = n64_choice.score;
 	game_set_game_variant(&variant);
+	if (n64_choice.firefight)
+		n64_firefight_begin(n64_choice.difficulty, n64_choice.player_count);
+	else
+		n64_firefight_stop();
 	player_spawn_count = (short)n64_choice.player_count;
 	snprintf(map_name, sizeof(map_name), "levels\\test\\%s\\%s", folder, folder);
 	main_set_map_name(map_name);
@@ -84,7 +101,8 @@ static void n64_game_start(
 				n64_gamepad_ports[i++] = port;
 		}
 	}
-	snprintf(line, sizeof(line), "n64: %s on %s, %d players, score %d", n64_menu_game_variant(n64_choice.game_type),
+	snprintf(line, sizeof(line), "n64: %s on %s, %d players, score %d",
+		n64_choice.firefight ? "firefight" : n64_menu_game_variant(n64_choice.game_type),
 		map_name, n64_choice.player_count, n64_choice.score);
 	n64_log(line);
 }
@@ -93,6 +111,7 @@ void n64_game_setup(
 	void)
 {
 	char name[32];
+	char difficulty[8];
 	int i;
 
 	/* ai_debug_initialize's defaults (the AI is left out) */
@@ -109,6 +128,9 @@ void n64_game_setup(
 		n64_choice.map = n64_menu_map_from_folder("wizard");
 	n64_choice.game_type = 0;
 	n64_choice.score = 0;
+	/* (port.json flag "debug_firefight=<difficulty>": a Firefight game) */
+	n64_choice.firefight = n64_debug_text("debug_firefight", difficulty, sizeof(difficulty)) != 0;
+	n64_choice.difficulty = n64_choice.firefight ? atoi(difficulty) : 0;
 	/* (port.json flag "debug_players=<1-4>": another count) */
 	n64_choice.player_count = n64_debug_text("debug_players", name, sizeof(name)) ? PIN(atoi(name), 1, 4) :
 		N64_TEST_PLAYER_COUNT;
@@ -152,6 +174,13 @@ void n64_game_results(
 	int count = 1;
 
 	n64_result_count = 0;
+	if (n64_firefight_active())
+	{
+		n64_result_count = n64_firefight_results(n64_result_text, 6);
+		for (count = 0; count < n64_result_count; count++)
+			n64_result_lines[count] = n64_result_text[count];
+		return;
+	}
 	if (!game_engine)
 		return;
 	data_iterator_new(&iterator, player_data);
@@ -206,7 +235,8 @@ void n64_game_local_player(
 	index = PIN(index, 0, 3);
 	*port = (short)n64_choice.ports[index];
 	*color = (short)n64_choice.colors[index];
-	*team = (short)(n64_menu_game_teams(n64_choice.game_type) ? n64_choice.teams[index] : index);
+	*team = (short)(n64_choice.firefight ? 0 :
+		n64_menu_game_teams(n64_choice.game_type) ? n64_choice.teams[index] : index);
 }
 
 /* ---------- memory map */
@@ -566,6 +596,7 @@ void __wrap_game_tick(
 	if (!n64_tick_profile.window_start)
 		n64_tick_profile.window_start = n64_ticks64();
 	n64_profile_zone = n64_debug_flag("profile_tick");
+	n64_firefight_tick();
 	__real_game_tick();
 	n64_profile_zone = 0;
 	elapsed = n64_ticks() - start;

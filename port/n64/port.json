@@ -55,7 +55,12 @@
     "source/saved games/game_state.c",
     "source/render/render_cameras.c",
     "source/rasterizer/rasterizer_geometry.c",
-    "source/rasterizer/rasterizer_swizzle.c"
+    "source/rasterizer/rasterizer_swizzle.c",
+    "source/ai/path.c",
+    "source/ai/path_structure_bsp.c",
+    "source/ai/path_smoothing.c",
+    "source/ai/path_obstacle_avoidance.c",
+    "source/ai/path_obstacles.c"
   ],
   "maps": [
     "wizard",

@@ -4263,6 +4263,22 @@ boolean biped_update(
 
 		biped_update_moving(biped_index, &animation);
 		biped_verify_object_vectors(biped_index, "post-moving");
+#ifdef HALO_N64
+		{
+		extern void n64_log(const char *text);
+		extern int n64_debug_flag(const char *name);
+
+		if (biped->unit.player_index == NONE && n64_debug_flag("debug_biped_log") && !(game_time_get() & 63))
+		{
+			char line[160];
+
+			snprintf(line, sizeof(line), "biped %lx: after moving, state desired %d, throttle %.2f %.2f, landing %d, flags %lx, unit state %d",
+				biped_index, animation.state_desired, biped->unit.throttle.i, biped->unit.throttle.j, biped->biped.landing,
+				(unsigned long)biped->biped.flags, biped->unit.animation.state);
+			n64_log(line);
+		}
+		}
+#endif
 
 		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit))
 		{

@@ -384,7 +384,8 @@ static void read_pads(void)
 
 enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_START, ROW_COUNT };
-enum { TITLE_MULTIPLAYER, TITLE_SETTINGS, TITLE_COUNT };
+enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_SETTINGS, TITLE_COUNT };
+static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
 enum { SETTING_CHUNKY, SETTING_BACK, SETTING_COUNT };
 
 /* a choice in a list: brighter, framed and pulsing when chosen */
@@ -403,11 +404,11 @@ static void list_item(int center, int y, int width, int selected, const char *te
 
 static void draw_title(int item)
 {
-	static const char *items[TITLE_COUNT] = {"MULTIPLAYER", "SETTINGS"};
+	static const char *items[TITLE_COUNT] = {"MULTIPLAYER", "FIREFIGHT", "SETTINGS"};
 
-	blit(menu.logo, 32, 30, 1.f);
+	blit(menu.logo, 32, 22, 1.f);
 	for (int i = 0; i < TITLE_COUNT; i++)
-		list_item(160, 168 + i * 26, 150, i == item, items[i]);
+		list_item(160, 146 + i * 26, 150, i == item, items[i]);
 	text_centered(menu.small, 160, 228, TEXT_DIM, "SPLIT SCREEN  -  UP TO 4 PLAYERS");
 }
 
@@ -430,10 +431,12 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 {
 	static const char *labels[ROW_COUNT] = {"GAME TYPE", "MAP", "SCORE TO WIN", "START GAME"};
 	char value[48];
-	int teams = n64_menu_game_teams(c->game_type);
+	/* (Firefight: the difficulty in the game type's row, no score; the
+	players one team) */
+	int teams = !c->firefight && n64_menu_game_teams(c->game_type);
 
 	panel(0, 0, 320, 240, 0x40000818);
-	n64_text_draw(menu.large, 14, 26, TEXT_BRIGHT, "MULTIPLAYER");
+	n64_text_draw(menu.large, 14, 26, TEXT_BRIGHT, c->firefight ? "FIREFIGHT" : "MULTIPLAYER");
 	n64_text_draw(menu.small, 222, 26, TEXT_DIM, "SPLIT SCREEN");
 	panel(12, 32, 308, 33, 0xC08CC0FF);
 	/* the rows: a label on the left, its value on the right */
@@ -442,6 +445,8 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 		int y = 40 + r * 26;
 		int selected = r == row;
 
+		if (c->firefight && r == ROW_SCORE)
+			continue;
 		panel(12, y, 206, y + 22, selected ? 0xA0306CB8 : 0x80102040);
 		if (selected)
 			frame_line(12, y, 206, y + 22, 0xFF8CC0FF);
@@ -451,8 +456,11 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 				labels[r]);
 			continue;
 		}
-		n64_text_draw(menu.small, 18, y + 15, selected ? TEXT_COLOR : TEXT_DIM, labels[r]);
-		if (r == ROW_GAME_TYPE)
+		n64_text_draw(menu.small, 18, y + 15, selected ? TEXT_COLOR : TEXT_DIM,
+			c->firefight && r == ROW_GAME_TYPE ? "DIFFICULTY" : labels[r]);
+		if (r == ROW_GAME_TYPE && c->firefight)
+			snprintf(value, sizeof(value), "%s", difficulties[c->difficulty & 3]);
+		else if (r == ROW_GAME_TYPE)
 			snprintf(value, sizeof(value), "%s", game_types[c->game_type].name);
 		else if (r == ROW_MAP)
 			snprintf(value, sizeof(value), "%s", maps[c->map].name);
@@ -473,9 +481,17 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 	panel(212, 40, 312, 92, 0xC0000000);
 	blit(picture(menu.map_pictures, "map", maps[c->map].picture), 212, 41, 100.f / 128.f);
 	frame_line(212, 40, 312, 92, 0xFF8CC0FF);
-	panel(229, 100, 295, 134, 0xC0000000);
-	blit(picture(menu.type_pictures, "gametype", game_types[c->game_type].picture), 230, 101, 0.5f);
-	frame_line(229, 100, 295, 134, 0xFF8CC0FF);
+	if (c->firefight)
+	{
+		text_centered(menu.small, 262, 112, TEXT_COLOR, "COVENANT IN WAVES");
+		text_centered(menu.small, 262, 126, TEXT_DIM, "SHARED LIVES");
+	}
+	else
+	{
+		panel(229, 100, 295, 134, 0xC0000000);
+		blit(picture(menu.type_pictures, "gametype", game_types[c->game_type].picture), 230, 101, 0.5f);
+		frame_line(229, 100, 295, 134, 0xFF8CC0FF);
+	}
 	/* the players */
 	for (int p = 0; p < 4; p++)
 	{
@@ -521,7 +537,7 @@ static void draw_loading(const struct n64_menu_choice *c)
 	char text[64];
 
 	panel(0, 96, 320, 144, 0xC0000818);
-	snprintf(text, sizeof(text), "%s ON %s", game_types[c->game_type].name, maps[c->map].name);
+	snprintf(text, sizeof(text), "%s ON %s", c->firefight ? "FIREFIGHT" : game_types[c->game_type].name, maps[c->map].name);
 	text_centered(menu.large, 160, 118, TEXT_BRIGHT, "LOADING");
 	text_centered(menu.small, 160, 136, TEXT_COLOR, text);
 }
@@ -573,6 +589,17 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					screen = SCREEN_SETTINGS;
 					setting = SETTING_CHUNKY;
 					continue;
+				}
+				c->firefight = item == TITLE_FIREFIGHT;
+				{
+					/* (normal, the first time) */
+					static int difficulty_chosen;
+
+					if (c->firefight && !difficulty_chosen)
+					{
+						c->difficulty = 1;
+						difficulty_chosen = 1;
+					}
 				}
 				screen = SCREEN_SETUP;
 				row = ROW_GAME_TYPE;
@@ -641,18 +668,23 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 							screen = SCREEN_TITLE;
 						continue;
 					}
-					if (pad->pressed.z || pad->pressed.r)
+					if ((pad->pressed.z || pad->pressed.r) && !c->firefight)
 						c->teams[slot] ^= 1;
 				}
 				if (pad->up)
 					row = (row + ROW_COUNT - 1) % ROW_COUNT;
 				if (pad->down)
 					row = (row + 1) % ROW_COUNT;
+				/* (Firefight has no score row) */
+				if (c->firefight && row == ROW_SCORE)
+					row = pad->up ? ROW_MAP : ROW_START;
 				if (pad->left || pad->right)
 				{
 					int step = pad->right ? 1 : -1;
 
-					if (row == ROW_GAME_TYPE)
+					if (row == ROW_GAME_TYPE && c->firefight)
+						c->difficulty = (c->difficulty + 4 + step) % 4;
+					else if (row == ROW_GAME_TYPE)
 					{
 						c->game_type = (c->game_type + GAME_TYPE_COUNT + step) % GAME_TYPE_COUNT;
 						score_index = game_types[c->game_type].default_score;
@@ -668,7 +700,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		}
 		c->score = game_types[c->game_type].scores[score_index];
 		for (int i = 0; i < c->player_count; i++)
-			c->colors[i] = n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
+			c->colors[i] = c->firefight ? player_colors[i & 3] :
+				n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
 
 		n64_render_frame_begin();
 		draw_scene();

@@ -27,6 +27,12 @@ from .xboxmap import XboxMap
 MAGIC = b"H64M"
 VERSION = 1
 
+# Firefight's Covenant (port/n64/game/n64_firefight.c), imported into every
+# multiplayer map from a campaign map beside it (merge.py)
+FIREFIGHT_SOURCE = "a30"
+FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\jackal\\jackal"),
+                   ("bipd", "characters\\elite\\elite")]
+
 # tag groups the N64 game never loads: the Xbox menus and input devices,
 # and sound (the N64 build has none yet: its code is left out)
 DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snd!", b"lsnd", b"snde"}
@@ -179,6 +185,11 @@ class N64Policy(Policy):
 def convert(path, output, filesystem=None):
     xmap = XboxMap(path)
     bsp_tag, bsp_base, bsp_size = xmap.load_bsp(0)
+    source = Path(path).parent / f"{FIREFIGHT_SOURCE}.map"
+    if xmap.map_type == 1 and source.exists():
+        from .merge import merge_tags
+        imported = merge_tags(xmap, XboxMap(source), FIREFIGHT_ROOTS)
+        print(f"{xmap.name}: {len(imported)} Covenant tags from {FIREFIGHT_SOURCE}")
     repacker = Repacker(xmap, None)
     repacker.policy = N64Policy(xmap, repacker.defs)
     if filesystem is not None:

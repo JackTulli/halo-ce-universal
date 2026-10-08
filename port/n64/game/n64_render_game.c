@@ -504,7 +504,15 @@ void render_frame(
 		{
 			/* the game's own HUD (port/n64/game/n64_hud_game.c) */
 			if (n64_hud_begin(window_index, view.x0, view.y0, view.x1, view.y1))
+			{
+				extern int n64_firefight_status(char *text, int size);
+				char status[64];
+
 				interface_draw_screen();
+				/* Firefight's wave, lives and score, low in the middle */
+				if (n64_firefight_status(status, sizeof(status)))
+					n64_hud_text((view.x0 + view.x1) / 2 - 62, view.y1 - 16, 0xFFC0E0FF, status);
+			}
 			n64_hud_end();
 		}
 	}
