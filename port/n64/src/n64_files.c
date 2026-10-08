@@ -61,21 +61,29 @@ void n64_file_close(long handle)
 
 int n64_debug_flag(const char *name)
 {
-	static struct { const char *name; int value; } cache[16];
+	/* (asked for in hot loops -- per object, per sound -- by literal: the
+	same pointer each time; a name the cache did not hold opened a file
+	each time, and there are more than its first 16) */
+	static struct { const char *name; int value; } cache[64];
 	static int count;
 	char path[64];
 	FILE *file;
 
 	for (int i = 0; i < count; i++)
 	{
-		if (cache[i].name == name || !strcmp(cache[i].name, name))
+		if (cache[i].name == name)
+			return cache[i].value;
+	}
+	for (int i = 0; i < count; i++)
+	{
+		if (!strcmp(cache[i].name, name))
 			return cache[i].value;
 	}
 	snprintf(path, sizeof(path), "rom:/%s", name);
 	file = fopen(path, "rb");
 	if (file)
 		fclose(file);
-	if (count < 16)
+	if (count < 64)
 	{
 		cache[count].name = name;
 		cache[count].value = file != NULL;

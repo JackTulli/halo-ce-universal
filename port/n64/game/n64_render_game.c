@@ -237,61 +237,95 @@ static unsigned long const *n64_view_clusters;
 static short n64_view_cluster_count;
 
 /* every visible object but the viewer's own body (the view is first person) */
+/* the frame's drawable objects, gathered once for all its views (each view
+walked every object and looked up its definition, model and owner again) */
+#define MAXIMUM_FRAME_OBJECTS 256
+
+static struct frame_object
+{
+	long object_index;
+	long ultimate_parent;
+	short cluster;
+	short pad;
+	struct n64_object n64;
+} frame_objects[MAXIMUM_FRAME_OBJECTS];
+static short frame_object_count;
+static long frame_objects_frame = -1;
+
+static void gather_frame_objects(
+	void)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+
+	frame_object_count = 0;
+	frame_objects_frame = render.frame_index;
+	object_iterator_new(&iterator, _object_mask_all, FLAG(_object_header_visible_bit));
+	while ((object = object_iterator_next(&iterator)) != NULL && frame_object_count < MAXIMUM_FRAME_OBJECTS)
+	{
+		struct frame_object *entry = &frame_objects[frame_object_count];
+		struct object_definition *definition;
+		struct n64_object *n64 = &entry->n64;
+		struct object_datum *owner;
+
+		if (TEST_FLAG(object->object.flags, _object_invisible_bit))
+			continue;
+		definition = object_definition_get(object->definition_index);
+		if (definition->object.model.index == NONE)
+			continue;
+		entry->object_index = iterator.index;
+		entry->ultimate_parent = object_get_ultimate_parent(iterator.index);
+		entry->cluster = object->object.location.cluster_index;
+		n64->model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
+		n64->node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
+		n64->node_matrices = (const float *)object_get_node_matrices(iterator.index);
+		n64->key = (unsigned long)iterator.index;
+		n64->region_permutations = object->object.region_permutations;
+		n64->region_count = MAXIMUM_REGIONS_PER_OBJECT;
+		n64->center[0] = object->object.bounding_sphere_center.x;
+		n64->center[1] = object->object.bounding_sphere_center.y;
+		n64->center[2] = object->object.bounding_sphere_center.z;
+		n64->radius = object->object.bounding_sphere_radius;
+		n64->tint[0] = n64->tint[1] = n64->tint[2] = n64->tint[3] = 0xFF;
+		owner = entry->ultimate_parent == iterator.index ? object : object_get(entry->ultimate_parent);
+		if (TEST_FLAG(_object_mask_unit, object->object.type) || TEST_FLAG(_object_mask_unit, owner->object.type))
+		{
+			/* a player (or what a player holds): the armour colour, where the
+			model's textures take it */
+			real_rgb_color const *color = &owner->object.base_change_colors[_object_change_color_a];
+
+			n64->tint[0] = (unsigned char)PIN(color->red * 255.f, 0.f, 255.f);
+			n64->tint[1] = (unsigned char)PIN(color->green * 255.f, 0.f, 255.f);
+			n64->tint[2] = (unsigned char)PIN(color->blue * 255.f, 0.f, 255.f);
+		}
+		frame_object_count++;
+	}
+}
+
 static void render_objects_for_view(
 	short local_player_index,
 	boolean third_person)
 {
 	long viewer_unit = NONE;
 	long player_index = local_player_get_player_index(local_player_index);
-	struct object_iterator iterator;
-	struct object_datum *object;
+	short i;
 
 	if (player_index != NONE && !third_person)
 		viewer_unit = player_get(player_index)->unit_index;
-	object_iterator_new(&iterator, _object_mask_all, FLAG(_object_header_visible_bit));
-	while ((object = object_iterator_next(&iterator)) != NULL)
+	if (frame_objects_frame != render.frame_index)
+		gather_frame_objects();
+	for (i = 0; i < frame_object_count; i++)
 	{
+		struct frame_object const *entry = &frame_objects[i];
+		short cluster = entry->cluster;
+
 		/* in a cluster the eye cannot see */
-		{
-			short cluster = object->object.location.cluster_index;
-
-			if (n64_view_clusters && cluster >= 0 && cluster < n64_view_cluster_count &&
-				!(n64_view_clusters[cluster >> 5] & (1UL << (cluster & 31))))
-				continue;
-		}
-		struct object_definition *definition;
-		struct n64_object n64;
-
-		if (TEST_FLAG(object->object.flags, _object_invisible_bit))
+		if (n64_view_clusters && cluster >= 0 && cluster < n64_view_cluster_count &&
+			!(n64_view_clusters[cluster >> 5] & (1UL << (cluster & 31))))
 			continue;
-		if (viewer_unit != NONE && object_get_ultimate_parent(iterator.index) == viewer_unit)
+		if (viewer_unit != NONE && entry->ultimate_parent == viewer_unit)
 			continue;
-		definition = object_definition_get(object->definition_index);
-		if (definition->object.model.index == NONE)
-			continue;
-		n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
-		n64.node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
-		n64.node_matrices = (const float *)object_get_node_matrices(iterator.index);
-		n64.key = (unsigned long)iterator.index;
-		n64.region_permutations = object->object.region_permutations;
-		n64.region_count = MAXIMUM_REGIONS_PER_OBJECT;
-		n64.center[0] = object->object.bounding_sphere_center.x;
-		n64.center[1] = object->object.bounding_sphere_center.y;
-		n64.center[2] = object->object.bounding_sphere_center.z;
-		n64.radius = object->object.bounding_sphere_radius;
-		n64.tint[0] = n64.tint[1] = n64.tint[2] = n64.tint[3] = 0xFF;
-		if (TEST_FLAG(_object_mask_unit, object->object.type) || TEST_FLAG(_object_mask_unit, object_get(object_get_ultimate_parent(iterator.index))->object.type))
-		{
-			/* a player (or what a player holds): the armour colour, where the
-			model's textures take it */
-			struct object_datum *owner = object_get(object_get_ultimate_parent(iterator.index));
-			real_rgb_color const *color = &owner->object.base_change_colors[_object_change_color_a];
-
-			n64.tint[0] = (unsigned char)PIN(color->red * 255.f, 0.f, 255.f);
-			n64.tint[1] = (unsigned char)PIN(color->green * 255.f, 0.f, 255.f);
-			n64.tint[2] = (unsigned char)PIN(color->blue * 255.f, 0.f, 255.f);
-		}
-		n64_render_object(&n64);
+		n64_render_object(&entry->n64);
 	}
 }
 

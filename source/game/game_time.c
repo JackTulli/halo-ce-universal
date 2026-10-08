@@ -626,7 +626,15 @@ void game_time_update(
 					server_updates = final_server_time - game_time_globals->server_time;
 					for (update_index = 0; update_index < server_updates; update_index++)
 					{
+#ifdef HALO_N64
+						/* (the N64's around each tick: Firefight, the audio, its
+						cost; port/n64/game/n64_game.c) */
+						void n64_game_tick(void);
+
+						n64_game_tick();
+#else
 						game_tick();
+#endif
 #ifdef HALO_LINUX
 						render_interpolation_tick();
 #endif

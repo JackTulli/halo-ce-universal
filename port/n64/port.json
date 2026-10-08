@@ -79,7 +79,6 @@
     "sidewinder"
   ],
   "flags": [],
-  "ldflags": [
-    "-Wl,--wrap=game_tick"
-  ]
+  "ldflags": [],
+  "lto": true
 }

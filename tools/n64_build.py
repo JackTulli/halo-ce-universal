@@ -139,8 +139,13 @@ def main():
     defines += " " + " ".join(f"-D{d}" for d in port.get("defines", []))
     includes = " ".join(
         "-I" + shlex.quote(d) for d in options.get("include_dirs") or [] if Path(d) != Path("xbox/include"))
+    # link-time optimisation of the game's units (port.json "lto"): the
+    # decompiled code calls small getters across files on every object
+    # (datum_get, tag_get, tag_block_get_element_with_size...); fat objects
+    # keep the plain symbols tools/n64_link_check.py reads
+    lto = ["-flto", "-ffat-lto-objects"] if port.get("lto") else []
     game_cflags = " ".join([
-        *GAME_ABI, opt, *GAME_FLAGS,
+        *GAME_ABI, opt, *lto, *GAME_FLAGS,
         f"-I{PORT_DIR}/include", "-Iport/linux/include", "-Iport/include",
         f"-include {PORT_DIR}/include/halo_n64_prefix.h",
         f"-include {semantics}",
@@ -179,7 +184,7 @@ def main():
     # the host-independent Linux units compiled again: the game's ABI and
     # the SDK declarations, through platform.h
     xdk_cflags = " ".join([
-        *GAME_ABI, opt,
+        *GAME_ABI, opt, *lto,
         "-std=gnu11", "-w", "-DHALO_LINUX_PLATFORM_LAYER",
         f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include", "-Iport/linux/src",
         "-Iport/linux/include", "-Iport/include", "-Isource", "-Isource/cseries",
@@ -213,7 +218,7 @@ def main():
     n.build(str(elf), "link", objects, variables={
         "libdir": str(libdir),
         "ldlibs": " ".join(port.get("libraries", [])) + f" {TINY3D}/build/libt3d.a -ldragon -lm -ldragonsys",
-        "ldflags": " ".join(port.get("ldflags", [])),
+        "ldflags": " ".join(port.get("ldflags", []) + ([f"-flto={os.cpu_count() or 4}", opt] if lto else [])),
     })
     # the cartridge's files (DragonFS): the converted maps, and the flags
     # port.json asks for (an "autotest" file drives the controllers by script)
@@ -259,7 +264,7 @@ def main():
     # every debug switch the cartridge can carry (n64_debug_flag): the ones
     # port.json does not ask for are removed, so none lingers in a build
     known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
-                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time", "profile_tick", "debug_map", "debug_menu", "debug_players", "debug_guard", "debug_cull_front", "debug_level_parts", "debug_fog_test", "debug_far", "debug_spin_period", "debug_no_pvs", "debug_firefight", "debug_biped_log", "debug_sound", "debug_no_sound", "profile_sound", "debug_sound_level")
+                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time", "profile_tick", "debug_map", "debug_menu", "debug_players", "debug_guard", "debug_cull_front", "debug_level_parts", "debug_fog_test", "debug_far", "debug_spin_period", "debug_no_pvs", "debug_firefight", "debug_biped_log", "debug_sound", "debug_no_sound", "profile_sound", "debug_sound_level", "profile_stack", "debug_rspq_words")
     # a flag "name=value" is a setting: a file holding the value
     flag_names = [flag.split("=", 1)[0] for flag in port.get("flags", [])]
     for flag in known_flags:

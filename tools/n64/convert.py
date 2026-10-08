@@ -308,6 +308,8 @@ def main():
         low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low", args.filesystem)
         low_models.budget_scale = 0.5
         low_models.first_person_budget = 350
+        low_models.first_person_deviation = 0.06
+        low_models.detail_atlas = 64
         low_models.lod_preferences = {i: lowest for i in covenant}
         low_models.budget_overrides = {i: 150 for i in covenant}
         stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low.mdl")

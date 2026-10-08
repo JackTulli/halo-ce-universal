@@ -3642,6 +3642,21 @@ animation (if any) on the same frame and not running by itself, and no
 overlays driven by its functions. Items must also be at rest. (Blood
 Gulch's 46 scenery objects and the netgame items recomputed theirs every
 tick: half the tick.) */
+static boolean n64_same_words(
+	void const *a,
+	void const *b,
+	int count)
+{
+	unsigned long const *x = a, *y = b;
+
+	while (count--)
+	{
+		if (*x++ != *y++)
+			return FALSE;
+	}
+	return TRUE;
+}
+
 static boolean n64_object_unmoved(
 	long object_index,
 	struct object_datum *object,
@@ -3677,13 +3692,15 @@ static boolean n64_object_unmoved(
 			last[slot].object_index = NONE;
 		return FALSE;
 	}
+	/* (compared a word at a time: memcmp calls were 1% of a tick) */
 	if (last[slot].object_index == object_index &&
-		!csmemcmp(&last[slot].position, &object->object.position, sizeof(real_point3d)) &&
-		!csmemcmp(&last[slot].forward, &object->object.forward, sizeof(real_vector3d)) &&
-		!csmemcmp(&last[slot].up, &object->object.up, sizeof(real_vector3d)) &&
+		n64_same_words(&last[slot].position, &object->object.position, sizeof(real_point3d) / 4) &&
+		n64_same_words(&last[slot].forward, &object->object.forward, sizeof(real_vector3d) / 4) &&
+		n64_same_words(&last[slot].up, &object->object.up, sizeof(real_vector3d) / 4) &&
 		last[slot].scale == object->object.scale &&
 		(animation->animation_graph_index == NONE ||
-			!csmemcmp(&last[slot].animation, &animation->state, sizeof(struct animation_state))))
+			(last[slot].animation.index == animation->state.index &&
+				last[slot].animation.frame_index == animation->state.frame_index)))
 	{
 		return TRUE;
 	}

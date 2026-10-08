@@ -936,7 +936,36 @@ void matrix4x3_multiply(
 	real *result_elements = result->n[0];
 	real const *a_scale = &a->scale;
 
-#ifdef HALO_LINUX
+#if defined(HALO_N64)
+	{
+		/* the C below written out (the VR4300: no loop, no copy; the same
+		products and sums in the same order) */
+		real a0 = a_elements[0], a1 = a_elements[1], a2 = a_elements[2];
+		real a3 = a_elements[3], a4 = a_elements[4], a5 = a_elements[5];
+		real a6 = a_elements[6], a7 = a_elements[7], a8 = a_elements[8];
+		real b0 = b_elements[0], b1 = b_elements[1], b2 = b_elements[2];
+		real b3 = b_elements[3], b4 = b_elements[4], b5 = b_elements[5];
+		real b6 = b_elements[6], b7 = b_elements[7], b8 = b_elements[8];
+		real b9 = b_elements[9], b10 = b_elements[10], b11 = b_elements[11];
+		real scale = *a_scale;
+		real p9 = (b9 * a0 + b10 * a3 + b11 * a6) * scale + a_elements[9];
+		real p10 = (b9 * a1 + b10 * a4 + b11 * a7) * scale + a_elements[10];
+		real p11 = (b9 * a2 + b10 * a5 + b11 * a8) * scale + a_elements[11];
+
+		result_elements[0] = b0 * a0 + b1 * a3 + b2 * a6;
+		result_elements[1] = b0 * a1 + b1 * a4 + b2 * a7;
+		result_elements[2] = b0 * a2 + b1 * a5 + b2 * a8;
+		result_elements[3] = b3 * a0 + b4 * a3 + b5 * a6;
+		result_elements[4] = b3 * a1 + b4 * a4 + b5 * a7;
+		result_elements[5] = b3 * a2 + b4 * a5 + b5 * a8;
+		result_elements[6] = b6 * a0 + b7 * a3 + b8 * a6;
+		result_elements[7] = b6 * a1 + b7 * a4 + b8 * a7;
+		result_elements[8] = b6 * a2 + b7 * a5 + b8 * a8;
+		result_elements[9] = p9;
+		result_elements[10] = p10;
+		result_elements[11] = p11;
+	}
+#elif defined(HALO_LINUX)
 	{
 		/* the SSE block below: rows of b combine the rows of a, and the
 		position is scaled by a's scale before a's own is added */

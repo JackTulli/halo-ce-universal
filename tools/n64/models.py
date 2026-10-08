@@ -167,6 +167,12 @@ class ModelConverter:
         # the first-person models' (weapons and hands) set
         self.budget_scale = 1.0
         self.first_person_budget = FIRST_PERSON_BUDGET
+        # how far the first-person weapons' simplifier may move their
+        # surface, and their atlas's size (the 3-4 player set's views are a
+        # quarter of the screen: a looser bound reaches the budget, one
+        # 64-texel atlas is one texture load a part instead of several)
+        self.first_person_deviation = FIRST_PERSON_DEVIATION
+        self.detail_atlas = DETAIL_ATLAS
         # by model tag index: another order of levels of detail to take
         # (Firefight's Covenant: their lowest)
         self.lod_preferences = {}
@@ -402,7 +408,7 @@ class ModelConverter:
         if keep < 1.0:
             # (the hands keep their budget alone: the bound kept them at
             # ~1,300 triangles)
-            deviation = part_size(vertices, triangles) * FIRST_PERSON_DEVIATION if detail and not hands else None
+            deviation = part_size(vertices, triangles) * self.first_person_deviation if detail and not hands else None
             triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)), cross_nodes=not detail,
                                  max_deviation=deviation)
 
@@ -503,10 +509,10 @@ class ModelConverter:
         if not images or max(images[0].width, images[0].height) <= WINDOW:
             return None
         try:
-            atlas = decode(self.map, images[0], DETAIL_ATLAS)
+            atlas = decode(self.map, images[0], self.detail_atlas)
         except ValueError:
             return None
-        scale = min(1.0, DETAIL_ATLAS / max(atlas.size))
+        scale = min(1.0, self.detail_atlas / max(atlas.size))
         aw, ah = max(1, int(atlas.width * scale)), max(1, int(atlas.height * scale))
         atlas = atlas.resize((aw, ah), Image.LANCZOS)
         mask = self.change_mask(multipurpose, (aw, ah)) if multipurpose is not None else None

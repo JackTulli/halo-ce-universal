@@ -369,8 +369,21 @@ void n64_render_load_scene(const char *name)
 	load_models(name);
 }
 
+/* how far the CPU may run ahead of the RSP: each of the low-priority
+queue's two buffers, in words (libdragon's is 512, patched to be ours:
+port/n64/devtools/libdragon-rspq-buffer.patch). With 512 the CPU waited
+for the RSP mid-frame instead of going on to the next ticks: 2048 (16 KB
+both) let it, 4096 was no faster. */
+int rspq_lowpri_buffer_words = 0x800;
+
 void n64_render_initialize(void)
 {
+	char setting[16];
+
+	/* (port.json flag "debug_rspq_words=<n>": another size) */
+	if (n64_debug_text("debug_rspq_words", setting, sizeof(setting)))
+		rspq_lowpri_buffer_words = atoi(setting);
+	debugf("n64: rspq buffers of %d words\n", rspq_lowpri_buffer_words);
 	renderer.clear_color = RGBA32(96, 112, 140, 0xFF);
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
 	rdpq_init();

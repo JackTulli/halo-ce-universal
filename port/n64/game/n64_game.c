@@ -506,12 +506,12 @@ void stack_walk_initialize(void) { return; }
 void stack_walk_dispose(void) { return; }
 void stack_walk_disregard_symbol_names(boolean disregard) { (void)disregard; return; }
 
-/* ---------- the tick's cost (linked with --wrap=game_tick)
+/* ---------- the tick's cost (game_time.c calls n64_game_tick, HALO_N64)
 
 Every game tick is timed; every 150 ticks (5 s of game time) the log gets
 the average and the worst, and how far game time keeps up with real time. */
 
-void __real_game_tick(void);
+void game_tick(void);
 
 /* game.c's phases of a tick (HALO_N64), in CPU ticks, summed over the log
 window */
@@ -587,7 +587,7 @@ static struct
 	unsigned long long window_start;
 } n64_tick_profile;
 
-void __wrap_game_tick(
+void n64_game_tick(
 	void)
 {
 	unsigned long start = n64_ticks();
@@ -597,7 +597,7 @@ void __wrap_game_tick(
 		n64_tick_profile.window_start = n64_ticks64();
 	n64_profile_zone = n64_debug_flag("profile_tick");
 	n64_firefight_tick();
-	__real_game_tick();
+	game_tick();
 	n64_profile_zone = 0;
 	/* (the audio fed between ticks too: a slow frame runs several) */
 	n64_sound_poll();

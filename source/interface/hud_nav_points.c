@@ -1000,6 +1000,10 @@ void hud_render_nav_points(
 	return;
 }
 
+#ifdef HALO_N64
+static unsigned short n64_nav_point_updates[4];
+#endif
+
 static void hud_update_nav_point_local_player(
 	short local_player_index)
 {
@@ -1012,6 +1016,9 @@ static void hud_update_nav_point_local_player(
 	csmemset(stack_buffer, 0x62, sizeof(stack_buffer));
 
 	datum = get_nav_point_datum(local_player_index);
+#ifdef HALO_N64
+	n64_nav_point_updates[local_player_index & 3]++;
+#endif
 	unit_index = local_player_get_player_index(local_player_index)==NONE ?
 		NONE :
 		player_get(local_player_get_player_index(local_player_index))->unit_index;
@@ -1088,6 +1095,12 @@ static void hud_update_nav_point_local_player(
 			 * this file, and NONE entries are skipped above. Source-policy approval pending
 			 * (2026-09-27 audit). */
 			position.z += nav_point->z_offset;
+#ifdef HALO_N64
+			/* (a ray across the map for each marker every update was a fifth
+			of the HUD's time: each one tests again every fourth update,
+			staggered, and keeps its last answer in between) */
+			if (((n64_nav_point_updates[local_player_index & 3] + nav_point_index) & 3) == 0)
+#endif
 			nav_point->screen_type = hud_get_nav_point_render_type(
 				local_player_index,
 				&head_position,

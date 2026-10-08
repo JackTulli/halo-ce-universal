@@ -4811,9 +4811,17 @@ short game_engine_player_get_custom_motion_sensor_positions(
 	return count;
 }
 
+#ifdef HALO_N64
+static long n64_goal_render_types[4][NUMBEROF(global_goal)];
+static unsigned short n64_goal_draws[4];
+#endif
+
 void game_engine_render_nav_points(
 	long local_player_index)
 {
+#ifdef HALO_N64
+	n64_goal_draws[local_player_index & 3]++;
+#endif
 	if (game_engine &&
 		global_variant.universal_variant.goal_radar == 1 &&
 		(short)local_player_index != NONE)
@@ -4837,11 +4845,27 @@ void game_engine_render_nav_points(
 					{
 						if (goal_matches_player(goal_index, player, player_index))
 						{
+#ifdef HALO_N64
+							/* (a ray from the head to each goal every HUD draw: each
+							goal tests again every fourth draw, staggered) */
+							long render_type;
+
+							if (((n64_goal_draws[local_player_index & 3] + goal_index) & 3) == 0)
+							{
+								n64_goal_render_types[local_player_index & 3][goal_index] = hud_get_nav_point_render_type(
+									local_player_index,
+									&head_position,
+									goal,
+									NONE);
+							}
+							render_type = n64_goal_render_types[local_player_index & 3][goal_index];
+#else
 							long render_type = hud_get_nav_point_render_type(
 								local_player_index,
 								&head_position,
 								goal,
 								NONE);
+#endif
 
 							custom_render_nav_point(
 								local_player_index,

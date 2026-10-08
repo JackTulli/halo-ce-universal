@@ -154,6 +154,12 @@ symbols in this file:
 #include "models/model_definitions.h"
 #include "objects/objects.h"
 
+#ifdef HALO_N64
+#define N64_FRACTION(x) n64_fraction(x)
+#else
+#define N64_FRACTION(x) ((real)fmod((double)(x), 1.0))
+#endif
+
 /* ---------- constants */
 
 enum
@@ -1171,7 +1177,7 @@ void overlay_animation_apply_continuous(
 	real fraction;
 	short frame_index;
 
-	fraction = (real)fmod((double)real_frame_index, 1.0);
+	fraction = N64_FRACTION(real_frame_index);
 	frame_index = (short)fast_ftol((real)floor(fabs(real_frame_index)));
 
 	if (real_frame_index < 0.0f || real_frame_index > (real)animation->frame_count)
@@ -1428,7 +1434,7 @@ void overlay_animation_apply_continuous_scaled(
 	struct real_orientation *node_orientations)
 {
 	real inverse_animation_scale = 1.0f-animation_scale;
-	real fraction = (real)fmod((double)real_frame_index, 1.0);
+	real fraction = N64_FRACTION(real_frame_index);
 	short frame_index = (short)fast_ftol((real)floor(real_frame_index));
 
 	if (real_frame_index<0.0f || real_frame_index>(real)animation->frame_count)
@@ -1645,7 +1651,7 @@ void aiming_screen_apply(
 		aiming_screen_bounds->positive_yaw_delta;
 	yaw_frame = yaw_delta==0.0f ? 0.0f : yaw/yaw_delta;
 	yaw_frame_index = (short)yaw_frame;
-	yaw_fraction = (real)fmod((double)yaw_frame, 1.0);
+	yaw_fraction = N64_FRACTION(yaw_frame);
 	if (yaw_fraction<0.0f)
 	{
 		yaw_fraction += 1.0f;
@@ -1679,7 +1685,7 @@ void aiming_screen_apply(
 		aiming_screen_bounds->positive_pitch_delta;
 	pitch_frame = pitch_delta==0.0f ? 0.0f : pitch/pitch_delta;
 	pitch_frame_index = (short)pitch_frame;
-	pitch_fraction = (real)fmod((double)pitch_frame, 1.0);
+	pitch_fraction = N64_FRACTION(pitch_frame);
 	if (pitch_fraction<0.0f)
 	{
 		pitch_fraction += 1.0f;

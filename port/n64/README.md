@@ -21,7 +21,10 @@ Everything lives in `~/n64` (none of it needs root):
   from libdragon's `toolchain-continuous-prerelease` release, unpacked with
   `dpkg-deb -x` and its `opt/libdragon` moved to `~/n64/toolchain`
   (`N64_INST`).
-- libdragon, `preview` branch, in `~/n64/libdragon`:
+- libdragon, `preview` branch, in `~/n64/libdragon`, with
+  `devtools/libdragon-rspq-buffer.patch` applied (`git apply`: the RSP
+  command queue's buffer size becomes a variable the game sets; stock
+  libdragon builds too, only slower):
   `make -j install tools-install` with `N64_INST=~/n64/toolchain`.
 - tiny3d in `~/n64/tiny3d`: `make -j` (the build links `build/libt3d.a`).
 - Invader in `~/n64/invader` (only its tag definitions, read by the

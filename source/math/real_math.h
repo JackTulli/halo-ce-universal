@@ -897,19 +897,37 @@ extern const real_rectangle3d *global_null_rectangle3d;
 __inline real sine(
 	real angle)
 {
+#ifdef HALO_N64
+	/* (single precision: the N64 plays no lockstep games, port/include/
+	halo_math.h; the double routines cost several times more) */
+	return sinf(angle);
+#else
 	return sin(angle);
+#endif
 }
 
 __inline real cosine(
 	real angle)
 {
+#ifdef HALO_N64
+	/* (single precision: the N64 plays no lockstep games, port/include/
+	halo_math.h; the double routines cost several times more) */
+	return cosf(angle);
+#else
 	return cos(angle);
+#endif
 }
 
 __inline real tangent(
 	real angle)
 {
+#ifdef HALO_N64
+	/* (single precision: the N64 plays no lockstep games, port/include/
+	halo_math.h; the double routines cost several times more) */
+	return tanf(angle);
+#else
 	return tan(angle);
+#endif
 }
 
 #ifdef REAL_MATH_EXTERNAL_ARCTANGENT
@@ -921,20 +939,38 @@ __inline real arctangent(
 	real y,
 	real x)
 {
+#ifdef HALO_N64
+	/* (single precision: the N64 plays no lockstep games, port/include/
+	halo_math.h; the double routines cost several times more) */
+	return atan2f(y, x);
+#else
 	return atan2(y, x);
+#endif
 }
 #endif
 
 __inline real arccosine(
 	real x)
 {
+#ifdef HALO_N64
+	/* (single precision: the N64 plays no lockstep games, port/include/
+	halo_math.h; the double routines cost several times more) */
+	return acosf(x);
+#else
 	return acos(x);
+#endif
 }
 
 __inline real arcsine(
 	real x)
 {
+#ifdef HALO_N64
+	/* (single precision: the N64 plays no lockstep games, port/include/
+	halo_math.h; the double routines cost several times more) */
+	return asinf(x);
+#else
 	return asin(x);
+#endif
 }
 
 #ifdef REAL_MATH_EXTERNAL_SIGNED_ANGULAR_DIFFERENCE
@@ -969,7 +1005,13 @@ real square_root(
 __inline real square_root(
 	real x)
 {
+#ifdef HALO_N64
+	/* (the float root, to the bit what the double one rounds to; the
+	VR4300's double root takes twice as long, with a conversion each way) */
+	return sqrtf(x);
+#else
 	return sqrt(x);
+#endif
 }
 #endif
 
@@ -1940,5 +1982,18 @@ __inline void interpolate_scalar(
 	*current += PIN(difference, -maximum_speed, maximum_speed);
 	return;
 }
+
+#ifdef HALO_N64
+/* fmod(x, 1.0) in single precision, to the bit (the fraction of a float is
+exact): the VR4300 has no fmod, and the double one is a library call the
+animations and periodic functions made for every object each tick */
+static __inline real n64_fraction(
+	real x)
+{
+	if (!(x < 8388608.f && x > -8388608.f))
+		return x - x;
+	return x - (real)(long)x;
+}
+#endif
 
 #endif // __REAL_MATH_H
