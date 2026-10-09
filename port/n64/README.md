@@ -122,6 +122,30 @@ read the CPU's state through ares' GDB server without gdb.
 
 ## State (October 2026)
 
+9 October: particles again, simply (`port/n64/src/n64_particles.c`): what
+effects make -- muzzle flashes, sparks, dust, blood, smoke, explosions --
+as a pool of 128 sprites flying straight (gravity and drag), growing and
+fading, drawn as z-tested rectangles facing the camera with the depth
+tiny3d gives its triangles; first-person ones (a muzzle flash on your own
+gun) stay in the camera's space and are drawn after the weapon.
+`tools/n64/effects.py` writes each map's effect particle lists as compact
+emitter records on the cartridge (`fx/<map>.fx`, ~160 KB; read when an
+effect plays) with a 32-cell 16x16 I4 atlas of the particles' pictures and
+each cell's colour; `source/effects/effects.c` (HALO_N64) counts and places
+them as Halo did. A budget (~300 new a second, half with 3-4 views), 3 an
+emitter an event, looping effects thinned; ~1 fps at four players. The
+`part`/`pctl`/`cont`/`ant!`/`flag`/`glw!` tag groups are no longer kept
+(~50 KB of RAM). Also: the 1- and 3-4-player views see Halo's full 70
+degrees (the Xbox narrowed every view by 0.85 for TV overscan; the wide
+2-player views are unchanged), and Firefight takes a fallen Covenant's
+body away five seconds later.
+
+Builds are memory-capped: thirteen map conversions (~800 MB each) beside
+a 16-job LTO link froze a 15 GB machine. Map conversions run three at a
+time (a ninja pool), the link with four jobs, and `devtools/build.sh` runs
+ninja inside `systemd-run --user --scope -p MemoryMax=9G` (the test
+scripts cap ares at 4 GB): call it, not ninja.
+
 8 October, a deep optimisation round (`devtools/bench-set.sh`: eight
 scenes, scripted players; ares, fps before -> after):
 
