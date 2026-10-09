@@ -44,6 +44,14 @@ enum
 	MATERIAL_GLOW = 32,
 	/* a sky's batch: drawn first, without depth (tools/n64/ui.py) */
 	MATERIAL_SKY = 64,
+	/* natural terrain: the texture is a detail map about grey, the
+	vertices carry the base map's colour (tools/n64/level.py) */
+	MATERIAL_DETAIL = 128,
+	/* a greyscale texture stretched to its full range, its vertices' light
+	the stretch undone: Halo's doubling of texture x light in a second
+	cycle (in the texture it turned bright textures white, on the vertices
+	bright light dark) */
+	MATERIAL_DOUBLE = 256,
 };
 
 /* ---------- the level file */
@@ -96,10 +104,10 @@ static struct
 	struct level_cluster *clusters;
 	struct level_batch *batches;
 	T3DVertPacked *vertices;
+	/* each batch's triangle strips (draw_batch), chunks of tiny3d index
+	buffers converted in place */
 	uint8_t *indices;
 	sprite_t **sprites;
-	/* each batch's vertex load and triangles, recorded once */
-	rspq_block_t **blocks;
 	/* a view's batches in view, then in material order (draw_level) */
 	uint16_t *visible, *sorted;
 	uint16_t *material_starts;
@@ -749,9 +757,6 @@ void n64_render_unload_level(void)
 	if (level.data)
 	{
 		rspq_wait();
-		for (int i = 0; i < level.header->batch_count; i++)
-			rspq_block_free(level.blocks[i]);
-		free(level.blocks);
 		for (int fog = 0; fog < 2; fog++)
 		{
 			for (int m = 0; level.material_blocks[fog] && m < level.header->material_count; m++)
@@ -808,7 +813,7 @@ int n64_render_load_level(const char *map_name, int low)
 	data_cache_hit_writeback_invalidate(level.data, size);
 
 	level.header = (struct level_header *)level.data;
-	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 2,
+	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 3,
 		"%s was converted for another build", path);
 	level.textures = (struct level_texture *)(level.data + level.header->textures_offset);
 	level.materials = (struct level_material *)(level.data + level.header->materials_offset);
@@ -816,24 +821,28 @@ int n64_render_load_level(const char *map_name, int low)
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
 	level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
 	level.indices = level.data + level.header->indices_offset;
-	level.blocks = calloc(level.header->batch_count, sizeof(rspq_block_t *));
 	level.visible = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.sorted = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.material_starts = malloc((level.header->material_count + 1) * sizeof(uint16_t));
+	/* the strips' indices made into tiny3d's vertex cache addresses, once
+	(the RSP reads them by DMA: written back after) -- recorded blocks of
+	the triangles cost Sidewinder 275 KB, the indices ~40 */
 	for (int b = 0; b < level.header->batch_count; b++)
 	{
-		struct level_batch *batch = &level.batches[b];
-		uint8_t *index = level.indices + batch->index_offset;
+		uint8_t *chunk = level.indices + level.batches[b].index_offset;
 
-		rspq_block_begin();
-		t3d_vert_load(level.vertices + batch->vertex_pair_offset, 0, batch->vertex_count);
-		/* (measuring, "debug_level_parts=1": the vertices alone) */
-		for (int t = 0; t < batch->triangle_count && debug_level_parts != 1; t++, index += 3)
-			t3d_tri_draw(index[0], index[1], index[2]);
-		t3d_tri_sync();
-		level.blocks[b] = rspq_block_end();
+		for (;;)
+		{
+			uint16_t count = ((uint16_t *)chunk)[0], more = ((uint16_t *)chunk)[1];
+
+			t3d_indexbuffer_convert((int16_t *)(chunk + 8), count);
+			if (!more)
+				break;
+			chunk += 8 + ((count * 2 + 7) & ~7);
+		}
 	}
-	debugf("n64: level batches recorded, %lu KB of heap left\n", n64_heap_free() / 1024);
+	data_cache_hit_writeback(level.indices, level.header->indices_size);
+	debugf("n64: level strips ready, %lu KB of heap left\n", n64_heap_free() / 1024);
 	level.sprites = calloc(level.header->texture_count, sizeof(sprite_t *));
 	for (int i = 0; i < level.header->texture_count; i++)
 	{
@@ -916,7 +925,17 @@ static void record_material(int index)
 	rdpq_mode_fog(renderer.fog ? RDPQ_FOG_STANDARD : 0);
 	/* Halo's environment shader doubles texture x light; the converter
 	doubled the textures, so one combiner cycle does */
-	if (textured)
+	if (textured && (material->flags & MATERIAL_DETAIL))
+	{
+		/* terrain: light x (0.5 + detail), the detail map's mipmaps
+		interpolated by rdpq in a first pass (they fade to grey in the
+		distance) */
+		rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, ENV, SHADE, SHADE), (0, 0, 0, 1)));
+	}
+	else if (textured && (material->flags & MATERIAL_DOUBLE))
+		rdpq_mode_combiner(RDPQ_COMBINER2((TEX0, 0, SHADE, 0), (0, 0, 0, TEX0),
+			(COMBINED, 0, ENV, COMBINED), (0, 0, 0, COMBINED)));
+	else if (textured)
 		rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
 	else
 		rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
@@ -930,6 +949,10 @@ static void record_material(int index)
 		rdpq_mode_alphacompare(128);
 	}
 	rdpq_mode_end();
+	if (textured && (material->flags & MATERIAL_DETAIL))
+		rdpq_set_env_color(RGBA32(128, 128, 128, 255));
+	else if (textured && (material->flags & MATERIAL_DOUBLE))
+		rdpq_set_env_color(RGBA32(255, 255, 255, 255));
 	if (textured)
 	{
 		rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
@@ -953,6 +976,26 @@ static int beyond_fog(float x0, float y0, float z0, float x1, float y1, float z1
 	dy = renderer.eye[1] < y0 ? y0 - renderer.eye[1] : renderer.eye[1] > y1 ? renderer.eye[1] - y1 : 0.f;
 	dz = renderer.eye[2] < z0 ? z0 - renderer.eye[2] : renderer.eye[2] > z1 ? renderer.eye[2] - z1 : 0.f;
 	return dx * dx + dy * dy + dz * dz > renderer.fog_end * renderer.fog_end;
+}
+
+/* a level batch: its vertices, then its strips (tiny3d reads their indices
+by DMA into the vertex cache's free end: the converter leaves six slots) */
+static void draw_batch(const struct level_batch *batch)
+{
+	uint8_t *chunk = level.indices + batch->index_offset;
+
+	t3d_vert_load(level.vertices + batch->vertex_pair_offset, 0, batch->vertex_count);
+	/* (measuring, "debug_level_parts=1": the vertices alone) */
+	while (debug_level_parts != 1)
+	{
+		uint16_t count = ((uint16_t *)chunk)[0], more = ((uint16_t *)chunk)[1];
+
+		t3d_tri_draw_strip((int16_t *)(chunk + 8), count);
+		if (!more)
+			break;
+		chunk += 8 + ((count * 2 + 7) & ~7);
+	}
+	t3d_tri_sync();
 }
 
 static void draw_level(T3DViewport *viewport, const struct n64_view *view)
@@ -1022,7 +1065,7 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 
 				/* (measuring, "debug_level_parts=2": the materials alone) */
 				if (debug_level_parts != 2)
-					rspq_block_run(level.blocks[b]);
+					draw_batch(&level.batches[b]);
 				renderer.triangles += level.batches[b].triangle_count;
 				renderer.batches++;
 			}

@@ -145,17 +145,31 @@ degrees (the Xbox narrowed every view by 0.85 for TV overscan; the wide
 2-player views are unchanged), and Firefight takes a fallen Covenant's
 body away five seconds later.
 
-An experiment on Wizard (`GREYSCALE_LEVEL_MAPS` in `tools/n64/convert.py`):
-its level textures, which have little colour of their own, are greyscale
-from the larger original images (`level.py` `grey_texture`): I4 (IA4 for
-the cut-out ladder) with no palette fills all 4 KB of TMEM, 8192 texels --
-128x64 or 64x128, whichever tells more of the picture -- against a colour
-texture's 64x64, the greys stretched to the full sixteen. The colour is the
-lightmap's, as before; Halo's doubling and the stretch go on the vertices'
-light instead of the texture, where the doubling turned the bright panels
-white (their detail shows now). The transparent light strips keep their
-colour. Batches may span 832 texels (512 elsewhere), or the wider textures
-doubled them: 225 batches against 197, the level ~0.1-0.2 ms a frame more.
+Level textures from the larger original images (`tools/n64/level.py`), on
+every map. A texture without colour of its own (`needs_colour`: mean
+saturation under 38, its mean colour within 25 of grey -- the Human and
+Forerunner metal, Sidewinder's snow cliffs) is greyscale (`grey_texture`):
+I4 (IA4 cut out) with no palette fills all 4 KB of TMEM, 8192 texels --
+128x64 or 64x128, whichever keeps more of the picture -- against a colour
+texture's 64x64, its greys stretched to the full sixteen, the stretch undone
+on the vertices and Halo's doubling of texture x light in a second combiner
+cycle (in the texture it turned bright textures white, on the vertices
+bright light dark). The Covenant's purples and blues, tinted metal, rock and
+earth keep their colour. Natural terrain -- an environment shader with
+detail maps whose base map spans 40 units or more, Blood Gulch's, Battle
+Creek's, Sidewinder's ground (`terrain_materials`) -- has the base map's
+colour on its vertices (sampled 64 a side, edges split where it changes)
+and Halo's own detail map as the texture: greyscale 64x64 with mipmaps
+(they fade it to grey with distance), drawn light x (0.5 + detail), the
+map Halo's blend picks by the base map's alpha (sand or grass) chosen per
+triangle. Batches of these may span 832 texels.
+
+The level's triangles are tiny3d strips now (`strip_chunks`, read by DMA
+into the vertex cache's free end: batches are 64 vertices), not recorded
+rspq blocks (8 bytes a triangle, and each block's chunks): Sidewinder's
+level cost 590 KB of heap and the game ran out of memory looking across the
+map; ~340 KB now. Heap after the level: Sidewinder 699 -> 918 KB, Damnation
+1084 -> 1486, Blood Gulch 1096 -> 1223.
 
 Builds are memory-capped: thirteen map conversions (~800 MB each) beside
 a 16-job LTO link froze a 15 GB machine. Map conversions run three at a

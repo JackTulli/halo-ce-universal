@@ -18,7 +18,9 @@ The output file (big-endian):
     batches[]      material, vertex count, triangle count, vertex pair offset, index offset,
                    bounds min[3], max[3] (s16, N64 units)
     vertices       tiny3d T3DVertPacked, two vertices per 32 bytes
-    indices        three u8 per triangle (vertex numbers within the batch)
+    indices        each batch's triangles as tiny3d strips (strip_chunks), in chunks
+                   of an 8-byte head (u16 index count, u16 another chunk follows)
+                   and u16 indices, 8-byte aligned
 
 Positions are stored in fixed point, world units * POSITION_SCALE.
 """
@@ -35,7 +37,10 @@ from .bitmaps import bitmap_images, decode
 
 POSITION_SCALE = 64.0
 TEXTURE_FORMAT = os.environ.get("N64_TEXTURE_FORMAT", "CI4")
-MAXIMUM_BATCH_VERTICES = 70
+# the RSP's vertex cache holds 70; a batch's strips' indices are read into
+# the slots it leaves (six of 36 bytes: STRIP_CHUNK_INDICES at a time)
+MAXIMUM_BATCH_VERTICES = 64
+STRIP_CHUNK_INDICES = 104
 MAXIMUM_UV_EXTENT = 512.0  # texels; s10.5 holds +-1024, keep well inside it
 # a greyscale level texture (LevelBuilder.greyscale): 4 bits a texel, all
 # 4 KB of TMEM (no palette), twice a colour texture's texels
@@ -44,7 +49,7 @@ GREYSCALE_TEXELS = 8192
 # at MAXIMUM_UV_EXTENT; a batch's coordinates start within its first
 # repeat, so they stay under extent + 128 texels, inside s10.5's 1024
 GREYSCALE_UV_EXTENT = 832.0
-VERSION = 2
+VERSION = 3
 
 MATERIAL_ALPHA_TEST = 1
 MATERIAL_TWO_SIDED = 2
@@ -55,6 +60,32 @@ MATERIAL_UNTEXTURED = 8
 MATERIAL_CHANGE_COLOR = 16
 # a transparent model shader drawn as a cut-out glow (models.py glow_texture)
 MATERIAL_GLOW = 32
+# natural terrain: the texture is a detail map, the vertices carry the base
+# map's colour (LevelBuilder.terrain_materials)
+MATERIAL_DETAIL = 128
+# a greyscale texture (grey_texture): the renderer doubles texture x light
+# in a second cycle, Halo's doubling
+MATERIAL_DOUBLE = 256
+
+# natural terrain: an environment shader with detail maps whose base map
+# spans at least TERRAIN_REPEAT_UNITS world units a repeat -- a colour map
+# laid over the ground (Blood Gulch's spans the map), the grain of grass and
+# sand left to the detail maps. The N64 cannot sample both well (the detail
+# needs coordinates a hundred times finer than s10.5 carries over the base
+# map's span), so the base map's colour goes on the vertices, sampled from
+# it at TERRAIN_SAMPLES a side (the ground's vertices are about that far
+# apart; edges are also split where its colour changes by more than
+# TERRAIN_SPLIT_DIFFERENCE), and the texture is the detail map, greyscale,
+# DETAIL_SIZE a side with mipmaps (they fade it to grey in the distance)
+TERRAIN_REPEAT_UNITS = 40.0
+TERRAIN_SAMPLES = 64
+TERRAIN_SPLIT_DIFFERENCE = 0.08
+DETAIL_SIZE = 64
+# an environment texture keeps its colour (needs_colour) with a mean
+# saturation (HSV, 0-255) or a mean colour's spread of channels at least
+# these: the Covenant's purples and blues, rock and earth, tinted metal
+COLOUR_SATURATION = 38
+COLOUR_TINT = 25
 
 MKSPRITE = str(Path(os.environ.get("N64_INST", Path.home() / "n64/toolchain")) / "bin/mksprite")
 
@@ -125,6 +156,112 @@ def sample_lightmap(page, u, v):
         if weight_sum > 0:
             return [t / weight_sum / 255.0 for t in total]
     return None
+
+
+def triangle_strips(triangles):
+    """strips (lists of vertex numbers) drawing these triangles with their
+    winding, as tiny3d draws a strip: triangle k is (s[k], s[k+1], s[k+2]),
+    every other one turned round (s[k+1], s[k], s[k+2])"""
+    by_edge = {}
+    for i, (a, b, c) in enumerate(triangles):
+        for edge, third in (((a, b), c), ((b, c), a), ((c, a), b)):
+            by_edge.setdefault(edge, []).append((i, third))
+    used = [False] * len(triangles)
+
+    def extend(strip, taken):
+        while True:
+            n = len(strip)
+            edge = (strip[n - 2], strip[n - 1]) if (n - 2) % 2 == 0 else (strip[n - 1], strip[n - 2])
+            for i, third in by_edge.get(edge, ()):
+                if not used[i] and i not in taken:
+                    taken.add(i)
+                    strip.append(third)
+                    break
+            else:
+                return strip
+
+    out = []
+    for i, triangle in enumerate(triangles):
+        if used[i]:
+            continue
+        best = None
+        for r in range(3):
+            taken = {i}
+            strip = extend(list(triangle[r:] + triangle[:r]), taken)
+            if best is None or len(strip) > len(best[0]):
+                best = (strip, taken)
+        for t in best[1]:
+            used[t] = True
+        out.append(best[0])
+    return out
+
+
+def strip_chunks(triangles):
+    """a batch's triangles as tiny3d strip index buffers (the level file's
+    indices): chunks of at most STRIP_CHUNK_INDICES, each strip after a
+    chunk's first marked by bit 15 on its first index; a strip too long
+    is cut after an even number of triangles (the next piece starts as its
+    first, unturned)"""
+    pieces = []
+    for strip in triangle_strips(triangles):
+        while len(strip) > STRIP_CHUNK_INDICES:
+            cut = STRIP_CHUNK_INDICES - (STRIP_CHUNK_INDICES % 2)
+            pieces.append(strip[:cut])
+            strip = strip[cut - 2:]
+        pieces.append(strip)
+    chunks = [[]]
+    for piece in pieces:
+        if chunks[-1] and len(chunks[-1]) + len(piece) > STRIP_CHUNK_INDICES:
+            chunks.append([])
+        chunk = chunks[-1]
+        chunk.extend([piece[0] | (0x8000 if chunk else 0)] + piece[1:])
+    out = bytearray()
+    for i, chunk in enumerate(chunks):
+        out += struct.pack(">HH4x", len(chunk), 1 if i + 1 < len(chunks) else 0)
+        out += struct.pack(f">{len(chunk)}H", *chunk)
+        out += b"\0" * ((-len(out)) % 8)
+    return bytes(out)
+
+
+def needs_colour(img):
+    """whether a texture would lose something in greyscale"""
+    rgb = img.convert("RGB")
+    n = rgb.width * rgb.height
+    saturation = sum(rgb.convert("HSV").getchannel("S").getdata()) / n
+    mean = [sum(channel.getdata()) / n for channel in rgb.split()]
+    return saturation >= COLOUR_SATURATION or max(mean) - min(mean) >= COLOUR_TINT
+
+
+class BaseSampler:
+    """a terrain's base map, TERRAIN_SAMPLES a side: its colour (RGBA,
+    0..1) at a texture coordinate, bilinear and repeating"""
+
+    def __init__(self, img):
+        img = img.convert("RGBA").resize((TERRAIN_SAMPLES, TERRAIN_SAMPLES), Image.LANCZOS)
+        self.pixels = [tuple(c / 255.0 for c in p) for p in img.getdata()]
+
+    def sample(self, uv):
+        n = TERRAIN_SAMPLES
+        x, y = uv[0] * n - 0.5, uv[1] * n - 0.5
+        x0, y0 = math.floor(x), math.floor(y)
+        fx, fy = x - x0, y - y0
+        out = [0.0, 0.0, 0.0, 0.0]
+        for dy, wy in ((0, 1 - fy), (1, fy)):
+            for dx, wx in ((0, 1 - fx), (1, fx)):
+                p = self.pixels[((y0 + dy) % n) * n + (x0 + dx) % n]
+                for k in range(4):
+                    out[k] += p[k] * wx * wy
+        return out
+
+
+class Terrain:
+    """a natural terrain shader's N64 materials: its detail maps' (the
+    primary where the base map's alpha is high, the secondary where low,
+    as Halo blends them) and the base map's colours"""
+
+    def __init__(self, sampler, variants):
+        self.sampler = sampler
+        self.variants = variants
 
 
 def share_file(path, directory, suffix):
@@ -203,6 +340,18 @@ class LevelBuilder:
         self.grey_by_bitmap = {}
         # each material's factor on its vertices' light (grey_texture)
         self.material_shade = []
+        # natural terrain (terrain_materials): detail maps for textures,
+        # the base map's colour on the vertices
+        self.terrain_detail = False
+        self.colour_by_bitmap = {}
+        self.detail_by_bitmap = {}
+        # each material's Terrain (or None) and its texture coordinates'
+        # scale (a detail map's)
+        self.material_terrain = []
+        self.material_uv_scale = []
+        # shader datum: its base map's repeat in world units (shader_spans)
+        self.shader_span = {}
+        self.split_terrain = None
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -265,11 +414,11 @@ class LevelBuilder:
         self.textures.append(Texture(name, w2, h2, colour))
         return index
 
-    def make_sprite(self, png, fmt):
+    def make_sprite(self, png, fmt, mipmaps=False):
         """the sprite of a saved image, shared by content: its name"""
-        # no mipmaps yet: the renderer's doubling combiner needs both RDP
-        # cycles, and interpolated mipmapping would need one of them
-        mipmaps = False
+        # (no mipmaps but on the detail maps: the renderer's doubling
+        # combiner needs both RDP cycles, and interpolated mipmapping would
+        # need one of them)
         subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
                         "--compress", "1", "-o", str(png.parent), str(png)], check=True, capture_output=True)
         png.unlink()
@@ -282,9 +431,10 @@ class LevelBuilder:
         GREYSCALE_TEXELS from an original image of up to 256 a side, as
         wide and high as tells the most of it (within twice the original's
         proportions: further, it streaks), its greys stretched to the full
-        range. Returns the texture and the factor for its vertices' light:
-        Halo's doubling and the stretch undone, there rather than in the
-        texture, where the doubling would turn a bright texture white."""
+        range. Returns the texture and the factor for its vertices' light
+        (the stretch undone; the renderer doubles, MATERIAL_DOUBLE: in the
+        texture the doubling turned bright textures white, on the vertices
+        bright light dark)."""
         key = (bitmap_datum, alpha_test)
         if key in self.grey_by_bitmap:
             return self.grey_by_bitmap[key]
@@ -331,8 +481,8 @@ class LevelBuilder:
             grey.save(png)
             fmt = "I4"
         name = self.make_sprite(png, fmt)
-        shade = self.texture_brightness * top / 255.0
-        mean = sum(grey.getdata()) / (w * h) / 255.0 * shade
+        shade = top / 255.0
+        mean = sum(grey.getdata()) / (w * h) / 255.0 * shade * self.texture_brightness
         self.textures.append(Texture(name, w, h, (mean, mean, mean)))
         self.grey_by_bitmap[key] = (index, shade)
         return self.grey_by_bitmap[key]
@@ -352,8 +502,16 @@ class LevelBuilder:
                 env_flags = struct.unpack("<H", self.map.read(tag.address + f["shader environment flags"], 2))[0]
                 if env_flags & 1:
                     flags |= MATERIAL_ALPHA_TEST
-                if self.greyscale:
+                span = self.shader_span.get(shader_datum, 0.0)
+                if self.terrain_detail and span >= TERRAIN_REPEAT_UNITS:
+                    first = self.terrain_materials(tag, base, span)
+                    if first is not None:
+                        self.material_by_shader[shader_datum] = first
+                        return first
+                if self.greyscale and not self.base_needs_colour(base):
                     texture, shade = self.grey_texture(base, bool(env_flags & 1))
+                    if texture >= 0:
+                        flags |= MATERIAL_DOUBLE
                 else:
                     texture = self.texture(base)
             else:
@@ -362,11 +520,149 @@ class LevelBuilder:
                 texture = self.first_map(tag)
         if texture < 0:
             flags |= MATERIAL_UNTEXTURED
-        index = len(self.materials)
-        self.materials.append((texture, flags))
-        self.material_shade.append(shade)
+        index = self.add_material(texture, flags, shade)
         self.material_by_shader[shader_datum] = index
         return index
+
+    def add_material(self, texture, flags, shade=1.0, terrain=None, uv_scale=(1.0, 1.0)):
+        self.materials.append((texture, flags))
+        self.material_shade.append(shade)
+        self.material_terrain.append(terrain)
+        self.material_uv_scale.append(uv_scale)
+        return len(self.materials) - 1
+
+    def base_needs_colour(self, bitmap_datum):
+        if bitmap_datum not in self.colour_by_bitmap:
+            tag = self.map.tag(bitmap_datum)
+            images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+            try:
+                img = decode(self.map, images[0], 64) if images else None
+            except ValueError:
+                img = None
+            self.colour_by_bitmap[bitmap_datum] = img is None or needs_colour(img)
+        return self.colour_by_bitmap[bitmap_datum]
+
+    def terrain_materials(self, tag, base, span):
+        """a natural terrain shader's materials (Terrain): their first,
+        or None (no detail maps)"""
+        f = self.fields("ShaderEnvironment")
+        read = lambda field, fmt: struct.unpack(fmt, self.map.read(tag.address + f[field], struct.calcsize(fmt)))[0]
+        base_tag = self.map.tag(base)
+        images = bitmap_images(self.map, base_tag, self.defs) if base_tag is not None else []
+        try:
+            img = decode(self.map, images[0], TERRAIN_SAMPLES) if images else None
+        except ValueError:
+            img = None
+        if img is None:
+            return None
+        sampler = BaseSampler(img)
+        # Halo's "rescale detail maps": a detail map's scale is also in
+        # base map texels to its own
+        rescale = read("diffuse flags", "<H") & 1
+        details = []
+        for field in ("primary detail map", "secondary detail map"):
+            datum = struct.unpack("<I", self.map.read(tag.address + f[field] + 12, 4))[0]
+            scale = read(field + " scale", "<f")
+            if datum == 0xFFFFFFFF or scale <= 0:
+                details.append(None)
+                continue
+            texture, size = self.detail_texture(datum)
+            if texture < 0:
+                details.append(None)
+                continue
+            su = sv = scale
+            if rescale and size:
+                su *= images[0].width / size[0]
+                sv *= images[0].height / size[1]
+            details.append((texture, (su, sv)))
+        blended = read("shader environment type", "<H") in (1, 2)
+        if not blended:
+            details[1] = None
+        available = [d for d in details if d is not None]
+        if not available:
+            return None
+        terrain = Terrain(sampler, [])
+        for d in (details[0] or available[0], details[1] or available[0]):
+            terrain.variants.append(self.add_material(d[0], MATERIAL_DETAIL, terrain=terrain, uv_scale=d[1]))
+        return terrain.variants[0]
+
+    def detail_texture(self, bitmap_datum):
+        """a detail map as an I4 texture with mipmaps, DETAIL_SIZE a side,
+        about grey: the renderer draws light x (0.5 + texel), so a texel
+        of 0.5 leaves the base map's colour as it is; Halo's detail maps
+        multiply by twice the texel (biased), here over the map's mean,
+        the base map's colour unchanged on average. Returns the texture and
+        the original image's size"""
+        if bitmap_datum in self.detail_by_bitmap:
+            return self.detail_by_bitmap[bitmap_datum]
+        result = (-1, None)
+        tag = self.map.tag(bitmap_datum)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        try:
+            img = decode(self.map, images[0], DETAIL_SIZE) if images else None
+        except ValueError:
+            img = None
+        if img is not None:
+            grey = img.convert("L").resize((DETAIL_SIZE, DETAIL_SIZE), Image.LANCZOS)
+            mean = sum(grey.getdata()) / (DETAIL_SIZE * DETAIL_SIZE) or 1.0
+            grey = grey.point(lambda v: int(round(round(max(0.0, min(1.0, v / mean - 0.5)) * 15) * 17)))
+            index = len(self.textures)
+            work_dir = self.out_dir / "tex" / f".{self.map_name}"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            png = work_dir / f"{self.texture_prefix}d{index:02d}.png"
+            grey.save(png)
+            name = self.make_sprite(png, "I4", mipmaps=True)
+            self.textures.append(Texture(name, DETAIL_SIZE, DETAIL_SIZE, (0.5, 0.5, 0.5)))
+            result = (index, (images[0].width, images[0].height))
+        self.detail_by_bitmap[bitmap_datum] = result
+        return result
+
+    def triangle_material(self, material, triangle):
+        """a terrain triangle's material: the detail map its base map's
+        alpha picks (Halo's blend: primary where high)"""
+        terrain = self.material_terrain[material]
+        if terrain is None or terrain.variants[0] == terrain.variants[1]:
+            return material
+        alpha = sum(terrain.sampler.sample(v[2])[3] for v in triangle) / 3
+        return terrain.variants[0] if alpha >= 0.5 else terrain.variants[1]
+
+    def shader_spans(self, bsp_tag):
+        """each environment shader's base map repeat in world units (area
+        over texture coordinate area, the BSP's surfaces of it)"""
+        x = self.map
+        bo = self.fields("ScenarioStructureBSP")
+        lo = self.fields("ScenarioStructureBSPLightmap")
+        mo = self.fields("ScenarioStructureBSPMaterial")
+        base = bsp_tag.address
+        surfaces_count, surfaces_ptr = struct.unpack("<iI", x.read(base + bo["surfaces"], 8))
+        surfaces = [struct.unpack("<hhh", x.read(surfaces_ptr + i * 6, 6)) for i in range(surfaces_count)]
+        lightmap_count, lightmap_ptr = struct.unpack("<iI", x.read(base + bo["lightmaps"], 8))
+        lsize, msize = self.defs.size("ScenarioStructureBSPLightmap"), self.defs.size("ScenarioStructureBSPMaterial")
+        areas = {}
+        for li in range(lightmap_count):
+            mc, mp = struct.unpack("<iI", x.read(lightmap_ptr + li * lsize + lo["materials"], 8))
+            for mi in range(mc):
+                raw = x.read(mp + mi * msize, msize)
+                shader_datum = struct.unpack_from("<I", raw, mo["shader"] + 12)[0]
+                first, count = struct.unpack_from("<ii", raw, mo["surfaces"])
+                rv_count = struct.unpack_from("<I", raw, mo["rendered vertices count"])[0]
+                cv_ptr = struct.unpack_from("<iIIII", raw, mo["compressed vertices"])[3]
+                if count <= 0 or rv_count == 0 or not cv_ptr:
+                    continue
+                data = x.read(cv_ptr, rv_count * 32)
+                verts = [struct.unpack_from("<3f12x2f", data, v * 32) for v in range(rv_count)]
+                world = uv = 0.0
+                for si in range(first, first + count):
+                    a, b, c = (verts[i] for i in surfaces[si])
+                    e1 = [b[k] - a[k] for k in range(3)]
+                    e2 = [c[k] - a[k] for k in range(3)]
+                    cross = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+                    world += math.sqrt(sum(k * k for k in cross)) / 2
+                    uv += abs((b[3] - a[3]) * (c[4] - a[4]) - (c[3] - a[3]) * (b[4] - a[4])) / 2
+                total = areas.setdefault(shader_datum, [0.0, 0.0])
+                total[0] += world
+                total[1] += uv
+        return {datum: math.sqrt(w / u) for datum, (w, u) in areas.items() if w > 0 and u > 0}
 
     def first_map(self, tag):
         """the first bitmap any dependency of the shader names"""
@@ -392,6 +688,8 @@ class LevelBuilder:
         surfaces_count, surfaces_ptr = struct.unpack("<iI", x.read(base + bo["surfaces"], 8))
         surfaces = [struct.unpack("<hhh", x.read(surfaces_ptr + i * 6, 6)) for i in range(surfaces_count)]
 
+        if self.terrain_detail and not self.shader_span:
+            self.shader_span = self.shader_spans(bsp_tag)
         # every surface (triangle) with its world vertices, uvs, colours and material
         surface_info = [None] * surfaces_count
         # split decisions by edge (its two ends' positions), shared by the
@@ -453,11 +751,14 @@ class LevelBuilder:
                     key = (tuple(round(c, 4) for c in vertex[0]), tuple(round(c, 5) for c in vertex[2]),
                            tuple(round(c, 5) for c in lightmap[1:]) if lightmap else None)
                     verts.append(same_vertex.setdefault(key, vertex))
+                self.split_terrain = self.material_terrain[material]
                 for s in range(first, first + count):
                     a, b, c = surfaces[s]
                     # Halo's front faces wind clockwise (Direct3D), tiny3d's
                     # counter-clockwise
-                    surface_info[s] = [(material,) + t for t in self.split_by_lightmap((verts[a], verts[c], verts[b]))]
+                    surface_info[s] = [(self.triangle_material(material, t),) + t
+                                       for t in self.split_by_lightmap((verts[a], verts[c], verts[b]))]
+                self.split_terrain = None
 
         # clusters: their surfaces (surface indices), batched per material
         cluster_count, cluster_ptr = struct.unpack("<iI", x.read(base + bo["clusters"], 8))
@@ -489,6 +790,28 @@ class LevelBuilder:
         if leftover:
             clusters.append(leftover)
         return clusters, surface_info
+
+    def fit_detail_scales(self, surface_info):
+        """halves a detail map's scale until every triangle of it fits a
+        batch's coordinates (GREYSCALE_UV_EXTENT, less one repeat): Blood
+        Gulch's sand repeats every 1.4 units, its triangles span 14"""
+        limit = GREYSCALE_UV_EXTENT - DETAIL_SIZE
+        widest = {}
+        for triangles in surface_info:
+            for t in triangles or ():
+                material = t[0]
+                if self.material_terrain[material] is None:
+                    continue
+                for k in range(2):
+                    values = [v[2][k] for v in t[1:]]
+                    widest[(material, k)] = max(widest.get((material, k), 0.0), max(values) - min(values))
+        for material, terrain in enumerate(self.material_terrain):
+            if terrain is None:
+                continue
+            su, sv = self.material_uv_scale[material]
+            while max(widest.get((material, 0), 0.0) * su, widest.get((material, 1), 0.0) * sv) * DETAIL_SIZE > limit:
+                su, sv = su / 2, sv / 2
+            self.material_uv_scale[material] = (su, sv)
 
     def split_by_lightmap(self, triangle, depth=0):
         """a level triangle (three vertices) split where the lightmap changes
@@ -534,6 +857,20 @@ class LevelBuilder:
         return out
 
     def edge_wants_split(self, p, q):
+        return self.lightmap_wants_split(p, q) or self.terrain_wants_split(p, q)
+
+    def terrain_wants_split(self, p, q):
+        """a terrain edge across which the base map's colour changes"""
+        terrain = self.split_terrain
+        if terrain is None:
+            return False
+        if math.hypot(p[2][0] - q[2][0], p[2][1] - q[2][1]) * TERRAIN_SAMPLES <= 1.5:
+            return False
+        a, b = terrain.sampler.sample(p[2]), terrain.sampler.sample(q[2])
+        middle = terrain.sampler.sample(((p[2][0] + q[2][0]) / 2, (p[2][1] + q[2][1]) / 2))
+        return max(abs(m - (x + y) / 2) for m, x, y in zip(middle[:3], a[:3], b[:3])) > TERRAIN_SPLIT_DIFFERENCE
+
+    def lightmap_wants_split(self, p, q):
         if p[4] is None or q[4] is None or p[4][0] is not q[4][0]:
             return False
         page, pu, pv = p[4]
@@ -594,6 +931,7 @@ class LevelBuilder:
         texture, _ = self.materials[material]
         size = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
         uv_limit = GREYSCALE_UV_EXTENT if self.greyscale else MAXIMUM_UV_EXTENT
+        scale = self.material_uv_scale[material]
         by_vertex = {}
         for t, tri in enumerate(triangles):
             for v in tri[1:]:
@@ -633,8 +971,8 @@ class LevelBuilder:
                 n_max = list(uv_max)
                 for v in tri[1:]:
                     for k in range(2):
-                        n_min[k] = min(n_min[k], v[2][k])
-                        n_max[k] = max(n_max[k], v[2][k])
+                        n_min[k] = min(n_min[k], v[2][k] * scale[k])
+                        n_max[k] = max(n_max[k], v[2][k] * scale[k])
                 extent = max((n_max[0] - n_min[0]) * size[0], (n_max[1] - n_min[1]) * size[1])
                 if len(current_vertices) + best_new > MAXIMUM_BATCH_VERTICES or (current_tris and extent > uv_limit):
                     # the best does not fit: try the others once, else close
@@ -658,6 +996,7 @@ class LevelBuilder:
 
     def write(self, path, bsp_tag):
         clusters, surface_info = self.build(bsp_tag)
+        self.fit_detail_scales(surface_info)
         out_batches = []
         out_clusters = []
         for indices in clusters:
@@ -686,8 +1025,10 @@ class LevelBuilder:
             texture, _ = self.materials[material]
             tw, th = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
             shade = self.material_shade[material]
-            u0 = math.floor(min(v[2][0] for v in verts))
-            v0 = math.floor(min(v[2][1] for v in verts))
+            terrain = self.material_terrain[material]
+            su, sv = self.material_uv_scale[material]
+            u0 = math.floor(min(v[2][0] * su for v in verts))
+            v0 = math.floor(min(v[2][1] * sv for v in verts))
             if len(verts) % 2:
                 verts = verts + [verts[-1]]
             pair_offset = len(vertex_data) // 32
@@ -696,17 +1037,21 @@ class LevelBuilder:
                     return [max(-32768, min(32767, int(round(c * POSITION_SCALE)))) for c in v[0]]
 
                 def st(v):
-                    return [max(-32768, min(32767, int(round((v[2][0] - u0) * tw * 32)))),
-                            max(-32768, min(32767, int(round((v[2][1] - v0) * th * 32))))]
+                    return [max(-32768, min(32767, int(round((v[2][0] * su - u0) * tw * 32)))),
+                            max(-32768, min(32767, int(round((v[2][1] * sv - v0) * th * 32))))]
 
                 def rgba(v):
-                    r, g, b_, = (min(255, int(round(c * shade * 255))) for c in v[3])
+                    light = v[3]
+                    if terrain is not None:
+                        # the base map's colour, doubled as its textures are
+                        colour = terrain.sampler.sample(v[2])
+                        light = [l * min(1.0, c * self.texture_brightness) for l, c in zip(light, colour)]
+                    r, g, b_, = (min(255, int(round(c * shade * 255))) for c in light)
                     return (r << 24) | (g << 16) | (b_ << 8) | 255
                 vertex_data += struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[1]), *pos(b), pack_normal(b[1]),
                                            rgba(a), rgba(b), *st(a), *st(b))
             index_offset = len(index_data)
-            for t in tris:
-                index_data += bytes(t)
+            index_data += strip_chunks(tris)
             lo = [max(-32768, min(32767, int(math.floor(min(v[0][k] for v in verts) * POSITION_SCALE)))) for k in range(3)]
             hi = [max(-32768, min(32767, int(math.ceil(max(v[0][k] for v in verts) * POSITION_SCALE)))) for k in range(3)]
             batch_records.append((material, len(verts), len(tris), pair_offset, index_offset, lo, hi))
