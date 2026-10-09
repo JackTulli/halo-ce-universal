@@ -178,7 +178,7 @@ symbols in this file:
 
 /* at most this many of one emitter's particles an event, in one view and
 in more (the N64's particle pool is 128) */
-#define N64_MAXIMUM_PARTICLES_PER_EMITTER 2
+#define N64_EMITTERS_PER_EVENT 2
 /* emitters whose particles live longer than this are left out */
 #define N64_LONGEST_PARTICLE_MS 500
 #endif
@@ -2669,10 +2669,13 @@ static void effect_update(
 				event->duration_upper_bound);
 
 #ifdef HALO_N64
-			/* the N64's emitters (tools/n64/effects.py), counted as Halo's
-			were (the effect's scale left out) */
+			/* the N64's emitters (tools/n64/effects.py): one particle each
+			from the event's N64_EMITTERS_PER_EVENT largest (a shot's impact
+			was half a dozen small ones; fewer, larger reads better) */
 			{
 				int n64_count;
+				short chosen[N64_EMITTERS_PER_EVENT];
+				short chosen_count = 0;
 				struct n64_fx_emitter const *n64_emitters = n64_fx_event(
 					DATUM_INDEX_TO_ABSOLUTE_INDEX(effect->definition_index),
 					effect->event_index,
@@ -2683,20 +2686,30 @@ static void effect_update(
 					particle_index++)
 				{
 					struct n64_fx_emitter const *emitter = &n64_emitters[particle_index];
-					long count = (long)real_seed_random_range(
-						get_global_local_random_seed_address(),
-						(real)emitter->count_min,
-						(real)emitter->count_max + 0.999f);
+					short slot;
 
-					if (count > MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT && local_player_count() > 1)
+					effect->particle_counts[particle_index] = 0;
+					if (!emitter->count_max || emitter->life_min > N64_LONGEST_PARTICLE_MS ||
+						emitter->location >= definition->locations.count)
 					{
-						count = (long)(((real)count - MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT) /
-							local_player_count() + MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT);
+						continue;
 					}
-					if (count > N64_MAXIMUM_PARTICLES_PER_EMITTER)
-						count = N64_MAXIMUM_PARTICLES_PER_EMITTER;
-					effect->particle_counts[particle_index] = (byte)count;
+					/* (kept in order of size, largest first) */
+					for (slot = chosen_count; slot > 0 &&
+						n64_emitters[chosen[slot - 1]].radius_max < emitter->radius_max; slot--)
+					{
+						if (slot < N64_EMITTERS_PER_EVENT)
+							chosen[slot] = chosen[slot - 1];
+					}
+					if (slot < N64_EMITTERS_PER_EVENT)
+					{
+						chosen[slot] = particle_index;
+						if (chosen_count < N64_EMITTERS_PER_EVENT)
+							chosen_count++;
+					}
 				}
+				while (chosen_count > 0)
+					effect->particle_counts[chosen[--chosen_count]] = 1;
 			}
 			if (FALSE)
 #endif

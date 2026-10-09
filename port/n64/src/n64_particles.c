@@ -37,7 +37,7 @@ first-person weapon.
 #define CACHE_ENTRIES 12
 #define SPAWNS_PER_SECOND 300.f
 /* a particle's largest half-size in pixels, in a full-screen view */
-#define MAXIMUM_PIXELS 10.f
+#define MAXIMUM_PIXELS 20.f
 #define SPAWN_BURST 64.f
 
 struct particle
@@ -362,7 +362,8 @@ void n64_particles_draw(const struct n64_particle_view *view)
 		}
 		if (z < view->z_near * 2.f || (view->fog_end > 0.f && z > view->fog_end))
 			continue;
-		radius = p->radius * (1.f + (p->end_scale - 1.f) * (p->age / p->life));
+		/* (half again Halo's size: fewer, larger particles) */
+		radius = p->radius * 1.5f * (1.f + (p->end_scale - 1.f) * (p->age / p->life));
 		scale = view->pixels_per_unit / z;
 		d->x0 = view->center_x + x * scale;
 		d->y0 = view->center_y - y * scale;

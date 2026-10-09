@@ -127,7 +127,7 @@ effects make -- muzzle flashes, sparks, dust, blood, smoke, explosions --
 as a pool of 128 soft glows in each particle's colour, flying straight
 (gravity and drag) and fading out within a third of a second (a tenth on
 your own gun; anything Halo meant to linger -- smoke, debris -- is left
-out, it hung in the air), at most 10 pixels a half across, drawn as
+out, it hung in the air), drawn as
 z-tested rectangles facing the camera with the depth
 tiny3d gives its triangles; first-person ones (a muzzle flash on your own
 gun) stay in the camera's space and are drawn after the weapon.
@@ -135,8 +135,10 @@ gun) stay in the camera's space and are drawn after the weapon.
 emitter records on the cartridge (`fx/<map>.fx`, ~160 KB; read when an
 effect plays) with a 32-cell 16x16 I4 atlas of the particles' pictures and
 each cell's colour; `source/effects/effects.c` (HALO_N64) counts and places
-them as Halo did. A budget (~300 new a second, half with 3-4 views), 2 an
-emitter an event, looping effects thinned; Settings turns them off. The
+them as Halo did, but one particle each from an event's two largest
+emitters, drawn half again as large (up to 20 pixels a half): fewer,
+larger. A budget (~300 new a second, half with 3-4 views), looping effects
+thinned; Settings turns them off. The
 `part`/`pctl`/`cont`/`ant!`/`flag`/`glw!` tag groups are no longer kept
 (~50 KB of RAM). Also: the 1- and 3-4-player views see Halo's full 70
 degrees (the Xbox narrowed every view by 0.85 for TV overscan; the wide
