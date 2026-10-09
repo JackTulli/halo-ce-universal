@@ -40,5 +40,7 @@ State 2026-10-07 18:10 (commit "N64 port: Halo's own HUD"): the game's own HUD c
 
 2026-10-09 11:20 (commit 45e92fb7): user said the particles "look horrible and stick around way too long". Redesigned: emitters with life_min > 500 ms skipped (smoke/debris/bouncing sparks hung in the air), life clamped 0.35 s (FP 0.12 s), linear fade over life, ONE soft round glow (atlas cell 0) tinted with the cell colour for everything, combiner RGB=PRIM / A=TEX*PRIM (TEX*PRIM colour gave dark rings), max 10 px half-size, 2 per emitter; Settings menu PARTICLES ON/OFF (n64_particles_set_enabled). Lesson: show close-up frames of new visuals before shipping (see [[ask-before-changing-looks]]).
 
+2026-10-09 11:23 (commit 356c4728): user: "way better just do less particles like you have 6 come out of the ar just make them larger" -> an effect event now makes ONE particle from each of its TWO largest-radius eligible emitters (N64_EMITTERS_PER_EVENT 2 in effects.c), drawn 1.5x, cap 20 px half-size (MAXIMUM_PIXELS). ROMs packaged 11:23.
+
 **Why:** the user wants it as autonomous as possible and plays it themselves in ares.
 **How to apply:** never push ROMs or converted map data (retail-derived); keep docs/claude-memory/halo-n64-port.md in sync with this file. Next: user check of the animation freezes (cache fix + stack fix may have cured them), faster game ticks (bipeds ~3 ms each, node matrices ~5.6 ms).
