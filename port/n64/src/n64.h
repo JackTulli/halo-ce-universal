@@ -250,6 +250,8 @@ until the next call */
 const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
 void n64_particle_spawn(const struct n64_particle_spawn *spawn);
 void n64_particles_update(float dt);
+/* the menu's setting: none made when off */
+void n64_particles_set_enabled(int on);
 /* the views drawn (more views: fewer particles made) */
 void n64_particles_set_view_count(int views);
 void n64_particles_draw(const struct n64_particle_view *view);

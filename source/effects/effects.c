@@ -178,7 +178,9 @@ symbols in this file:
 
 /* at most this many of one emitter's particles an event, in one view and
 in more (the N64's particle pool is 128) */
-#define N64_MAXIMUM_PARTICLES_PER_EMITTER 3
+#define N64_MAXIMUM_PARTICLES_PER_EMITTER 2
+/* emitters whose particles live longer than this are left out */
+#define N64_LONGEST_PARTICLE_MS 500
 #endif
 #undef real_local_random
 
@@ -1967,6 +1969,11 @@ static void effect_generate_particles(
 		long location_datum_index;
 		struct effect_location_datum *instance;
 
+		/* (only the quick ones -- flashes, sparks of an impact, puffs:
+		smoke, debris and lingering sparks hung in the air, Halo bounces and
+		settles them) */
+		if (emitter->life_min > N64_LONGEST_PARTICLE_MS)
+			continue;
 		if (emitter->location >= definition->locations.count ||
 			!effect_part_allowed_by_disposition(
 				TEST_FLAG(effect->header.flags, _effect_nonviolent_bit),
@@ -2089,6 +2096,10 @@ static void effect_generate_particles(
 					get_global_local_random_seed_address(),
 					emitter->life_min * 0.001f,
 					emitter->life_max * 0.001f);
+				/* (short: a flash on your own gun a tenth of a second, the
+				rest a third) */
+				if (spawn.life > (first_person ? 0.12f : 0.35f))
+					spawn.life = first_person ? 0.12f : 0.35f;
 				spawn.fade_in = emitter->fade_in * 0.001f;
 				spawn.fade_out = emitter->fade_out * 0.001f;
 				spawn.gravity = emitter->gravity * 0.125f;

@@ -36,6 +36,8 @@ first-person weapon.
 #define ATLAS_BYTES 4096
 #define CACHE_ENTRIES 12
 #define SPAWNS_PER_SECOND 300.f
+/* a particle's largest half-size in pixels, in a full-screen view */
+#define MAXIMUM_PIXELS 10.f
 #define SPAWN_BURST 64.f
 
 struct particle
@@ -77,6 +79,8 @@ static struct
 	/* the spawn budget, and its share (half with three or four views: each
 	particle is drawn in every view) */
 	float tokens, budget;
+	/* the menu's setting */
+	int disabled;
 	/* statistics */
 	unsigned long spawned, drawn, reads, refused;
 } fx;
@@ -219,6 +223,8 @@ void n64_particle_spawn(const struct n64_particle_spawn *spawn)
 {
 	struct particle *p = &fx.particles[fx.next];
 
+	if (fx.disabled)
+		return;
 	/* (a budget: ~300 a second, bursts of up to 64 -- a muzzle flash or an
 	impact gets through, a stream cannot fill the pool) */
 	if (fx.tokens < 1.f)
@@ -361,14 +367,15 @@ void n64_particles_draw(const struct n64_particle_view *view)
 		d->x0 = view->center_x + x * scale;
 		d->y0 = view->center_y - y * scale;
 		radius *= scale;
+		/* (no bigger than MAXIMUM_PIXELS across a half: a flash right at the
+		eye filled the view) */
+		if (radius > MAXIMUM_PIXELS * view->pixels_per_unit / 207.f)
+			radius = MAXIMUM_PIXELS * view->pixels_per_unit / 207.f;
 		if (radius < 0.4f || d->x0 + radius < view->x0 || d->x0 - radius > view->x1 ||
 			d->y0 + radius < view->y0 || d->y0 - radius > view->y1)
 			continue;
-		alpha = 1.f;
-		if (p->fade_in > 0.f && p->age < p->fade_in)
-			alpha = p->age / p->fade_in;
-		if (p->fade_out > 0.f && p->life - p->age < p->fade_out)
-			alpha *= (p->life - p->age) / p->fade_out;
+		/* fading out over its whole life */
+		alpha = 1.f - p->age / p->life;
 		if (view->fog_end > 0.f && z > view->fog_start)
 			alpha *= 1.f - (z - view->fog_start) / (view->fog_end - view->fog_start);
 		alpha *= (p->flags & N64_PARTICLE_ADDITIVE) ? 1.f : (p->color & 0xFF) * (1.f / 255.f);
@@ -406,7 +413,9 @@ void n64_particles_draw(const struct n64_particle_view *view)
 	qsort(drawn, count, sizeof(drawn[0]), compare_drawn);
 	rdpq_sync_pipe();
 	rdpq_set_mode_standard();
-	rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, 0, PRIM, 0), (TEX0, 0, PRIM, 0)));
+	/* (the colour flat, the glow's shape in the alpha: colour times the
+	texture as well darkened every edge into a ring) */
+	rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	rdpq_mode_zbuf(true, false);
 	rdpq_mode_zoverride(true, 0.f, 0);
@@ -415,7 +424,9 @@ void n64_particles_draw(const struct n64_particle_view *view)
 	for (int i = 0; i < count; i++)
 	{
 		struct drawn const *d = &drawn[i];
-		int s = (d->cell % ATLAS_COLUMNS) * CELL, t = (d->cell / ATLAS_COLUMNS) * CELL;
+		/* (one clean soft glow for every particle, in its own colour: Halo's
+		pictures at 16x16 were noise) */
+		int s = 0, t = 0;
 
 		rdpq_set_prim_color(RGBA32(d->color >> 24, (d->color >> 16) & 0xFF, (d->color >> 8) & 0xFF, d->color & 0xFF));
 		rdpq_set_prim_depth_raw(d->depth, 0);
@@ -436,4 +447,9 @@ void n64_particles_statistics(unsigned long *spawned, unsigned long *drawn, unsi
 void n64_particles_set_view_count(int views)
 {
 	fx.budget = views > 2 ? 0.5f : 1.f;
+}
+
+void n64_particles_set_enabled(int on)
+{
+	fx.disabled = !on;
 }
