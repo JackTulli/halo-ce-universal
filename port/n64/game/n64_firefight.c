@@ -326,6 +326,17 @@ static short wave_kind(
 	long jackals = in_set >= 1 || set > 0 ? 25 : 0;
 
 	(void)n;
+	/* (measuring, port.json flag "debug_firefight_kind=<0-2>": every
+	Covenant a grunt, a jackal or an elite) */
+	{
+		static int forced = -2;
+		char text[8];
+
+		if (forced == -2)
+			forced = n64_debug_text("debug_firefight_kind", text, sizeof(text)) ? atoi(text) : -1;
+		if (forced >= 0 && forced < NUMBER_OF_COVENANT_KINDS)
+			return (short)forced;
+	}
 	if (elites > 60)
 		elites = 60;
 	if (roll < elites)
@@ -466,6 +477,10 @@ static void start_wave(
 {
 	char text[48];
 
+	/* (measuring, port.json flag "debug_firefight_wave=<n>": the game
+	starts at wave n) */
+	if (firefight.wave == 0 && n64_debug_text("debug_firefight_wave", text, sizeof(text)) && atol(text) > 1)
+		firefight.wave = atol(text) - 1;
 	firefight.wave++;
 	firefight.wave_total = wave_size(firefight.wave);
 	firefight.wave_spawned = 0;

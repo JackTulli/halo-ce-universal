@@ -52,6 +52,8 @@ enum
 	cycle (in the texture it turned bright textures white, on the vertices
 	bright light dark) */
 	MATERIAL_DOUBLE = 256,
+	/* a natural material's detail map, drawn over it (record_overlay) */
+	MATERIAL_OVERLAY = 512,
 };
 
 /* ---------- the level file */
@@ -298,6 +300,13 @@ void n64_render_set_clear_color(unsigned long rgb)
 static void load_models(const char *map_name);
 static void flush_draws(void);
 
+static int view_model_quality;
+
+void n64_render_set_view_model_quality(int quality)
+{
+	view_model_quality = quality < 0 ? 0 : quality > 2 ? 2 : quality;
+}
+
 void n64_render_set_view_count(int count)
 {
 	renderer.view_total = count;
@@ -388,8 +397,10 @@ void n64_render_load_scene(const char *name)
 queue's two buffers, in words (libdragon's is 512, patched to be ours:
 port/n64/devtools/libdragon-rspq-buffer.patch). With 512 the CPU waited
 for the RSP mid-frame instead of going on to the next ticks: 2048 (16 KB
-both) let it, 4096 was no faster. */
-int rspq_lowpri_buffer_words = 0x800;
+both) let it, 4096 was no faster then -- with the level drawn as strips
+(more commands a frame) 4096 is: Blood Gulch 4 players 12.5 -> 13.2 fps,
+16 KB more. */
+int rspq_lowpri_buffer_words = 0x1000;
 
 void n64_render_initialize(void)
 {
@@ -849,16 +860,28 @@ int n64_render_load_level(const char *map_name, int low)
 		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", level.textures[i].name);
 		level.sprites[i] = sprite_load(path);
 	}
-	/* (with low, the objects' lighter models too) */
-	if (low)
+	/* the objects' models (with low, their lighter set): the set made with
+	the view models' quality first, the plain one if there is none */
 	{
-		char low_name[48];
+		char name[48];
 
-		snprintf(low_name, sizeof(low_name), "%s-low", map_name);
-		load_models(low_name);
+		/* (port.json flag "debug_view_model=<0-2>": the quality without
+		the menu) */
+		if (n64_debug_text("debug_view_model", name, sizeof(name)))
+			n64_render_set_view_model_quality(atoi(name));
+		if (view_model_quality)
+		{
+			snprintf(name, sizeof(name), "%s%s-fp%d", map_name, low ? "-low" : "", view_model_quality);
+			load_models(name);
+		}
+		if (!models.data)
+		{
+			snprintf(name, sizeof(name), "%s%s", map_name, low ? "-low" : "");
+			load_models(name);
+		}
+		if (!models.data)
+			load_models(map_name);
 	}
-	if (!models.data)
-		load_models(map_name);
 	debugf("n64: level %s: %d clusters, %d batches, %lu KB, %lu KB of heap left\n", map_name,
 		level.header->cluster_count, level.header->batch_count, (unsigned long)size / 1024,
 		n64_heap_free() / 1024);
@@ -907,11 +930,54 @@ static void set_material(int index)
 	rspq_block_run(level.material_blocks[fog][index]);
 }
 
+/* a natural material's detail map over what its own pass drew (that pass
+brightened by the overlay's mean, tools/n64/level.py): the framebuffer
+darkened by the texel, its mipmaps interpolated; on the same triangles,
+compared as decals; with the fog it fades to nothing with distance */
+static void record_overlay(struct level_material *material)
+{
+	rdpq_sync_pipe();
+	rdpq_sync_tile();
+	rdpq_mode_begin();
+	rdpq_set_mode_standard();
+	rdpq_mode_zbuf(true, false);
+	rdpq_mode_zmode(ZMODE_DECAL);
+	rdpq_mode_persp(true);
+	rdpq_mode_filter(FILTER_BILINEAR);
+	if (n64_debug_flag("debug_overlay_alpha"))
+	{
+		/* (measuring: the overlay's fog alpha drawn as grey) */
+		rdpq_mode_combiner(RDPQ_COMBINER1((1, 0, SHADE_ALPHA, 0), (0, 0, 0, 1)));
+	}
+	else
+	{
+		/* (the shade's alpha is the fog's visibility, 1 near: rdpq's fog
+		blends IN by it) */
+		if (renderer.fog)
+			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, 0), (TEX0, 1, SHADE, 1)));
+		else
+			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, 0), (0, 0, 0, TEX0)));
+		rdpq_mode_blender(RDPQ_BLENDER((MEMORY_RGB, IN_ALPHA, MEMORY_RGB, ZERO)));
+	}
+	rdpq_mode_end();
+	rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
+		.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
+	});
+	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_TEXTURED |
+		(debug_cull_front ? T3D_FLAG_CULL_FRONT : T3D_FLAG_CULL_BACK));
+}
+
 static void record_material(int index)
 {
 	struct level_material *material = &level.materials[index];
 	int textured = material->texture >= 0 && level.sprites[material->texture] && !debug_untextured;
 
+	if (material->flags & MATERIAL_OVERLAY)
+	{
+		if (textured)
+			record_overlay(material);
+		return;
+	}
 	rdpq_sync_pipe();
 	rdpq_sync_tile();
 	rdpq_mode_begin();
@@ -998,6 +1064,36 @@ static void draw_batch(const struct level_batch *batch)
 	t3d_tri_sync();
 }
 
+/* a box wholly inside the frustum (its corner nearest each plane's
+outside within it) */
+static int frustum_contains(const T3DFrustum *frustum, const T3DVec3 *minimum, const T3DVec3 *maximum)
+{
+	for (int i = 0; i < 6; i++)
+	{
+		const float *plane = frustum->planes[i].v;
+		float d = plane[3];
+
+		for (int k = 0; k < 3; k++)
+			d += plane[k] * (plane[k] >= 0.f ? minimum->v[k] : maximum->v[k]);
+		if (d < 0.f)
+			return 0;
+	}
+	return 1;
+}
+
+/* a box wholly nearer than the fog's end (or no fog) */
+static int within_fog(float x0, float y0, float z0, float x1, float y1, float z1)
+{
+	float dx, dy, dz;
+
+	if (!renderer.fog || debug_fog_test == 1)
+		return 1;
+	dx = fmaxf(fabsf(renderer.eye[0] - x0), fabsf(x1 - renderer.eye[0]));
+	dy = fmaxf(fabsf(renderer.eye[1] - y0), fabsf(y1 - renderer.eye[1]));
+	dz = fmaxf(fabsf(renderer.eye[2] - z0), fabsf(z1 - renderer.eye[2]));
+	return dx * dx + dy * dy + dz * dz <= renderer.fog_end * renderer.fog_end;
+}
+
 static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 {
 	int visible_count = 0;
@@ -1026,6 +1122,16 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 				cluster->maximum[0], cluster->maximum[1], cluster->maximum[2]))
 			continue;
 		renderer.clusters++;
+		/* a cluster wholly in view and in the fog's reach: its batches
+		without a test each (those were 4% of a 4-player frame) */
+		if (frustum_contains(&viewport->viewFrustum, &minimum, &maximum) &&
+			within_fog(cluster->minimum[0], cluster->minimum[1], cluster->minimum[2],
+				cluster->maximum[0], cluster->maximum[1], cluster->maximum[2]))
+		{
+			for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
+				level.visible[visible_count++] = (uint16_t)b;
+			continue;
+		}
 		for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
 		{
 			struct level_batch *batch = &level.batches[b];
@@ -1048,15 +1154,21 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 	for (int i = 0; i < visible_count; i++)
 		level.sorted[level.material_starts[level.batches[level.visible[i]].material]++] = level.visible[i];
 	/* (material m's batches end at material_starts[m] now); the opaque
-	materials first, then the transparent ones */
+	materials first, then the overlays over them (natural materials'
+	detail), then the transparent ones */
 	t3d_matrix_push(renderer.identity);
-	for (int pass = 0; pass < 2; pass++)
+	for (int pass = 0; pass < 3; pass++)
 	{
 		for (int m = 0; m < material_count; m++)
 		{
 			int first = m ? level.material_starts[m - 1] : 0;
+			int flags = level.materials[m].flags;
+			int material_pass = flags & MATERIAL_TRANSPARENT ? 2 : flags & MATERIAL_OVERLAY ? 1 : 0;
 
-			if (first == level.material_starts[m] || !(level.materials[m].flags & MATERIAL_TRANSPARENT) != !pass)
+			if (first == level.material_starts[m] || material_pass != pass)
+				continue;
+			if (pass == 1 && (debug_untextured || level.materials[m].texture < 0 ||
+				!level.sprites[level.materials[m].texture] || n64_debug_flag("debug_no_overlay")))
 				continue;
 			set_material(m);
 			for (int i = first; i < level.material_starts[m]; i++)
@@ -1324,9 +1436,14 @@ static struct converted_matrices
 	T3DMat4FP *matrices;
 } converted[CONVERTED_SLOTS];
 
-void n64_render_object(const struct n64_object *object)
+/* (render_object's culling passed: the object is in the view) */
+static int object_in_view;
+
+int n64_render_object(const struct n64_object *object)
 {
+	object_in_view = 0;
 	render_object(object);
+	return object_in_view;
 }
 
 static void render_phase(int phase)
@@ -1474,6 +1591,7 @@ static void render_object(const struct n64_object *object)
 			return;
 		far = model->far_count && pixels < FAR_PIXELS;
 	}
+	object_in_view = 1;
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
@@ -1652,11 +1770,18 @@ void n64_render_frame_end(void)
 		renderer.draw_ticks = renderer.level_ticks = renderer.object_ticks = renderer.first_person_ticks = 0;
 		renderer.hud_ticks = 0;
 		sys_get_heap_stats(&heap);
-		debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
-			"models %lu KB (%lu reads), textures %lu KB (%lu reads)\n",
-			renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,
-			renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024,
-			models.loaded_bytes / 1024, models.reads, models.texture_bytes / 1024, models.texture_reads);
+		{
+			extern unsigned long n64_exceptions_emulated;
+			static unsigned long exceptions_before;
+
+			debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
+				"models %lu KB (%lu reads), textures %lu KB (%lu reads); %lu exceptions emulated\n",
+				renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,
+				renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024,
+				models.loaded_bytes / 1024, models.reads, models.texture_bytes / 1024, models.texture_reads,
+				n64_exceptions_emulated - exceptions_before);
+			exceptions_before = n64_exceptions_emulated;
+		}
 		renderer.clusters = renderer.batches = renderer.triangles = renderer.objects = 0;
 	}
 }

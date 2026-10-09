@@ -171,6 +171,46 @@ level cost 590 KB of heap and the game ran out of memory looking across the
 map; ~340 KB now. Heap after the level: Sidewinder 699 -> 918 KB, Damnation
 1084 -> 1486, Blood Gulch 1096 -> 1223.
 
+Rock, earth, snow and wood (Halo's material types; `overlay_material`) with
+a detail map have it drawn over them in a second pass: one pass cannot
+take a colour texture, a detail texture and the vertices' light (three
+products, two combiner cycles). The overlay is the same batches (the same
+culling) compared as decals, its mipmapped I4 texel darkening the
+framebuffer (the RDP's blender wraps brighter); the material's own pass is
+brightened by the overlay's mean (0.88: at 0.75 bright rock saturated and
+went grey). With fog it fades away: the shade's alpha is the fog's
+visibility, 1 near (rdpq's fog blends IN by it). Not in the lighter level
+of 3-4 player games.
+
+The black slabs on many maps were Halo's additive light volumes (green
+lights, "black lights", cone and space lights: black textures, invisible
+added) drawn blended; glass was drawn with its dark reflection cube. The
+N64 cannot add (the blender wraps), so additive transparent level shaders
+and glass are left out (`dropped_shader`), the light cones with them; only
+alpha-blended ones (Damnation's waterfall) and water are drawn.
+
+Settings: VIEW MODEL LOW / MEDIUM / HIGH -- the first-person weapons and
+arms at their triangle budget, 1.25 or 2 times it (`levels/<map>-fp1.mdl`,
+`-fp2`, made beside the plain set; `n64_render_set_view_model_quality`,
+flag `debug_view_model=<0-2>`).
+
+Firefight: a jackal cost ~1 ms of a tick more than a grunt (its longer
+skeleton and its shield's function values). A Covenant no view drew in the
+last frames (or far from every player) has its pose and function values
+made every other tick. The HUD's line of sight to a teammate's nav point is
+tested again every six ticks, not every recording; with two views each
+view's HUD is recorded every third frame. Levels draw a cluster wholly in
+view and in the fog's reach without a test per batch. The rspq buffer is
+4096 words (with the strips 2048 kept the CPU waiting on the RSP).
+Flags: `debug_firefight_kind=<0-2>` (every Covenant a grunt, jackal or
+elite), `debug_firefight_wave=<n>`, `debug_no_overlay`,
+`debug_overlay_alpha` (the overlay's fog alpha as grey). The emulated
+float exceptions are counted in the render statistics (~15 a frame).
+
+A build dropped only debug flags it knew by name, so new ones lingered in
+later builds (a benchmark ran at wave 8): every unrequested file at the
+cartridge's root is removed now.
+
 Builds are memory-capped: thirteen map conversions (~800 MB each) beside
 a 16-job LTO link froze a 15 GB machine. Map conversions run three at a
 time (a ninja pool), the link with four jobs, and `devtools/build.sh` runs

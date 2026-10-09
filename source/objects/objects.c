@@ -3734,6 +3734,11 @@ player poses every other tick, staggered: at that distance 15 poses a
 second look the same, and its hits are tested against a pose a tick old */
 #define N64_FAR_BIPED_DISTANCE 15.f
 
+extern boolean n64_object_recently_seen(long object_index);
+
+/* an AI's biped far from every player or in no view (the last frames):
+its pose (node matrices) and function values every other tick, staggered
+-- a jackal's shield functions and longer skeleton made it the dearest */
 static boolean n64_far_ai_biped(
 	long object_index,
 	struct object_datum *object)
@@ -3744,6 +3749,8 @@ static boolean n64_far_ai_biped(
 	if (unit->unit.player_index != NONE || object->object.parent_object_index != NONE ||
 		((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
 		return FALSE;
+	if (!n64_object_recently_seen(object_index))
+		return TRUE;
 	for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
 	{
 		long player_index = local_player_get_player_index(local_player_index);
@@ -3879,13 +3886,19 @@ static boolean object_update(
 			}
 			object_type_export_function_values(object_index);
 			t1 = n64_ticks(); n64_object_stage_time[1] += t1 - t0; if (n64_equipment) n64_equipment[1] += t1 - t0; t0 = t1;
-			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) &&
-				!n64_object_unmoved(object_index, object, object_definition))
+			boolean n64_skipped = FALSE;
+
+			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
 			{
-				object_compute_node_matrices(object_index);
+				n64_skipped = n64_object_unmoved(object_index, object, object_definition);
+				if (!n64_skipped)
+					object_compute_node_matrices(object_index);
 			}
 			t1 = n64_ticks(); n64_object_stage_time[2] += t1 - t0; if (n64_equipment) n64_equipment[2] += t1 - t0; t0 = t1;
-			object_compute_function_values(object_index);
+			/* (a far or unseen AI's biped: its function values on the ticks
+			its pose is made) */
+			if (!n64_skipped || object->object.type != _object_type_biped)
+				object_compute_function_values(object_index);
 			object_compute_change_colors(object_index);
 			t1 = n64_ticks(); n64_object_stage_time[3] += t1 - t0; if (n64_equipment) n64_equipment[3] += t1 - t0; t0 = t1;
 			if (

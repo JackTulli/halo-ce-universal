@@ -29,6 +29,10 @@ VERSION = 1
 
 # Firefight's Covenant (port/n64/game/n64_firefight.c), imported into every
 # multiplayer map from a campaign map beside it (merge.py)
+# the view models' qualities (the menu's settings): their number (the
+# model set's suffix, -fp<n>; 0 the plain set) and the first-person
+# models' triangle budget's scale
+VIEW_MODEL_QUALITIES = ((0, 1.0), (1, 1.25), (2, 2.0))
 FIREFIGHT_SOURCE = "a30"
 FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\jackal\\jackal"),
                    ("bipd", "characters\\elite\\elite")]
@@ -294,6 +298,9 @@ def main():
         # original images (level.py grey_texture), natural terrain drawn with
         # its detail maps (terrain_materials)
         builder.greyscale = builder.terrain_detail = True
+        # rock, earth, snow: their detail maps drawn over them (not in the
+        # lighter level of 3-4 player games)
+        builder.overlay_detail = True
         stats = builder.write(args.filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the lighter level of 3-4 player games: the BSP's own triangles,
@@ -307,22 +314,27 @@ def main():
         # level of detail, few triangles
         covenant = [t.index for t in xmap.tags if getattr(t, "source", None) is not None and t.group_name == "mode"]
         lowest = ("super low", "low", "medium", "high", "super high")
-        models = ModelConverter(xmap, repacker.defs, xmap.name, args.filesystem)
-        models.lod_preferences = {i: lowest for i in covenant}
-        models.budget_overrides = {i: 250 for i in covenant}
-        stats = models.write(args.filesystem / "levels" / f"{xmap.name}.mdl")
-        print(f"{xmap.name} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
-        # the lighter models of 3-4 player games (the objects at half their
-        # triangles, the first-person views at 350)
-        low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low", args.filesystem)
-        low_models.budget_scale = 0.5
-        low_models.first_person_budget = 350
-        low_models.first_person_deviation = 0.06
-        low_models.detail_atlas = 64
-        low_models.lod_preferences = {i: lowest for i in covenant}
-        low_models.budget_overrides = {i: 150 for i in covenant}
-        stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low.mdl")
-        print(f"{xmap.name} low models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        model_sets = []
+        for quality, view_scale in VIEW_MODEL_QUALITIES:
+            suffix = f"-fp{quality}" if quality else ""
+            models = ModelConverter(xmap, repacker.defs, xmap.name + suffix, args.filesystem)
+            models.lod_preferences = {i: lowest for i in covenant}
+            models.budget_overrides = {i: 250 for i in covenant}
+            models.first_person_budget = int(models.first_person_budget * view_scale)
+            stats = models.write(args.filesystem / "levels" / f"{xmap.name}{suffix}.mdl")
+            print(f"{xmap.name}{suffix} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+            # the lighter models of 3-4 player games (the objects at half
+            # their triangles, the first-person views at 350)
+            low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low{suffix}", args.filesystem)
+            low_models.budget_scale = 0.5
+            low_models.first_person_budget = int(350 * view_scale)
+            low_models.first_person_deviation = 0.06
+            low_models.detail_atlas = 64
+            low_models.lod_preferences = {i: lowest for i in covenant}
+            low_models.budget_overrides = {i: 150 for i in covenant}
+            stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low{suffix}.mdl")
+            print(f"{xmap.name}-low{suffix} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+            model_sets += [models, low_models]
         # the effects' particles (port/n64/src/n64_particles.c)
         from .effects import EffectParticles
         stats = EffectParticles(xmap, repacker.defs).write(args.filesystem / "fx" / f"{xmap.name}.fx")
@@ -330,7 +342,7 @@ def main():
         # the shared files the map uses (tools/n64/prune.py removes the rest)
         from .level import write_list
         write_list(args.filesystem / "tex" / f"{xmap.name}.list",
-                   sorted(builder.used_textures | models.textures.used_textures | low_models.textures.used_textures))
+                   sorted(builder.used_textures.union(*(m.textures.used_textures for m in model_sets))))
     if args.stats:
         for g, s in sorted(repacker.stats.items(), key=lambda x: -x[1])[:25]:
             print(f"  {g} {s / 1024:8.1f} KB")

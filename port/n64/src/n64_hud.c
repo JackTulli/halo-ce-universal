@@ -206,8 +206,10 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	if (view < 0 || view >= MAXIMUM_VIEWS)
 		return 0;
 	/* with three or four views, each view's every fourth frame: one view's
-	HUD code a frame */
-	if (hud.recordings[view] && (hud.view_frames[view]++ + view) % (hud.view_count > 2 ? 4 : HUD_INTERVAL))
+	HUD code a frame; with two, each view's every third (the HUD's code
+	is ~5 ms a recording) */
+	if (hud.recordings[view] && (hud.view_frames[view]++ + view) %
+		(hud.view_count > 2 ? 4 : hud.view_count == 2 ? 3 : HUD_INTERVAL))
 		return 0;
 	hud.recording = view;
 	hud.dump = hud.views == 600 || hud.views == 601;

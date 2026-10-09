@@ -11,7 +11,8 @@ setup: the players join with A on their controller (B leaves, Z changes
 team), any of them chooses the game type, the map and the score to win;
 START (or A on "START GAME") plays. Settings: particles on or off, chunky
 mode (the game drawn
-half as wide, its pixels twice as wide: n64_render_set_chunky). After a
+half as wide, its pixels twice as wide: n64_render_set_chunky), the view
+models' quality (n64_render_set_view_model_quality). After a
 game, its results first. n64_menu_run returns the choices; the
 game side (port/n64/game/n64_game.c) makes the game.
 */
@@ -104,6 +105,8 @@ static struct
 	/* the settings (particles: on unless turned off) */
 	int chunky;
 	int no_particles;
+	/* 0 low, 1 medium, 2 high */
+	int view_model;
 	/* the scene */
 	int sky_model, ring_model;
 	float ring[13];
@@ -390,7 +393,7 @@ enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_START, ROW_COUNT };
 enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_SETTINGS, TITLE_COUNT };
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_PARTICLES, SETTING_BACK, SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_BACK, SETTING_COUNT };
 
 /* a choice in a list: brighter, framed and pulsing when chosen */
 static void list_item(int center, int y, int width, int selected, const char *text)
@@ -428,8 +431,12 @@ static void draw_settings(int item)
 	text_centered(menu.small, 160, 100, TEXT_COLOR, "THE 3D DRAWN HALF AS WIDE, EACH");
 	text_centered(menu.small, 160, 114, TEXT_COLOR, "PIXEL DOUBLED (THE HUD STAYS SHARP)");
 	snprintf(value, sizeof(value), "PARTICLES: %s", menu.no_particles ? "OFF" : "ON");
-	list_item(160, 142, 220, item == SETTING_PARTICLES, value);
-	list_item(160, 178, 120, item == SETTING_BACK, "BACK");
+	list_item(160, 136, 220, item == SETTING_PARTICLES, value);
+	snprintf(value, sizeof(value), "VIEW MODEL: %s",
+		menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
+	list_item(160, 162, 220, item == SETTING_VIEW_MODEL, value);
+	text_centered(menu.small, 160, 182, TEXT_COLOR, "YOUR GUN AND ARMS: MORE TRIANGLES");
+	list_item(160, 208, 120, item == SETTING_BACK, "BACK");
 	n64_text_draw(menu.small, 14, 232, TEXT_DIM, "A/LEFT/RIGHT CHANGE   B BACK");
 }
 
@@ -632,6 +639,10 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.chunky = !menu.chunky;
 				if (setting == SETTING_PARTICLES && (pad->left || pad->right || pad->pressed.a))
 					menu.no_particles = !menu.no_particles;
+				if (setting == SETTING_VIEW_MODEL && pad->left)
+					menu.view_model = (menu.view_model + 2) % 3;
+				else if (setting == SETTING_VIEW_MODEL && (pad->right || pad->pressed.a))
+					menu.view_model = (menu.view_model + 1) % 3;
 				if (pad->pressed.b || pad->pressed.start || (setting == SETTING_BACK && pad->pressed.a))
 					screen = SCREEN_TITLE;
 			}
@@ -729,6 +740,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			/* the game in chunky mode or not from its first frame */
 			n64_render_set_chunky(menu.chunky);
 			n64_particles_set_enabled(!menu.no_particles);
+			n64_render_set_view_model_quality(menu.view_model);
 			n64_render_show_counter(1);
 			n64_render_set_clear_color(0x60708C);
 			menu_unload();

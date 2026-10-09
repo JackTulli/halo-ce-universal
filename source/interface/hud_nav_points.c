@@ -121,6 +121,9 @@ symbols in this file:
 #include "scenario/scenario.h"
 #include "scenario/scenario_definitions.h"
 #include "units/units.h"
+#ifdef HALO_N64
+#include "game/game.h"
+#endif
 
 /* ---------- constants */
 
@@ -670,6 +673,22 @@ short hud_get_nav_point_render_type(
 	real_vector3d vector;
 	long player_unit_index;
 	short render_type;
+#ifdef HALO_N64
+	/* the line of sight to a nav point (a teammate's), tested again only
+	every few ticks: a ray through the BSP and the objects each HUD
+	recording was a tenth of the HUD's time */
+	static struct { long reference_object_index; long time; short render_type; } n64_seen[MAXIMUM_LOCAL_PLAYERS][8];
+	short n64_slot = (short)(reference_object_index == NONE ? 7 :
+		(DATUM_INDEX_TO_ABSOLUTE_INDEX(reference_object_index) % 7));
+
+	if (local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS &&
+		n64_seen[local_player_index][n64_slot].reference_object_index == reference_object_index &&
+		game_time_get() - n64_seen[local_player_index][n64_slot].time < 6 &&
+		game_time_get() >= n64_seen[local_player_index][n64_slot].time)
+	{
+		return n64_seen[local_player_index][n64_slot].render_type;
+	}
+#endif
 
 	match_assert("c:\\halo\\SOURCE\\interface\\hud_nav_points.c", 510, global_current_collision_user_depth < MAXIMUM_COLLISION_USER_STACK_DEPTH);
 	global_current_collision_users[global_current_collision_user_depth++] = 20;
@@ -696,6 +715,14 @@ short hud_get_nav_point_render_type(
 	match_assert("c:\\halo\\SOURCE\\interface\\hud_nav_points.c", 528, global_current_collision_user_depth > 1);
 	--global_current_collision_user_depth;
 
+#ifdef HALO_N64
+	if (local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS)
+	{
+		n64_seen[local_player_index][n64_slot].reference_object_index = reference_object_index;
+		n64_seen[local_player_index][n64_slot].time = game_time_get();
+		n64_seen[local_player_index][n64_slot].render_type = render_type;
+	}
+#endif
 	return render_type;
 }
 

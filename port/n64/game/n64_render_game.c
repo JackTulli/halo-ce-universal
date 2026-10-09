@@ -303,6 +303,19 @@ static void gather_frame_objects(
 	}
 }
 
+/* the frame each object was last in a view, by its absolute index (a
+collision of two objects in a slot only keeps one's updates at full rate):
+objects.c updates a Covenant no view drew every other tick */
+#define N64_SEEN_SLOTS 512
+static unsigned short n64_object_seen[N64_SEEN_SLOTS];
+
+boolean n64_object_recently_seen(
+	long object_index)
+{
+	return (unsigned short)((unsigned short)render.frame_index -
+		n64_object_seen[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (N64_SEEN_SLOTS - 1)]) <= 2;
+}
+
 static void render_objects_for_view(
 	short local_player_index,
 	boolean third_person)
@@ -326,7 +339,9 @@ static void render_objects_for_view(
 			continue;
 		if (viewer_unit != NONE && entry->ultimate_parent == viewer_unit)
 			continue;
-		n64_render_object(&entry->n64);
+		if (n64_render_object(&entry->n64))
+			n64_object_seen[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->object_index) & (N64_SEEN_SLOTS - 1)] =
+				(unsigned short)render.frame_index;
 	}
 }
 

@@ -66,6 +66,19 @@ MATERIAL_DETAIL = 128
 # a greyscale texture (grey_texture): the renderer doubles texture x light
 # in a second cycle, Halo's doubling
 MATERIAL_DOUBLE = 256
+# a natural material's detail, drawn over it (overlay_material)
+MATERIAL_OVERLAY = 512
+
+# rock, earth, snow, wood (Halo's material types: dirt, sand, stone, snow,
+# wood, leaves, ice) with a detail map have it drawn over them in a second
+# pass (overlay_material): one pass cannot take a colour texture, a detail
+# texture and the vertices' light (three products, two combiner cycles). The
+# overlay darkens what the first drew by its texel (the RDP's blender wraps
+# brighter), the first drawn brighter by the overlay's mean (at least
+# OVERLAY_MEAN: the detail's contrast is cut to keep it there; at 0.75 the
+# brightening saturated bright rock, whose colour then went grey)
+NATURAL_MATERIAL_TYPES = {0, 1, 2, 3, 4, 29, 31}
+OVERLAY_MEAN = 0.88
 
 # natural terrain: an environment shader with detail maps whose base map
 # spans at least TERRAIN_REPEAT_UNITS world units a repeat -- a colour map
@@ -351,6 +364,12 @@ class LevelBuilder:
         self.material_uv_scale = []
         # shader datum: its base map's repeat in world units (shader_spans)
         self.shader_span = {}
+        # materials left out (dropped_shader)
+        self.dropped = set()
+        # natural materials' detail drawn over them: material -> overlay
+        self.overlay_detail = False
+        self.overlay_of = {}
+        self.overlay_by_bitmap = {}
         self.split_terrain = None
 
     def fields(self, struct_name):
@@ -514,15 +533,96 @@ class LevelBuilder:
                         flags |= MATERIAL_DOUBLE
                 else:
                     texture = self.texture(base)
+                overlay = self.overlay_material(tag, base) if texture >= 0 and not env_flags & 1 else None
+                if overlay is not None:
+                    shade /= overlay[1]
+                    index = self.add_material(texture, flags, shade)
+                    self.overlay_of[index] = overlay[0]
+                    self.material_by_shader[shader_datum] = index
+                    return index
             else:
                 # transparent shaders: their first map, blended
                 flags |= MATERIAL_TRANSPARENT
+                if self.dropped_shader(tag):
+                    index = self.add_material(-1, flags | MATERIAL_UNTEXTURED)
+                    self.dropped.add(index)
+                    self.material_by_shader[shader_datum] = index
+                    return index
                 texture = self.first_map(tag)
         if texture < 0:
             flags |= MATERIAL_UNTEXTURED
         index = self.add_material(texture, flags, shade)
         self.material_by_shader[shader_datum] = index
         return index
+
+    def overlay_material(self, tag, base):
+        """a natural material's detail map drawn over it: (the overlay
+        material, the mean of its texels -- the first pass's brightening),
+        or None"""
+        if not self.overlay_detail:
+            return None
+        f = self.fields("ShaderEnvironment")
+        read = lambda field, fmt: struct.unpack(fmt, self.map.read(tag.address + f[field], struct.calcsize(fmt)))[0]
+        if read("material type", "<H") not in NATURAL_MATERIAL_TYPES:
+            return None
+        datum = struct.unpack("<I", self.map.read(tag.address + f["primary detail map"] + 12, 4))[0]
+        scale = read("primary detail map scale", "<f")
+        if datum == 0xFFFFFFFF or scale <= 0:
+            return None
+        if datum not in self.overlay_by_bitmap:
+            self.overlay_by_bitmap[datum] = self.overlay_texture(datum)
+        texture, size, mean = self.overlay_by_bitmap[datum]
+        if texture < 0:
+            return None
+        su = sv = scale
+        base_tag = self.map.tag(base)
+        images = bitmap_images(self.map, base_tag, self.defs) if base_tag is not None else []
+        if read("diffuse flags", "<H") & 1 and images and size:
+            su *= images[0].width / size[0]
+            sv *= images[0].height / size[1]
+        return self.add_material(texture, MATERIAL_OVERLAY, uv_scale=(su, sv)), mean
+
+    def overlay_texture(self, bitmap_datum):
+        """a detail map as an overlay's I4 texture with mipmaps, DETAIL_SIZE
+        a side: the factor it darkens by, its brightest 1 (Halo's detail
+        multiplies by the texel over the map's mean; here over its
+        brightest, the contrast cut to keep the mean at OVERLAY_MEAN).
+        Returns the texture, the image's size and the texels' mean"""
+        tag = self.map.tag(bitmap_datum)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        try:
+            img = decode(self.map, images[0], DETAIL_SIZE) if images else None
+        except ValueError:
+            img = None
+        if img is None:
+            return -1, None, 1.0
+        grey = img.convert("L").resize((DETAIL_SIZE, DETAIL_SIZE), Image.LANCZOS)
+        values = list(grey.getdata())
+        top = max(values) or 1
+        mean = sum(values) / len(values) / top
+        cut = min(1.0, (1.0 - OVERLAY_MEAN) / (1.0 - mean)) if mean < 1.0 else 1.0
+        grey = grey.point(lambda v: int(round(round(15 * (1.0 - cut * (1.0 - v / top))) * 17)))
+        levels = list(grey.getdata())
+        index = len(self.textures)
+        work_dir = self.out_dir / "tex" / f".{self.map_name}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        png = work_dir / f"{self.texture_prefix}o{index:02d}.png"
+        grey.save(png)
+        name = self.make_sprite(png, "I4", mipmaps=True)
+        self.textures.append(Texture(name, DETAIL_SIZE, DETAIL_SIZE, (1.0, 1.0, 1.0)))
+        return index, (images[0].width, images[0].height), sum(levels) / len(levels) / 255.0
+
+    def dropped_shader(self, tag):
+        """a transparent level shader the N64 cannot draw: Halo's additive
+        ones (light strips' glow, light cones and volumes, most of them
+        black -- invisible added, a black slab blended) and glass (its
+        first map the dark reflection cube): only alpha-blended generic and
+        chicago shaders and water are drawn"""
+        group = tag.group_name
+        if group in ("sotr", "schi", "scex"):
+            blend = struct.unpack("<H", self.map.read(tag.address + 44, 2))[0]
+            return blend != 0
+        return group != "swat"
 
     def add_material(self, texture, flags, shade=1.0, terrain=None, uv_scale=(1.0, 1.0)):
         self.materials.append((texture, flags))
@@ -720,6 +820,8 @@ class LevelBuilder:
                 if count <= 0 or rv_count == 0 or not cv_ptr:
                     continue
                 material = self.material(shader_datum)
+                if material in self.dropped:
+                    continue
                 verts = []
                 same_vertex = {}
                 data = x.read(cv_ptr, rv_count * 32)
@@ -756,8 +858,8 @@ class LevelBuilder:
                     a, b, c = surfaces[s]
                     # Halo's front faces wind clockwise (Direct3D), tiny3d's
                     # counter-clockwise
-                    surface_info[s] = [(self.triangle_material(material, t),) + t
-                                       for t in self.split_by_lightmap((verts[a], verts[c], verts[b]))]
+                    triangles = self.split_by_lightmap((verts[a], verts[c], verts[b]))
+                    surface_info[s] = [(self.triangle_material(material, t),) + t for t in triangles]
                 self.split_terrain = None
 
         # clusters: their surfaces (surface indices), batched per material
@@ -800,15 +902,17 @@ class LevelBuilder:
         for triangles in surface_info:
             for t in triangles or ():
                 material = t[0]
-                if self.material_terrain[material] is None:
+                if material in self.overlay_of:
+                    material = self.overlay_of[material]
+                if self.material_uv_scale[material] == (1.0, 1.0):
                     continue
                 for k in range(2):
                     values = [v[2][k] for v in t[1:]]
                     widest[(material, k)] = max(widest.get((material, k), 0.0), max(values) - min(values))
-        for material, terrain in enumerate(self.material_terrain):
-            if terrain is None:
+        for material, scale in enumerate(self.material_uv_scale):
+            if scale == (1.0, 1.0):
                 continue
-            su, sv = self.material_uv_scale[material]
+            su, sv = scale
             while max(widest.get((material, 0), 0.0) * su, widest.get((material, 1), 0.0) * sv) * DETAIL_SIZE > limit:
                 su, sv = su / 2, sv / 2
             self.material_uv_scale[material] = (su, sv)
@@ -932,6 +1036,11 @@ class LevelBuilder:
         size = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
         uv_limit = GREYSCALE_UV_EXTENT if self.greyscale else MAXIMUM_UV_EXTENT
         scale = self.material_uv_scale[material]
+        # (a material with an overlay: its batches are the overlay's too,
+        # in the overlay's coordinates, the larger)
+        if material in self.overlay_of:
+            overlay_scale = self.material_uv_scale[self.overlay_of[material]]
+            scale = (max(scale[0], overlay_scale[0]), max(scale[1], overlay_scale[1]))
         by_vertex = {}
         for t, tri in enumerate(triangles):
             for v in tri[1:]:
@@ -1010,6 +1119,10 @@ class LevelBuilder:
             for material in sorted(by_material):
                 for b in self.batches(by_material[material]):
                     out_batches.append(b)
+                    # a natural material's detail drawn over it: the same
+                    # batch (the same culling: drawn only where it is)
+                    if material in self.overlay_of:
+                        out_batches.append((self.overlay_of[material],) + b[1:])
                     for v in b[1]:
                         for k in range(3):
                             lo[k] = min(lo[k], v[0][k])

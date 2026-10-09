@@ -37,6 +37,9 @@ Anything else goes to libdragon's handler (the crash screen).
 
 static uint32_t reported[MAXIMUM_REPORTED];
 static int reported_count;
+/* the exceptions emulated so far (the render statistics print them: each
+costs the CPU a trap and the decoding) */
+unsigned long n64_exceptions_emulated;
 unsigned long n64_emulated_count;
 
 static void report(uint32_t pc, const char *what, uint32_t address)
@@ -343,6 +346,7 @@ static void exception_handler(exception_t *exception)
 	int handled = 0;
 	static int traced;
 
+	n64_exceptions_emulated++;
 	if (traced < 24)
 	{
 		traced++;

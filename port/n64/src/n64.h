@@ -137,7 +137,8 @@ int n64_render_load_level(const char *map_name, int low);
 void n64_render_frame_begin(void);
 void n64_render_view(const struct n64_view *view);
 /* after n64_render_view: objects in that view */
-void n64_render_object(const struct n64_object *object);
+/* returns whether it is in the view (not culled) */
+int n64_render_object(const struct n64_object *object);
 /* the menu: a scene's models without a level (levels/<name>.mdl; NULL:
 none), the colour a frame is cleared to (0xRRGGBB) */
 void n64_render_load_scene(const char *name);
@@ -159,6 +160,10 @@ void n64_render_flush(void);
 3D is drawn half as wide and its pixels doubled across (the HUD and text
 stay at full width) */
 void n64_render_set_chunky(int on);
+/* the view models' quality (the menu's settings), for the next level
+loaded: 0 low, 1 medium, 2 high -- the first-person weapons and arms at
+1.25 or 2 times the triangles (levels/<map>-fp1.mdl, -fp2) */
+void n64_render_set_view_model_quality(int quality);
 /* the FPS counter in the corner (off in the menu) */
 void n64_render_show_counter(int on);
 

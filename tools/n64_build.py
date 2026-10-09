@@ -270,15 +270,15 @@ def main():
     n.build(music, "convert_music", "build/xbox/disc/maps/ui.map", implicit=tool_sources,
             variables={"fsdir": str(fsdir)})
     fs_files.append(music[0])
-    # every debug switch the cartridge can carry (n64_debug_flag): the ones
-    # port.json does not ask for are removed, so none lingers in a build
-    known_flags = ("autotest", "debug_chase", "debug_overview", "debug_untextured", "profile", "profile_zone",
-                   "debug_no_level", "debug_no_objects", "debug_no_first_person", "debug_no_hud", "debug_weapon", "debug_spin", "debug_gpu_time", "profile_tick", "debug_map", "debug_menu", "debug_players", "debug_guard", "debug_cull_front", "debug_level_parts", "debug_fog_test", "debug_far", "debug_spin_period", "debug_no_pvs", "debug_firefight", "debug_biped_log", "debug_sound", "debug_no_sound", "profile_sound", "debug_sound_level", "profile_stack", "debug_rspq_words", "debug_stage_type", "debug_ray_callers", "debug_hud_sprites", "debug_hud_quads", "debug_particles")
-    # a flag "name=value" is a setting: a file holding the value
+    # the debug switches the cartridge carries (n64_debug_flag) are the files
+    # at its root (everything else is in folders): the ones port.json does
+    # not ask for are removed, so none lingers in a build (a list of known
+    # switches missed the new ones)
     flag_names = [flag.split("=", 1)[0] for flag in port.get("flags", [])]
-    for flag in known_flags:
-        if flag not in flag_names and (fsdir / flag).exists():
-            (fsdir / flag).unlink()
+    if fsdir.exists():
+        for path in fsdir.iterdir():
+            if path.is_file() and path.name not in flag_names:
+                path.unlink()
     for flag in port.get("flags", []):
         name, _, value = flag.partition("=")
         out_flag = fsdir / name

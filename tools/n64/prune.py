@@ -22,8 +22,9 @@ def main():
     for directory, suffix, list_name in SHARED:
         used = set()
         # (each map's lighter models of 3-4 player games list theirs as
-        # <map>-low)
+        # <map>-low, the sets with better view models <map>[-low]-fp<n>)
         names = maps + [f"{m}-low" for m in maps]
+        names += [f"{m}-fp{q}" for m in names for q in (1, 2)]
         for m in names:
             listing = root / list_name.format(map=m)
             if listing.exists():
