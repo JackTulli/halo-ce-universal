@@ -29,6 +29,10 @@ VERSION = 1
 
 # Firefight's Covenant (port/n64/game/n64_firefight.c), imported into every
 # multiplayer map from a campaign map beside it (merge.py)
+# the maps whose level is drawn with greyscale textures from the larger
+# original images, the colour left to the lightmap (level.py grey_texture):
+# an experiment, on a map whose textures have little colour
+GREYSCALE_LEVEL_MAPS = {"wizard"}
 FIREFIGHT_SOURCE = "a30"
 FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\jackal\\jackal"),
                    ("bipd", "characters\\elite\\elite")]
@@ -290,11 +294,13 @@ def main():
     if args.filesystem:
         from .level import LevelBuilder
         builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)
+        builder.greyscale = xmap.name in GREYSCALE_LEVEL_MAPS
         stats = builder.write(args.filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the lighter level of 3-4 player games: the BSP's own triangles,
         # lit at their corners
         low = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem, split_depth=0)
+        low.greyscale = builder.greyscale
         stats = low.write(args.filesystem / "levels" / f"{xmap.name}-low.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} low level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         from .models import ModelConverter

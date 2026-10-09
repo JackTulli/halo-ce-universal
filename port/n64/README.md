@@ -145,6 +145,18 @@ degrees (the Xbox narrowed every view by 0.85 for TV overscan; the wide
 2-player views are unchanged), and Firefight takes a fallen Covenant's
 body away five seconds later.
 
+An experiment on Wizard (`GREYSCALE_LEVEL_MAPS` in `tools/n64/convert.py`):
+its level textures, which have little colour of their own, are greyscale
+from the larger original images (`level.py` `grey_texture`): I4 (IA4 for
+the cut-out ladder) with no palette fills all 4 KB of TMEM, 8192 texels --
+128x64 or 64x128, whichever tells more of the picture -- against a colour
+texture's 64x64, the greys stretched to the full sixteen. The colour is the
+lightmap's, as before; Halo's doubling and the stretch go on the vertices'
+light instead of the texture, where the doubling turned the bright panels
+white (their detail shows now). The transparent light strips keep their
+colour. Batches may span 832 texels (512 elsewhere), or the wider textures
+doubled them: 225 batches against 197, the level ~0.1-0.2 ms a frame more.
+
 Builds are memory-capped: thirteen map conversions (~800 MB each) beside
 a 16-job LTO link froze a 15 GB machine. Map conversions run three at a
 time (a ninja pool), the link with four jobs, and `devtools/build.sh` runs

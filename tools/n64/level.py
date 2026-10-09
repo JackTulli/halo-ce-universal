@@ -37,6 +37,13 @@ POSITION_SCALE = 64.0
 TEXTURE_FORMAT = os.environ.get("N64_TEXTURE_FORMAT", "CI4")
 MAXIMUM_BATCH_VERTICES = 70
 MAXIMUM_UV_EXTENT = 512.0  # texels; s10.5 holds +-1024, keep well inside it
+# a greyscale level texture (LevelBuilder.greyscale): 4 bits a texel, all
+# 4 KB of TMEM (no palette), twice a colour texture's texels
+GREYSCALE_TEXELS = 8192
+# its batches' uv extent: twice the texels a side would double the batches
+# at MAXIMUM_UV_EXTENT; a batch's coordinates start within its first
+# repeat, so they stay under extent + 128 texels, inside s10.5's 1024
+GREYSCALE_UV_EXTENT = 832.0
 VERSION = 2
 
 MATERIAL_ALPHA_TEST = 1
@@ -190,6 +197,12 @@ class LevelBuilder:
         # Halo's environment shader doubles texture x light; the N64 draws
         # the level in one RDP cycle, so the doubling is in the texture
         self.texture_brightness = 2.0
+        # the level's environment textures in greyscale from the larger
+        # original images (grey_texture), the colour left to the lighting
+        self.greyscale = False
+        self.grey_by_bitmap = {}
+        # each material's factor on its vertices' light (grey_texture)
+        self.material_shade = []
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -244,17 +257,7 @@ class LevelBuilder:
             split_palette(img, mask).save(png)
         else:
             img.save(png)
-        # a colour-indexed texture and its mipmaps must fit the lower 2 KB
-        # of TMEM (its palette takes the upper half)
-        bits = 16 if fmt == "RGBA16" else 4
-        # no mipmaps yet: the renderer's doubling combiner needs both RDP
-        # cycles, and interpolated mipmapping would need one of them
-        mipmaps = False
-        subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
-                        "--compress", "1", "-o", str(work_dir), str(png)], check=True, capture_output=True)
-        png.unlink()
-        name = share_file(png.with_suffix(".sprite"), self.out_dir / "tex", ".sprite")
-        self.used_textures.add(name)
+        name = self.make_sprite(png, fmt)
         rgb = img.convert("RGB")
         alpha = list(img.getchannel("A").getdata()) if img.mode == "RGBA" else None
         pixels = [p for i, p in enumerate(rgb.getdata()) if alpha is None or alpha[i] >= 128] or list(rgb.getdata())
@@ -262,13 +265,85 @@ class LevelBuilder:
         self.textures.append(Texture(name, w2, h2, colour))
         return index
 
+    def make_sprite(self, png, fmt):
+        """the sprite of a saved image, shared by content: its name"""
+        # no mipmaps yet: the renderer's doubling combiner needs both RDP
+        # cycles, and interpolated mipmapping would need one of them
+        mipmaps = False
+        subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
+                        "--compress", "1", "-o", str(png.parent), str(png)], check=True, capture_output=True)
+        png.unlink()
+        name = share_file(png.with_suffix(".sprite"), self.out_dir / "tex", ".sprite")
+        self.used_textures.add(name)
+        return name
+
+    def grey_texture(self, bitmap_datum, alpha_test):
+        """an environment texture in greyscale (I4; IA4 with a cut-out):
+        GREYSCALE_TEXELS from an original image of up to 256 a side, as
+        wide and high as tells the most of it (within twice the original's
+        proportions: further, it streaks), its greys stretched to the full
+        range. Returns the texture and the factor for its vertices' light:
+        Halo's doubling and the stretch undone, there rather than in the
+        texture, where the doubling would turn a bright texture white."""
+        key = (bitmap_datum, alpha_test)
+        if key in self.grey_by_bitmap:
+            return self.grey_by_bitmap[key]
+        tag = self.map.tag(bitmap_datum)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        try:
+            img = decode(self.map, images[0], 256) if images else None
+        except ValueError:
+            img = None
+        if img is None:
+            self.grey_by_bitmap[key] = (-1, 1.0)
+            return self.grey_by_bitmap[key]
+        if max(img.size) > 256:
+            k = 256.0 / max(img.size)
+            img = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))), Image.LANCZOS)
+        lum = img.convert("L")
+        width, height = lum.size
+        texels = min(GREYSCALE_TEXELS, 1 << int(math.log2(max(16, width * height))))
+        aspect = width / height
+        best = None
+        w = 4
+        while w <= texels // 4:
+            h = texels // w
+            if 0.5 <= (w / h) / aspect <= 2.0:
+                down = lum.resize((w, h), Image.LANCZOS)
+                back = down.resize(lum.size, Image.BILINEAR)
+                error = sum((a - b) ** 2 for a, b in zip(lum.getdata(), back.getdata()))
+                if best is None or error < best[0]:
+                    best = (error, down, w, h)
+            w *= 2
+        _, grey, w, h = best
+        top = max(grey.getdata()) or 1
+        levels = 7 if alpha_test else 15
+        grey = grey.point(lambda v: int(round(round(v / top * levels) * 255 / levels)))
+        index = len(self.textures)
+        work_dir = self.out_dir / "tex" / f".{self.map_name}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        png = work_dir / f"{self.texture_prefix}g{index:02d}.png"
+        if alpha_test:
+            alpha = img.getchannel("A").resize((w, h), Image.LANCZOS).point(lambda v: 255 if v >= 128 else 0)
+            Image.merge("LA", (grey, alpha)).save(png)
+            fmt = "IA4"
+        else:
+            grey.save(png)
+            fmt = "I4"
+        name = self.make_sprite(png, fmt)
+        shade = self.texture_brightness * top / 255.0
+        mean = sum(grey.getdata()) / (w * h) / 255.0 * shade
+        self.textures.append(Texture(name, w, h, (mean, mean, mean)))
+        self.grey_by_bitmap[key] = (index, shade)
+        return self.grey_by_bitmap[key]
+
     # ---------- shaders
 
     def material(self, shader_datum):
         if shader_datum in self.material_by_shader:
             return self.material_by_shader[shader_datum]
         tag = self.map.tag(shader_datum)
-        texture, flags = -1, 0
+        texture, flags, shade = -1, 0, 1.0
         if tag is not None:
             group = tag.group_name
             if group == "senv":
@@ -277,7 +352,10 @@ class LevelBuilder:
                 env_flags = struct.unpack("<H", self.map.read(tag.address + f["shader environment flags"], 2))[0]
                 if env_flags & 1:
                     flags |= MATERIAL_ALPHA_TEST
-                texture = self.texture(base)
+                if self.greyscale:
+                    texture, shade = self.grey_texture(base, bool(env_flags & 1))
+                else:
+                    texture = self.texture(base)
             else:
                 # transparent shaders: their first map, blended
                 flags |= MATERIAL_TRANSPARENT
@@ -286,6 +364,7 @@ class LevelBuilder:
             flags |= MATERIAL_UNTEXTURED
         index = len(self.materials)
         self.materials.append((texture, flags))
+        self.material_shade.append(shade)
         self.material_by_shader[shader_datum] = index
         return index
 
@@ -514,6 +593,7 @@ class LevelBuilder:
         material = triangles[0][0] if triangles else 0
         texture, _ = self.materials[material]
         size = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
+        uv_limit = GREYSCALE_UV_EXTENT if self.greyscale else MAXIMUM_UV_EXTENT
         by_vertex = {}
         for t, tri in enumerate(triangles):
             for v in tri[1:]:
@@ -556,7 +636,7 @@ class LevelBuilder:
                         n_min[k] = min(n_min[k], v[2][k])
                         n_max[k] = max(n_max[k], v[2][k])
                 extent = max((n_max[0] - n_min[0]) * size[0], (n_max[1] - n_min[1]) * size[1])
-                if len(current_vertices) + best_new > MAXIMUM_BATCH_VERTICES or (current_tris and extent > MAXIMUM_UV_EXTENT):
+                if len(current_vertices) + best_new > MAXIMUM_BATCH_VERTICES or (current_tris and extent > uv_limit):
                     # the best does not fit: try the others once, else close
                     candidates.discard(best)
                     if not candidates & remaining:
@@ -605,6 +685,7 @@ class LevelBuilder:
         for material, verts, tris in out_batches:
             texture, _ = self.materials[material]
             tw, th = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
+            shade = self.material_shade[material]
             u0 = math.floor(min(v[2][0] for v in verts))
             v0 = math.floor(min(v[2][1] for v in verts))
             if len(verts) % 2:
@@ -619,7 +700,7 @@ class LevelBuilder:
                             max(-32768, min(32767, int(round((v[2][1] - v0) * th * 32))))]
 
                 def rgba(v):
-                    r, g, b_, = (int(round(c * 255)) for c in v[3])
+                    r, g, b_, = (min(255, int(round(c * shade * 255))) for c in v[3])
                     return (r << 24) | (g << 16) | (b_ << 8) | 255
                 vertex_data += struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[1]), *pos(b), pack_normal(b[1]),
                                            rgba(a), rgba(b), *st(a), *st(b))
