@@ -1022,6 +1022,15 @@ void particles_update(
 {
 	long particle_index;
 
+#ifdef HALO_N64
+	/* (the N64's own: port/n64/src/n64_particles.c) */
+	{
+		void n64_particles_update(float dt);
+
+		n64_particles_update(dt);
+		return;
+	}
+#endif
 	profile_enter(particles_update_section);
 
 #ifdef HALO_LINUX

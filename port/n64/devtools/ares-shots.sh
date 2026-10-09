@@ -8,7 +8,7 @@ if ! xdpyinfo -display :97 >/dev/null 2>&1; then
 	Xvfb :97 -screen 0 1024x768x24 -nolisten tcp >/dev/null 2>&1 &
 	sleep 1
 fi
-flatpak run --die-with-parent dev.ares.ares --settings-file $HOME/n64/ares-test/settings.bml \
+systemd-run --user --scope --quiet -p MemoryMax=4G -p MemorySwapMax=0 flatpak run --die-with-parent dev.ares.ares --settings-file $HOME/n64/ares-test/settings.bml \
 	--system "Nintendo 64" --no-file-prompt \
 	--setting Audio/Driver=None --setting General/HomebrewMode=true \
 	--setting Nintendo64/ExpansionPak=true --setting Video/Blocking=false \

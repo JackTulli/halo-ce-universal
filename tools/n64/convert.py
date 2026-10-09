@@ -36,7 +36,11 @@ FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\j
 # tag groups the N64 game never loads: the Xbox menus and input devices,
 # and sound environments (the N64 has no reverb); sounds and looping
 # sounds are kept in a form of the N64's own (sounds.py) or left out
-DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snde"}
+DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snde",
+                  # particles, particle systems, contrails, antennas, cloth
+                  # flags and glows: the N64 makes none of them (its own
+                  # simple particles come from effects.py's records)
+                  b"part", b"pctl", b"cont", b"ant!", b"flag", b"glw!"}
 SOUND_GROUPS = {int.from_bytes(g, "big") for g in (b"snd!", b"lsnd")}
 
 
@@ -314,6 +318,10 @@ def main():
         low_models.budget_overrides = {i: 150 for i in covenant}
         stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low.mdl")
         print(f"{xmap.name} low models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        # the effects' particles (port/n64/src/n64_particles.c)
+        from .effects import EffectParticles
+        stats = EffectParticles(xmap, repacker.defs).write(args.filesystem / "fx" / f"{xmap.name}.fx")
+        print(f"{xmap.name} particles: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the shared files the map uses (tools/n64/prune.py removes the rest)
         from .level import write_list
         write_list(args.filesystem / "tex" / f"{xmap.name}.list",

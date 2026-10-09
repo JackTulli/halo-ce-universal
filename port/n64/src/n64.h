@@ -188,6 +188,76 @@ int n64_voice_playing(long voice);
 void n64_voice_stop_all(void);
 void n64_sound_statistics(unsigned long *started, unsigned long *stolen, unsigned long *refused);
 
+/* ---------- particles (n64_particles.c): what effects make, simply */
+
+/* an effect's particle emitter, as tools/n64/effects.py writes it */
+struct n64_fx_emitter
+{
+	unsigned char location;
+	unsigned char flags; /* camera mode (0-1), attached (2), additive (3) */
+	unsigned char cell, distribution;
+	unsigned char count_min, count_max, violence;
+	signed char gravity; /* world units/s^2, x8 */
+	unsigned short life_min, life_max, fade_in, fade_out; /* ms */
+	float velocity_min, velocity_max, cone_angle;
+	float radius_min, radius_max;
+	float distribution_min, distribution_max;
+	float offset[3], direction[3];
+	unsigned char tint_lower[4], tint_upper[4]; /* RGBA */
+	unsigned char drag; /* per second, /16 */
+	unsigned char end_scale; /* /32 */
+	unsigned char pad[2];
+};
+
+#define N64_FX_ADDITIVE 0x08
+
+enum
+{
+	N64_PARTICLE_FIRST_PERSON = 1, /* in its local player's camera space */
+	N64_PARTICLE_THIRD_PERSON_ONLY = 2, /* not in its local player's view */
+	N64_PARTICLE_ADDITIVE = 4, /* its colour's alpha left out */
+};
+
+struct n64_particle_spawn
+{
+	/* world units; first person: along the camera's right, up, forward */
+	float position[3];
+	float velocity[3]; /* per second, the same way */
+	float radius, end_scale;
+	float life, fade_in, fade_out; /* seconds */
+	unsigned long color; /* RGBA */
+	float gravity, drag;
+	unsigned char cell, flags;
+	signed char local_player; /* -1: none */
+	unsigned char pad;
+};
+
+/* a view's camera, for drawing (n64_render.c) */
+struct n64_particle_view
+{
+	float eye[3], right[3], up[3], forward[3];
+	float pixels_per_unit, center_x, center_y;
+	float x0, y0, x1, y1;
+	float z_near, z_far; /* world units, this pass's */
+	float fog_start, fog_end; /* 0: no fog */
+	int local_player, first_person, chunky;
+};
+
+/* the map's particles: rom:/fx/<map>.fx */
+void n64_particles_load(const char *map_name);
+/* an effect's event's emitters (by the effect's tag index), or NULL; valid
+until the next call */
+const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
+void n64_particle_spawn(const struct n64_particle_spawn *spawn);
+void n64_particles_update(float dt);
+/* the views drawn (more views: fewer particles made) */
+void n64_particles_set_view_count(int views);
+void n64_particles_draw(const struct n64_particle_view *view);
+void n64_particles_statistics(unsigned long *spawned, unsigned long *drawn, unsigned long *reads, int *live);
+/* the view's 3D done (n64_render_game.c, after the first-person weapon):
+its particles drawn */
+void n64_render_view_particles(void);
+
 /* ---------- Halo's fonts (n64_font.c): rom:/fonts/<name>.* from
 tools/n64/ui.py (large, small, interstate) */
 

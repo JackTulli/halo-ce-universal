@@ -172,6 +172,14 @@ symbols in this file:
 #include "tag_files/tag_groups.h"
 #include "units/bipeds.h"
 #include "units/units.h"
+#ifdef HALO_N64
+#include "camera/observer.h"
+#include "../../port/n64/src/n64.h"
+
+/* at most this many of one emitter's particles an event, in one view and
+in more (the N64's particle pool is 128) */
+#define N64_MAXIMUM_PARTICLES_PER_EMITTER 3
+#endif
 #undef real_local_random
 
 /* ---------- constants */
@@ -1924,6 +1932,217 @@ static void effect_generate_parts(
 	return;
 }
 
+#ifdef HALO_N64
+/* the N64's: as Halo's below, from the N64's emitters, made by
+n64_particle_spawn (port/n64/src/n64_particles.c) -- placed and sent off
+the same way, not attached to markers (a first-person one is kept in its
+local player's camera space instead) */
+static void effect_generate_particles(
+	struct effect_datum *effect)
+{
+	struct effect_definition *definition =
+		effect_definition_get(effect->definition_index);
+	real last_event_fraction = effect->last_event_fraction;
+	real event_fraction;
+	int emitter_count;
+	int emitter_index;
+	struct n64_fx_emitter const *emitters = n64_fx_event(
+		DATUM_INDEX_TO_ABSOLUTE_INDEX(effect->definition_index),
+		effect->event_index,
+		&emitter_count);
+
+	if (effect->event_duration > 0.0f)
+		event_fraction = effect->event_time / effect->event_duration;
+	else
+		event_fraction = 1.0f;
+
+	for (emitter_index = 0;
+		emitter_index < emitter_count && emitter_index < MAXIMUM_EFFECT_EVENTS;
+		emitter_index++)
+	{
+		struct n64_fx_emitter const *emitter = &emitters[emitter_index];
+		short camera_mode = (short)(emitter->flags & 3);
+		long last_particle_count;
+		short count_delta;
+		long location_datum_index;
+		struct effect_location_datum *instance;
+
+		if (emitter->location >= definition->locations.count ||
+			!effect_part_allowed_by_disposition(
+				TEST_FLAG(effect->header.flags, _effect_nonviolent_bit),
+				emitter->violence))
+		{
+			continue;
+		}
+		last_particle_count = (long)(effect_evaluate_function_integral(
+				emitter->distribution,
+				last_event_fraction) *
+			effect->particle_counts[emitter_index]);
+		count_delta = (short)((long)(effect_evaluate_function_integral(
+				emitter->distribution,
+				event_fraction) *
+			effect->particle_counts[emitter_index]) -
+			last_particle_count);
+		if (count_delta <= 0)
+			continue;
+
+		location_datum_index = effect->location_datum_indices[emitter->location];
+		instance = effect_location_get_next_instance(effect, &location_datum_index, camera_mode);
+		while (instance)
+		{
+			boolean first_person = instance->node_designator != NONE &&
+				TEST_FLAG(instance->node_designator, _effect_location_first_person_bit) &&
+				effect->local_player_index != NONE;
+			short k;
+
+			for (k = 0; k < count_delta; k++)
+			{
+				static unsigned long n64_loop_thinning;
+				struct n64_particle_spawn spawn;
+				real_vector3d random_direction, emission_offset, direction, velocity, forward;
+				real_point3d position;
+				real emission_radius;
+				real t;
+				short c;
+
+				/* (a looping effect -- a charged plasma bolt's sparks -- makes
+				hundreds a second: one in four of them) */
+				if (TEST_FLAG(effect->header.flags, _effect_loop_bit) && (n64_loop_thinning++ & 3))
+					continue;
+				emission_radius = real_seed_random_range(
+					get_global_local_random_seed_address(),
+					emitter->distribution_min,
+					emitter->distribution_max);
+
+				local_random_direction3d(&random_direction);
+				emission_offset.i = emitter->offset[0];
+				emission_offset.j = emitter->offset[1];
+				emission_offset.k = emitter->offset[2];
+				matrix4x3_transform_vector(&instance->matrix, &emission_offset, &emission_offset);
+				position.x = instance->matrix.position.x + random_direction.i * emission_radius + emission_offset.i;
+				position.y = instance->matrix.position.y + random_direction.j * emission_radius + emission_offset.j;
+				position.z = instance->matrix.position.z + random_direction.k * emission_radius + emission_offset.k;
+				forward.i = emitter->direction[0];
+				forward.j = emitter->direction[1];
+				forward.k = emitter->direction[2];
+				effect_random_translational_velocity(
+					get_global_local_random_seed_address(),
+					effect,
+					&forward,
+					&direction,
+					&velocity,
+					emitter->velocity_min,
+					emitter->velocity_max,
+					emitter->cone_angle,
+					0,
+					0);
+				matrix4x3_transform_vector(&instance->matrix, &velocity, &velocity);
+				if (instance->node_designator != NONE)
+				{
+					real_matrix4x3 *node_matrix = effect_get_node_matrix(effect, instance->node_designator);
+
+					matrix4x3_transform_point(node_matrix, &position, &position);
+					matrix4x3_transform_vector(node_matrix, &velocity, &velocity);
+				}
+				if (!TEST_FLAG(emitter->flags, 2))
+				{
+					velocity.i += effect->velocity.i * 30.0f;
+					velocity.j += effect->velocity.j * 30.0f;
+					velocity.k += effect->velocity.k * 30.0f;
+				}
+
+				spawn.flags = TEST_FLAG(emitter->flags, 3) ? N64_PARTICLE_ADDITIVE : 0;
+				spawn.local_player = (signed char)effect->local_player_index;
+				if (first_person)
+				{
+					/* in the camera's space: it stays with the view */
+					struct observer_result const *camera = observer_get_camera(effect->local_player_index);
+					real_vector3d right, offset;
+
+					cross_product3d(&camera->forward, &camera->up, &right);
+					vector_from_points3d(&camera->position, &position, &offset);
+					position.x = dot_product3d(&offset, &right);
+					position.y = dot_product3d(&offset, &camera->up);
+					position.z = dot_product3d(&offset, &camera->forward);
+					offset = velocity;
+					velocity.i = dot_product3d(&offset, &right);
+					velocity.j = dot_product3d(&offset, &camera->up);
+					velocity.k = dot_product3d(&offset, &camera->forward);
+					spawn.flags |= N64_PARTICLE_FIRST_PERSON;
+				}
+				else if (camera_mode == _effect_camera_mode_third_person_only)
+				{
+					spawn.flags |= N64_PARTICLE_THIRD_PERSON_ONLY;
+				}
+				spawn.position[0] = position.x;
+				spawn.position[1] = position.y;
+				spawn.position[2] = position.z;
+				spawn.velocity[0] = velocity.i;
+				spawn.velocity[1] = velocity.j;
+				spawn.velocity[2] = velocity.k;
+				spawn.radius = real_seed_random_range(
+					get_global_local_random_seed_address(),
+					emitter->radius_min,
+					emitter->radius_max);
+				spawn.end_scale = emitter->end_scale * (1.f / 32.f);
+				spawn.life = real_seed_random_range(
+					get_global_local_random_seed_address(),
+					emitter->life_min * 0.001f,
+					emitter->life_max * 0.001f);
+				spawn.fade_in = emitter->fade_in * 0.001f;
+				spawn.fade_out = emitter->fade_out * 0.001f;
+				spawn.gravity = emitter->gravity * 0.125f;
+				spawn.drag = emitter->drag * (1.f / 16.f);
+				spawn.cell = emitter->cell;
+				t = real_seed_random(get_global_local_random_seed_address());
+				spawn.color = 0;
+				for (c = 0; c < 4; c++)
+				{
+					real value = emitter->tint_lower[c] + (emitter->tint_upper[c] - emitter->tint_lower[c]) * t;
+
+					spawn.color |= (unsigned long)PIN(value, 0.f, 255.f) << (24 - 8 * c);
+				}
+				n64_particle_spawn(&spawn);
+			}
+
+			instance = effect_location_get_next_instance(effect, &location_datum_index, camera_mode);
+		}
+		/* (port.json flag "debug_particles": which effects make the most) */
+		if (n64_debug_flag("debug_particles"))
+		{
+			static struct { long definition_index; long count; } busiest[8];
+			static long calls;
+			short b;
+
+			for (b = 0; b < 8; b++)
+			{
+				if (busiest[b].definition_index == effect->definition_index || !busiest[b].count)
+				{
+					busiest[b].definition_index = effect->definition_index;
+					busiest[b].count += count_delta;
+					break;
+				}
+			}
+			if (++calls % 500 == 0)
+			{
+				for (b = 0; b < 8 && busiest[b].count; b++)
+				{
+					char line[160];
+
+					csprintf(line, "particles from %.100s: %ld (event %d emitter %d)",
+						tag_get_name(busiest[b].definition_index), busiest[b].count,
+						effect->event_index, emitter_index);
+					n64_log(line);
+					busiest[b].count = 0;
+				}
+			}
+		}
+	}
+
+	effect->last_event_fraction = event_fraction;
+	return;
+}
+#else
 static void effect_generate_particles(
 	struct effect_datum *effect)
 {
@@ -2201,6 +2420,7 @@ static void effect_generate_particles(
 
 	return;
 }
+#endif
 
 static void effect_update(
 	long effect_index,
@@ -2437,6 +2657,38 @@ static void effect_update(
 				event->duration_lower_bound,
 				event->duration_upper_bound);
 
+#ifdef HALO_N64
+			/* the N64's emitters (tools/n64/effects.py), counted as Halo's
+			were (the effect's scale left out) */
+			{
+				int n64_count;
+				struct n64_fx_emitter const *n64_emitters = n64_fx_event(
+					DATUM_INDEX_TO_ABSOLUTE_INDEX(effect->definition_index),
+					effect->event_index,
+					&n64_count);
+
+				for (particle_index = 0;
+					particle_index < n64_count && particle_index < MAXIMUM_EFFECT_EVENTS;
+					particle_index++)
+				{
+					struct n64_fx_emitter const *emitter = &n64_emitters[particle_index];
+					long count = (long)real_seed_random_range(
+						get_global_local_random_seed_address(),
+						(real)emitter->count_min,
+						(real)emitter->count_max + 0.999f);
+
+					if (count > MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT && local_player_count() > 1)
+					{
+						count = (long)(((real)count - MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT) /
+							local_player_count() + MAXIMUM_SPLIT_SCREEN_PARTICLE_COUNT);
+					}
+					if (count > N64_MAXIMUM_PARTICLES_PER_EMITTER)
+						count = N64_MAXIMUM_PARTICLES_PER_EMITTER;
+					effect->particle_counts[particle_index] = (byte)count;
+				}
+			}
+			if (FALSE)
+#endif
 			for (particle_index = 0;
 				particle_index < event->particles.count;
 				particle_index++)

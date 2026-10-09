@@ -268,6 +268,12 @@ static struct
 	int fog;
 	color_t fog_color;
 	float fog_start, fog_end;
+	/* the current view's camera (for its particles): its axes, near and far
+	planes, its local player, whether its world particles are drawn */
+	float right[3], up[3], forward[3];
+	float z_near, z_far;
+	int local_player;
+	int world_particles_drawn;
 } renderer;
 
 /* the game's last tick, in microseconds (n64_game.c), for the counter */
@@ -287,6 +293,7 @@ static void flush_draws(void);
 void n64_render_set_view_count(int count)
 {
 	renderer.view_total = count;
+	n64_particles_set_view_count(count);
 }
 
 void n64_render_set_fog(unsigned long rgb, float start, float end)
@@ -1059,6 +1066,19 @@ void n64_render_view(const struct n64_view *view)
 	t3d_viewport_set_perspective(viewport, view->vertical_field_of_view, renderer.aspect,
 		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
 	renderer.fov = view->vertical_field_of_view;
+	for (int k = 0; k < 3; k++)
+	{
+		renderer.forward[k] = view->forward[k];
+		renderer.up[k] = view->up[k];
+	}
+	/* right = forward x up */
+	renderer.right[0] = view->forward[1] * view->up[2] - view->forward[2] * view->up[1];
+	renderer.right[1] = view->forward[2] * view->up[0] - view->forward[0] * view->up[2];
+	renderer.right[2] = view->forward[0] * view->up[1] - view->forward[1] * view->up[0];
+	renderer.z_near = view->z_near;
+	renderer.z_far = view->z_far;
+	renderer.local_player = view->local_player_index;
+	renderer.world_particles_drawn = 0;
 	renderer.eye[0] = view->position[0];
 	renderer.eye[1] = view->position[1];
 	renderer.eye[2] = view->position[2];
@@ -1176,14 +1196,70 @@ static void use_setup(struct loaded_model *loaded, int b, struct model_batch *ba
 	}
 }
 
+/* the current view's particles: the world's (with the world's projection,
+after its objects) or the first-person ones (after the weapon) */
+static void draw_particles(int first_person)
+{
+	struct n64_particle_view view;
+	short const *rect = renderer.rects[renderer.view_count - 1];
+
+	if (!renderer.view_count)
+		return;
+	for (int k = 0; k < 3; k++)
+	{
+		view.eye[k] = renderer.eye[k];
+		view.right[k] = renderer.right[k];
+		view.up[k] = renderer.up[k];
+		view.forward[k] = renderer.forward[k];
+	}
+	view.pixels_per_unit = renderer.pixels_per_unit;
+	view.x0 = rect[0];
+	view.y0 = rect[1];
+	view.x1 = rect[2];
+	view.y1 = rect[3];
+	view.center_x = (rect[0] + rect[2]) * 0.5f;
+	view.center_y = (rect[1] + rect[3]) * 0.5f;
+	view.z_near = first_person ? 0.01171875f : renderer.z_near;
+	view.z_far = first_person ? 16.f : renderer.z_far;
+	view.fog_start = renderer.fog && !first_person ? renderer.fog_start : 0.f;
+	view.fog_end = renderer.fog && !first_person ? renderer.fog_end : 0.f;
+	view.local_player = renderer.local_player;
+	view.first_person = first_person;
+	view.chunky = renderer.unstretched;
+	n64_particles_draw(&view);
+	/* (their mode and TMEM -- the whole of it, the palettes' half too --
+	are the models' no longer) */
+	current_model_mode = -1;
+	renderer.current_texture = -2;
+	current_color = 0xFFFFFFFF;
+}
+
+void n64_render_view_particles(void)
+{
+	flush_draws();
+	if (!renderer.world_particles_drawn)
+	{
+		draw_particles(0);
+		renderer.world_particles_drawn = 1;
+	}
+	else if (renderer.first_person)
+		draw_particles(1);
+}
+
 void n64_render_first_person_begin(void)
 {
 	T3DViewport *viewport = renderer.viewport;
 
 	if (!viewport)
 		return;
-	/* the world's objects first, with the world's projection */
+	/* the world's objects first, with the world's projection, and its
+	particles */
 	flush_draws();
+	if (!renderer.world_particles_drawn)
+	{
+		draw_particles(0);
+		renderer.world_particles_drawn = 1;
+	}
 	/* the game's first-person near and far planes (rasterizer.c), and the
 	weapon in front of whatever the world put in this view's depth */
 	t3d_viewport_set_perspective(viewport, renderer.fov, renderer.aspect, 0.01171875f * WORLD_SCALE, 16.0f * WORLD_SCALE);

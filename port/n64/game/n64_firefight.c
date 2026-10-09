@@ -64,6 +64,9 @@ enum
 };
 
 #define MAXIMUM_ENEMIES 12
+/* a fallen Covenant's body stays this long (and at most this many stay) */
+#define BODY_TICKS (5 * TICKS_PER_SECOND)
+#define MAXIMUM_BODIES 16
 #define WAVES_PER_SET 5
 #define TICKS_BETWEEN_WAVES (6 * TICKS_PER_SECOND)
 #define TICKS_BETWEEN_SPAWNS 20
@@ -173,6 +176,13 @@ static struct
 	long definitions[NUMBER_OF_COVENANT_KINDS];
 	long weapon_definitions[NUMBER_OF_COVENANT_KINDS][2];
 	struct covenant enemies[MAXIMUM_ENEMIES];
+	/* the Covenant's bodies, each taken away BODY_TICKS after it fell */
+	struct
+	{
+		long unit_index;
+		short timer;
+	} bodies[MAXIMUM_BODIES];
+	short body_count;
 	short enemy_count;
 	/* paths found this tick (one at most) */
 	short paths_this_tick;
@@ -925,6 +935,31 @@ static void covenant_leader_died(
 	}
 }
 
+/* a Covenant fallen: its body goes in a few seconds (the oldest at once
+when too many lie about) */
+static void body_fell(
+	long unit_index)
+{
+	if (!object_try_and_get(unit_index))
+		return;
+	if (firefight.body_count == MAXIMUM_BODIES)
+	{
+		short oldest = 0, i;
+
+		for (i = 1; i < firefight.body_count; i++)
+		{
+			if (firefight.bodies[i].timer < firefight.bodies[oldest].timer)
+				oldest = i;
+		}
+		if (object_try_and_get(firefight.bodies[oldest].unit_index))
+			object_delete(firefight.bodies[oldest].unit_index);
+		firefight.bodies[oldest] = firefight.bodies[--firefight.body_count];
+	}
+	firefight.bodies[firefight.body_count].unit_index = unit_index;
+	firefight.bodies[firefight.body_count].timer = BODY_TICKS;
+	firefight.body_count++;
+}
+
 /* deaths cost the team's lives; with none left, the dead stay dead */
 static void count_lives(
 	void)
@@ -1046,9 +1081,23 @@ void n64_firefight_tick(
 		return;
 	count_lives();
 
-	/* the fallen: score, and out of the list (their bodies stay); one that
-	has not seen a player for half a minute (stuck out of reach) is taken
-	away and sent again from another spawn point */
+	/* the bodies, a few seconds after they fell: gone */
+	for (i = 0; i < firefight.body_count; )
+	{
+		if (--firefight.bodies[i].timer <= 0)
+		{
+			if (object_try_and_get(firefight.bodies[i].unit_index))
+				object_delete(firefight.bodies[i].unit_index);
+			firefight.bodies[i] = firefight.bodies[--firefight.body_count];
+		}
+		else
+			i++;
+	}
+
+	/* the fallen: score, and out of the list (their bodies taken away a
+	few seconds later); one that has not seen a player for half a minute
+	(stuck out of reach) is taken away and sent again from another spawn
+	point */
 	for (i = 0; i < firefight.enemy_count; )
 	{
 		if (unit_alive(firefight.enemies[i].unit_index) &&
@@ -1062,6 +1111,7 @@ void n64_firefight_tick(
 		{
 			credit_kill(&firefight.enemies[i]);
 			covenant_leader_died(&firefight.enemies[i]);
+			body_fell(firefight.enemies[i].unit_index);
 			firefight.wave_killed++;
 			firefight.enemies[i] = firefight.enemies[--firefight.enemy_count];
 		}

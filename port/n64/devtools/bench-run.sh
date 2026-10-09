@@ -7,7 +7,7 @@ export DISPLAY=:97
 xdpyinfo -display :97 >/dev/null 2>&1 || { Xvfb :97 -screen 0 1024x768x24 -nolisten tcp >/dev/null 2>&1 & sleep 1; }
 [ -f $HOME/n64/ares-test/settings-1.bml ] || sed "s/Port: 9123/Port: 9124/" $HOME/n64/ares-test/settings.bml > $HOME/n64/ares-test/settings-1.bml
 for L in "$@"; do
-	flatpak run --die-with-parent dev.ares.ares --settings-file $HOME/n64/ares-test/settings-1.bml \
+	systemd-run --user --scope --quiet -p MemoryMax=4G -p MemorySwapMax=0 flatpak run --die-with-parent dev.ares.ares --settings-file $HOME/n64/ares-test/settings-1.bml \
 		--system "Nintendo 64" --no-file-prompt --setting Audio/Driver=None --setting General/HomebrewMode=true \
 		--setting Nintendo64/ExpansionPak=true --setting Video/Blocking=false \
 		"$HOME/n64/ares-test/roms/bench-$L.z64" > "$HOME/n64/ares-test/bench-$L.log" 2>&1 &

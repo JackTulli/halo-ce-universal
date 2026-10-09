@@ -226,6 +226,7 @@ void render_initialize_for_new_map(
 	/* three or four views: the level's lighter version */
 	n64_render_load_level(n64_loaded_map_name(), player_spawn_count > 2);
 	n64_hud_set_map(n64_loaded_map_name());
+	n64_particles_load(n64_loaded_map_name());
 	n64_debug_starting_weapon();
 	return;
 }
@@ -534,6 +535,9 @@ void render_frame(
 			first_person_weapon_render_update();
 			first_person_weapon_draw();
 		}
+		/* the view's particles (the world's, if the first-person weapon did
+		not already; then the first-person ones) */
+		n64_render_view_particles();
 		if (!n64_debug_flag("debug_no_hud"))
 		{
 			/* the game's own HUD (port/n64/game/n64_hud_game.c) */
