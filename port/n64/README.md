@@ -173,6 +173,29 @@ their pauses between bursts are half as long again, with 7 or 8 twice
 the Covenant think every third tick with five or more up or three or four
 players (every second), turning as fast a tick.
 
+12 October, the bipeds' movement physics, again without runs (about 1 ms
+a biped a tick, measured 9 October: one collision_move_pill each, which
+gathers the level's geometry around the pill -- a walk down the collision
+BSP, every nearby surface's edges -- then runs the pill's move against the
+features). Each biped keeps the level around it: a list of the vertices,
+edges and surfaces (and their clusters) of a sphere 0.25 units wider than
+its pill's, and while the sphere it needs stays inside, the features come
+from the list -- vertices and edges by the walk's own sphere tests,
+surfaces by bounding spheres, objects gathered fresh from the kept clusters
+-- so a running biped walks the BSP about one tick in four and a standing
+one not at all (collisions.c `n64_pill_features_in_sphere`; 12 lists, 23
+KB; dropped with the map, a BSP switch or a broken surface; where the
+level is too busy for a list the margin halves, down to 0.1, then the walk
+for a second; `debug_no_pill_cache` turns it off). The walk itself
+(collision_bsp.c): its lists of vertices, edges and surfaces found an entry
+by reading the whole list (a few thousand compares for a pill), now a
+hash; a surface reached again from another leaf is not walked again (it
+lists nothing new); the lists come out the same. The move: a prism facing
+away from the move is passed over before its test, whose hit would have
+been dropped (collision_features.c). The same features but for their
+order, which only decides between two at exactly the same distance.
+Unmeasured.
+
 12 October, an optimisation round without runs (the user tests the
 builds), from the 9 October measurements: idle objects -- an item lying at
 rest, an empty vehicle at rest, scenery that does not animate -- are

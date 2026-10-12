@@ -99,6 +99,9 @@ symbols in this file:
 #include "breakable_surfaces.h"
 #include "bsp3d.h"
 #include "collision_bsp.h"
+#ifdef HALO_N64
+#include "collision_bsp_definitions.h"
+#endif
 #include "collision_features.h"
 #include "collision_model_definitions.h"
 #include "collision_models.h"
@@ -1466,6 +1469,389 @@ short collision_move_point(
 	return collision_count;
 }
 
+#ifdef HALO_N64
+/* ---------- the level around each biped
+
+A biped's move gathered the level's collision geometry around its pill from
+scratch every tick -- a walk down the BSP and the edges of every surface near
+it, about half of its physics -- for a pill that had moved a few centimetres.
+Each biped keeps what a sphere a little larger than its pill's holds (the
+vertices, edges and surfaces, and the clusters they are in) and, while the
+sphere it needs stays inside that one, takes its features from the list:
+vertices and edges by the walk's own sphere tests, surfaces by their bounding
+spheres (a surface the pill can't reach may come along; it is never hit, as
+the pill can't reach it). Objects move, so they are gathered fresh each tick
+from the kept clusters. The list is the level's geometry: it is dropped with
+the map, and when the BSP or its broken surfaces change. */
+
+int n64_debug_flag(char const *name);
+long game_time_get(void);
+
+enum
+{
+	N64_PILL_CACHES = 12, /* four players and eight bots */
+	N64_PILL_CACHE_VERTICES = 48,
+	N64_PILL_CACHE_EDGES = 96,
+	N64_PILL_CACHE_SURFACES = 64,
+	N64_PILL_CACHE_CLUSTERS = 8,
+	N64_PILL_CACHE_RETRY_TICKS = 30, /* after even a thin sphere held more */
+};
+
+/* the room around the pill's sphere: about three ticks of running, less
+where the level is too busy for the list (halved each time it overflows,
+and grown back while it has space) */
+#define N64_PILL_CACHE_MARGIN 0.25f
+#define N64_PILL_CACHE_MINIMUM_MARGIN 0.1f /* (thinner, it would refill every tick) */
+
+struct n64_pill_cache
+{
+	long object_index;
+	long last_used;
+	long retry_time;
+	struct collision_bsp const *bsp; /* NULL: empty */
+	real_point3d center;
+	real radius;
+	real margin;
+	short vertex_count;
+	short edge_count;
+	short surface_count;
+	short cluster_count;
+	long vertex_indices[N64_PILL_CACHE_VERTICES];
+	long edge_indices[N64_PILL_CACHE_EDGES];
+	long surface_indices[N64_PILL_CACHE_SURFACES];
+	real_point3d surface_centers[N64_PILL_CACHE_SURFACES];
+	real surface_radii[N64_PILL_CACHE_SURFACES];
+	short cluster_indices[N64_PILL_CACHE_CLUSTERS];
+	byte breakable_surface_flags[MAXIMUM_BREAKABLE_SURFACES_PER_MAP / 8];
+};
+
+static struct n64_pill_cache n64_pill_caches[N64_PILL_CACHES];
+static boolean n64_pill_caches_off;
+
+void n64_pill_caches_reset(
+	void)
+{
+	short cache_index;
+
+	for (cache_index = 0; cache_index < N64_PILL_CACHES; cache_index++)
+	{
+		n64_pill_caches[cache_index].object_index = NONE;
+		n64_pill_caches[cache_index].last_used = LONG_MIN / 2;
+		n64_pill_caches[cache_index].retry_time = LONG_MIN / 2;
+		n64_pill_caches[cache_index].bsp = NULL;
+		n64_pill_caches[cache_index].margin = N64_PILL_CACHE_MARGIN;
+	}
+	n64_pill_caches_off = n64_debug_flag("debug_no_pill_cache") != 0;
+
+	return;
+}
+
+/* the biped's list, or another not used this tick or the last one */
+static struct n64_pill_cache *n64_pill_cache_get(
+	long object_index,
+	long time)
+{
+	struct n64_pill_cache *oldest = NULL;
+	short cache_index;
+
+	for (cache_index = 0; cache_index < N64_PILL_CACHES; cache_index++)
+	{
+		if (n64_pill_caches[cache_index].object_index == object_index)
+		{
+			return &n64_pill_caches[cache_index];
+		}
+	}
+	for (cache_index = 0; cache_index < N64_PILL_CACHES; cache_index++)
+	{
+		struct n64_pill_cache *cache = &n64_pill_caches[cache_index];
+
+		/* (a time ahead of now is from before the game time went back) */
+		if ((cache->last_used < time - 1 || cache->last_used > time) &&
+			(!oldest || cache->last_used < oldest->last_used))
+		{
+			oldest = cache;
+		}
+	}
+	if (oldest)
+	{
+		oldest->object_index = object_index;
+		oldest->retry_time = LONG_MIN / 2;
+		oldest->bsp = NULL;
+		oldest->margin = N64_PILL_CACHE_MARGIN;
+	}
+
+	return oldest;
+}
+
+/* the list of what the sphere touches; FALSE when it held too much */
+static boolean n64_pill_cache_fill(
+	struct n64_pill_cache *cache,
+	struct collision_bsp const *bsp,
+	struct structure_bsp const *structure_bsp,
+	byte const *breakable_surface_flags,
+	real_point3d const *center,
+	real radius)
+{
+	struct collision_bsp_test_sphere_result result;
+	long index;
+
+	cache->bsp = NULL;
+	collision_bsp_test_sphere(
+		bsp,
+		MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+		breakable_surface_flags,
+		center,
+		radius,
+		&result);
+	if (result.vertex_count > N64_PILL_CACHE_VERTICES ||
+		result.edge_count > N64_PILL_CACHE_EDGES ||
+		result.surface_count > N64_PILL_CACHE_SURFACES ||
+		result.leaf_count >= 256)
+	{
+		return FALSE;
+	}
+
+	cache->cluster_count = 0;
+	for (index = 0; index < result.leaf_count; index++)
+	{
+		short cluster_index = TAG_BLOCK_GET_ELEMENT(
+			&structure_bsp->leaves,
+			result.leaf_indices[index] & LONG_MAX,
+			struct structure_leaf)->cluster_index;
+		short known;
+
+		for (known = 0; known < cache->cluster_count; known++)
+		{
+			if (cache->cluster_indices[known] == cluster_index)
+				break;
+		}
+		if (known == cache->cluster_count)
+		{
+			if (cache->cluster_count == N64_PILL_CACHE_CLUSTERS)
+				return FALSE;
+			cache->cluster_indices[cache->cluster_count++] = cluster_index;
+		}
+	}
+
+	cache->vertex_count = (short)result.vertex_count;
+	csmemcpy(cache->vertex_indices, result.vertex_indices, result.vertex_count * sizeof(long));
+	cache->edge_count = (short)result.edge_count;
+	csmemcpy(cache->edge_indices, result.edge_indices, result.edge_count * sizeof(long));
+	cache->surface_count = (short)result.surface_count;
+	for (index = 0; index < result.surface_count; index++)
+	{
+		real_point3d points[MAXIMUM_VERTICES_PER_COLLISION_SURFACE];
+		real_point3d minimum;
+		real_point3d maximum;
+		real_point3d *surface_center = &cache->surface_centers[index];
+		real radius_squared = 0.f;
+		short point_count = collision_surface_polygon(bsp, result.surface_indices[index], points);
+		short point_index;
+
+		cache->surface_indices[index] = result.surface_indices[index];
+		minimum = maximum = points[0];
+		for (point_index = 1; point_index < point_count; point_index++)
+		{
+			minimum.x = MIN(minimum.x, points[point_index].x);
+			minimum.y = MIN(minimum.y, points[point_index].y);
+			minimum.z = MIN(minimum.z, points[point_index].z);
+			maximum.x = MAX(maximum.x, points[point_index].x);
+			maximum.y = MAX(maximum.y, points[point_index].y);
+			maximum.z = MAX(maximum.z, points[point_index].z);
+		}
+		surface_center->x = (minimum.x + maximum.x) * 0.5f;
+		surface_center->y = (minimum.y + maximum.y) * 0.5f;
+		surface_center->z = (minimum.z + maximum.z) * 0.5f;
+		for (point_index = 0; point_index < point_count; point_index++)
+		{
+			radius_squared = MAX(radius_squared, distance_squared3d(surface_center, &points[point_index]));
+		}
+		/* (a hair more, for the rounding) */
+		cache->surface_radii[index] = square_root(radius_squared) * 1.001f + 0.001f;
+	}
+
+	cache->center = *center;
+	cache->radius = radius;
+	csmemcpy(cache->breakable_surface_flags, breakable_surface_flags, sizeof(cache->breakable_surface_flags));
+	cache->bsp = bsp;
+	if (result.vertex_count * 2 <= N64_PILL_CACHE_VERTICES &&
+		result.edge_count * 2 <= N64_PILL_CACHE_EDGES &&
+		result.surface_count * 2 <= N64_PILL_CACHE_SURFACES)
+	{
+		cache->margin = MIN(cache->margin * 1.5f, N64_PILL_CACHE_MARGIN);
+	}
+
+	return TRUE;
+}
+
+/* collision_get_features_in_sphere for a biped's pill */
+static boolean n64_pill_features_in_sphere(
+	unsigned long flags,
+	real_point3d const *center,
+	real radius,
+	real height,
+	real width,
+	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	struct collision_bsp const *bsp;
+	struct structure_bsp const *structure_bsp;
+	byte const *breakable_surface_flags;
+	struct n64_pill_cache *cache;
+	long time;
+	real reach;
+	real room;
+	real radius_squared;
+	boolean objects;
+	short index;
+
+	if (n64_pill_caches_off ||
+		ignore_object_index == NONE ||
+		!TEST_FLAG(flags, _collision_test_structure_bit) ||
+		object_get_type(ignore_object_index) != _object_type_biped)
+	{
+		return collision_get_features_in_sphere(flags, center, radius, height, width, ignore_object_index, features);
+	}
+
+	time = game_time_get();
+	cache = n64_pill_cache_get(ignore_object_index, time);
+	if (cache && cache->retry_time > time + N64_PILL_CACHE_RETRY_TICKS)
+	{
+		cache->retry_time = LONG_MIN / 2;
+	}
+	if (!cache || cache->retry_time > time)
+	{
+		return collision_get_features_in_sphere(flags, center, radius, height, width, ignore_object_index, features);
+	}
+	cache->last_used = time;
+
+	collision_features_new(features);
+	bsp = global_collision_bsp_get();
+	structure_bsp = global_structure_bsp_get();
+	breakable_surface_flags = breakable_surface_flags_get();
+	reach = radius + 0.0625f;
+
+	room = cache->radius - reach;
+	if (cache->bsp != bsp ||
+		room < 0.f ||
+		distance_squared3d(&cache->center, center) > room * room ||
+		csmemcmp(cache->breakable_surface_flags, breakable_surface_flags, sizeof(cache->breakable_surface_flags)))
+	{
+		if (!n64_pill_cache_fill(
+			cache,
+			bsp,
+			structure_bsp,
+			breakable_surface_flags,
+			center,
+			reach + cache->margin))
+		{
+			cache->margin *= 0.5f;
+			if (cache->margin < N64_PILL_CACHE_MINIMUM_MARGIN)
+			{
+				cache->margin = N64_PILL_CACHE_MARGIN;
+				cache->retry_time = time + N64_PILL_CACHE_RETRY_TICKS;
+			}
+			return collision_get_features_in_sphere(flags, center, radius, height, width, ignore_object_index, features);
+		}
+	}
+
+	/* the walk's tests, on the kept list (collision_surface_test_sphere) */
+	radius = reach;
+	radius_squared = radius * radius;
+	for (index = 0; index < cache->vertex_count; index++)
+	{
+		struct collision_vertex const *vertex = TAG_BLOCK_GET_ELEMENT(
+			&bsp->vertices,
+			cache->vertex_indices[index],
+			struct collision_vertex);
+		real delta_x = vertex->point.x - center->x;
+		real delta_y = vertex->point.y - center->y;
+		real delta_z = vertex->point.z - center->z;
+
+		if (delta_x * delta_x + delta_y * delta_y + delta_z * delta_z <= radius_squared)
+		{
+			collision_features_from_vertex(bsp, cache->vertex_indices[index], NULL, height, width, NONE, features);
+		}
+	}
+	for (index = 0; index < cache->edge_count; index++)
+	{
+		struct collision_edge const *edge = TAG_BLOCK_GET_ELEMENT(
+			&bsp->edges,
+			cache->edge_indices[index],
+			struct collision_edge);
+		struct collision_vertex const *vertex0 = TAG_BLOCK_GET_ELEMENT(
+			&bsp->vertices,
+			edge->vertex_indices[0],
+			struct collision_vertex);
+		struct collision_vertex const *vertex1 = TAG_BLOCK_GET_ELEMENT(
+			&bsp->vertices,
+			edge->vertex_indices[1],
+			struct collision_vertex);
+		real_vector3d edge_vector;
+
+		vector_from_points3d(&vertex0->point, &vertex1->point, &edge_vector);
+		if (fast_vector_intersects_sphere(&vertex0->point, &edge_vector, center, radius))
+		{
+			collision_features_from_edge(bsp, cache->edge_indices[index], NULL, height, width, NONE, features);
+		}
+	}
+	for (index = 0; index < cache->surface_count; index++)
+	{
+		reach = radius + cache->surface_radii[index];
+		if (distance_squared3d(&cache->surface_centers[index], center) <= reach * reach)
+		{
+			collision_features_from_surface(bsp, cache->surface_indices[index], NULL, height, width, NONE, features);
+		}
+	}
+
+	/* the objects, fresh (collision_get_features_in_sphere) */
+	objects = TEST_FLAG(flags, _collision_test_objects_bit);
+	if (debug_collision_skip_objects)
+	{
+		objects = FALSE;
+	}
+	if (objects && cache->cluster_count > 0)
+	{
+		if (!(flags & _collision_test_objects_all_types_flags))
+		{
+			flags |= _collision_test_objects_all_types_flags;
+		}
+
+		object_marker_begin();
+		for (index = 0; index < cache->cluster_count; index++)
+		{
+			long reference_index;
+			long object_index;
+
+			for (object_index = cluster_get_first_collideable_object(
+					&reference_index,
+					cache->cluster_indices[index]);
+				object_index != NONE;
+				object_index = cluster_get_next_collideable_object(&reference_index))
+			{
+				if (object_mark_function(object_index))
+				{
+					object_get_features_in_sphere(
+						flags,
+						object_index,
+						center,
+						radius,
+						height,
+						width,
+						ignore_object_index,
+						features);
+				}
+			}
+		}
+		object_marker_end();
+	}
+
+	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+#endif
+
 short collision_move_pill(
 	unsigned long flags,
 	real_point3d const *position,
@@ -1489,7 +1875,11 @@ short collision_move_pill(
 	center.y = position->y + velocity->j * 0.5f;
 	center.z = height * 0.5f + (position->z + velocity->k * 0.5f);
 
+#ifdef HALO_N64
+	if (n64_pill_features_in_sphere(
+#else
 	if (collision_get_features_in_sphere(
+#endif
 		flags,
 		&center,
 		magnitude3d(velocity) * 0.5f + height * 0.5f + radius,

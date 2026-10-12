@@ -576,6 +576,52 @@ boolean collision_features_test_vector(
 	closest_feature_index = NONE;
 	closest_feature_t = REAL_MAX;
 
+#ifdef HALO_N64
+	/* (the same tests in the same order, type by type; a prism facing away
+	from the move is passed over untested, as its hit would be dropped: a hit
+	counts only on a face the move runs into, and a prism's face is its plane.
+	Half the prisms of a pill's edges face away, and their test costs a
+	divide per edge) */
+	(void)feature_type;
+	for (feature_index = 0; feature_index < features->count[_collision_feature_sphere]; feature_index++)
+	{
+		if (collision_sphere_test_vector(&features->spheres[feature_index], point, vector, &feature_t, &feature_plane) &&
+			closest_feature_t > feature_t &&
+			dot_product3d(vector, &feature_plane.n) < -_real_epsilon)
+		{
+			closest_feature_t = feature_t;
+			closest_feature_type = _collision_feature_sphere;
+			closest_feature_index = feature_index;
+			closest_feature_plane = feature_plane;
+		}
+	}
+	for (feature_index = 0; feature_index < features->count[_collision_feature_cylinder]; feature_index++)
+	{
+		if (collision_cylinder_test_vector(&features->cylinders[feature_index], point, vector, &feature_t, &feature_plane) &&
+			closest_feature_t > feature_t &&
+			dot_product3d(vector, &feature_plane.n) < -_real_epsilon)
+		{
+			closest_feature_t = feature_t;
+			closest_feature_type = _collision_feature_cylinder;
+			closest_feature_index = feature_index;
+			closest_feature_plane = feature_plane;
+		}
+	}
+	for (feature_index = 0; feature_index < features->count[_collision_feature_prism]; feature_index++)
+	{
+		struct collision_prism const *prism = &features->prisms[feature_index];
+
+		if (dot_product3d(vector, &prism->plane.n) < -_real_epsilon &&
+			collision_prism_test_vector(prism, point, vector, &feature_t, &feature_plane) &&
+			closest_feature_t > feature_t)
+		{
+			closest_feature_t = feature_t;
+			closest_feature_type = _collision_feature_prism;
+			closest_feature_index = feature_index;
+			closest_feature_plane = feature_plane;
+		}
+	}
+#else
 	for (feature_type = 0; feature_type < NUMBER_OF_COLLISION_FEATURE_TYPES; feature_type++)
 	{
 		for (feature_index = 0; feature_index < features->count[feature_type]; feature_index++)
@@ -595,6 +641,7 @@ boolean collision_features_test_vector(
 			}
 		}
 	}
+#endif
 
 	if (closest_feature_type != NONE)
 	{

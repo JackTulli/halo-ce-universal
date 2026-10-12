@@ -751,6 +751,14 @@ void game_initialize_for_new_map(
 	render_initialize_for_new_map();
 	structures_initialize_for_new_map();
 	breakable_surfaces_initialize_for_new_map();
+#ifdef HALO_N64
+	{
+		/* (the bipeds' lists of the level around them: physics/collisions.c) */
+		void n64_pill_caches_reset(void);
+
+		n64_pill_caches_reset();
+	}
+#endif
 	decals_initialize_for_new_map();
 	director_initialize_for_new_map();
 	observer_initialize_for_new_map();

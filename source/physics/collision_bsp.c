@@ -285,6 +285,10 @@ static void add_feature(
 	long *count,
 	long *indices,
 	long index);
+#ifdef HALO_N64
+static void n64_feature_hash_begin(
+	void);
+#endif
 static void collision_surface_test_sphere(
 	struct collision_bsp_test_sphere_context *data,
 	long surface_index);
@@ -994,6 +998,9 @@ boolean collision_bsp_test_sphere(
 	result->surface_count = 0;
 	result->edge_count = 0;
 	result->vertex_count = 0;
+#ifdef HALO_N64
+	n64_feature_hash_begin();
+#endif
 
 	bsp3d_test_sphere_recursive(&context, 0);
 	collision_log_end_time(
@@ -1045,6 +1052,78 @@ boolean collision_bsp_test_vector(
 
 /* ---------- private code */
 
+#ifdef HALO_N64
+/* A sphere test lists each vertex, edge and surface once, and add_feature
+read the whole list to find out whether one was there already: thousands of
+compares for a biped's pill every tick, as each surface is reached from
+several leaves and each vertex and edge from several surfaces. A hash of the
+entries answers instead (stamped with the test, so it never needs clearing),
+and a surface already listed is not walked again: its vertices and edges were
+listed with it, as the same sphere hits them again. The lists come out the
+same, in the same order. */
+enum
+{
+	N64_FEATURE_HASH_BITS = 10, /* the three lists hold 768 at most */
+	N64_FEATURE_HASH_SIZE = 1 << N64_FEATURE_HASH_BITS,
+};
+
+static unsigned long n64_feature_hash[N64_FEATURE_HASH_SIZE]; /* stamp << 16 | position + 1 */
+static unsigned long n64_feature_stamp;
+
+static void n64_feature_hash_begin(
+	void)
+{
+	n64_feature_stamp += 0x10000;
+	if (!n64_feature_stamp)
+	{
+		csmemset(n64_feature_hash, 0, sizeof(n64_feature_hash));
+		n64_feature_stamp = 0x10000;
+	}
+
+	return;
+}
+
+/* the slot holding the index in the list, or the free one ending its run */
+static unsigned long *n64_feature_slot(
+	long const *count,
+	long const *indices,
+	long index)
+{
+	unsigned long slot =
+		(((unsigned long)index ^ ((unsigned long)indices >> 4)) * 2654435761UL) >>
+		(32 - N64_FEATURE_HASH_BITS);
+
+	for (;;)
+	{
+		unsigned long entry = n64_feature_hash[slot];
+		long position = (long)(entry & 0xFFFF) - 1;
+
+		if ((entry & 0xFFFF0000) != n64_feature_stamp ||
+			(position < *count && indices[position] == index))
+		{
+			return &n64_feature_hash[slot];
+		}
+		slot = (slot + 1) & (N64_FEATURE_HASH_SIZE - 1);
+	}
+}
+
+static void add_feature(
+	long *count,
+	long *indices,
+	long index)
+{
+	unsigned long *slot = n64_feature_slot(count, indices, index);
+
+	if ((*slot & 0xFFFF0000) != n64_feature_stamp && *count < 256)
+	{
+		indices[*count] = index;
+		(*count)++;
+		*slot = n64_feature_stamp | (unsigned long)*count;
+	}
+
+	return;
+}
+#else
 static void add_feature(
 	long *count,
 	long *indices,
@@ -1066,6 +1145,7 @@ static void add_feature(
 
 	return;
 }
+#endif
 
 static void collision_surface_test_sphere(
 	struct collision_bsp_test_sphere_context *data,
@@ -1080,6 +1160,15 @@ static void collision_surface_test_sphere(
 	real radius_squared;
 	boolean hit_feature = FALSE;
 
+#ifdef HALO_N64
+	if ((*n64_feature_slot(
+		&data->result->surface_count,
+		data->result->surface_indices,
+		surface_index) & 0xFFFF0000) == n64_feature_stamp)
+	{
+		return;
+	}
+#endif
 	if (TEST_FLAG(surface->flags, _collision_surface_breakable_bit))
 	{
 		breakable_surface_index = surface->breakable_surface_index;
