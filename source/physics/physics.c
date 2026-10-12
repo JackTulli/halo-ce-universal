@@ -276,6 +276,11 @@ static void rotate_vectors3d_by_angular_velocity(
 
 /* ---------- globals */
 
+#ifdef HALO_N64
+/* the ticks the current vehicle's physics step covers (physics_update) */
+static real n64_physics_step = 1.f;
+#endif
+
 real global_gravity = 0.0035651792f;
 real global_water_density = 1.0f;
 real global_air_density = 0.0011f;
@@ -1338,9 +1343,15 @@ void physics_update_new(
 		994,
 		&linear_velocity);
 
+#ifdef HALO_N64
+	position.x = vehicle->object.position.x + linear_velocity.i * n64_physics_step;
+	position.y = vehicle->object.position.y + linear_velocity.j * n64_physics_step;
+	position.z = vehicle->object.position.z + linear_velocity.k * n64_physics_step;
+#else
 	position.x = vehicle->object.position.x + linear_velocity.i;
 	position.y = vehicle->object.position.y + linear_velocity.j;
 	position.z = vehicle->object.position.z + linear_velocity.k;
+#endif
 
 	{
 		real_matrix3x3 frame;
@@ -1378,12 +1389,26 @@ void physics_update_new(
 		1012,
 		&angular_velocity);
 
+#ifdef HALO_N64
+	{
+		real_vector3d turn;
+
+		scale_vector3d(&angular_velocity, n64_physics_step, &turn);
+		rotate_vectors3d_by_angular_velocity(
+			&vehicle->object.forward,
+			&vehicle->object.up,
+			&turn,
+			&forward,
+			&up);
+	}
+#else
 	rotate_vectors3d_by_angular_velocity(
 		&vehicle->object.forward,
 		&vehicle->object.up,
 		&angular_velocity,
 		&forward,
 		&up);
+#endif
 
 	vehicle->object.translational_velocity = linear_velocity;
 	vehicle->object.angular_velocity = angular_velocity;
@@ -2010,18 +2035,42 @@ static void physics_update_old(
 		"c:\\halo\\SOURCE\\physics\\physics.c",
 		1539,
 		&translational_acceleration);
+#ifdef HALO_N64
+	{
+		real_vector3d impulse;
+
+		scale_vector3d(&translational_acceleration, n64_physics_step, &impulse);
+		add_vectors3d(
+			&object->object.translational_velocity,
+			&impulse,
+			&object->object.translational_velocity);
+	}
+#else
 	add_vectors3d(
 		&object->object.translational_velocity,
 		&translational_acceleration,
 		&object->object.translational_velocity);
+#endif
 	match_assert_valid_real_vector3d(
 		"c:\\halo\\SOURCE\\physics\\physics.c",
 		1543,
 		&angular_acceleration);
+#ifdef HALO_N64
+	{
+		real_vector3d impulse;
+
+		scale_vector3d(&angular_acceleration, n64_physics_step, &impulse);
+		add_vectors3d(
+			&object->object.angular_velocity,
+			&impulse,
+			&object->object.angular_velocity);
+	}
+#else
 	add_vectors3d(
 		&object->object.angular_velocity,
 		&angular_acceleration,
 		&object->object.angular_velocity);
+#endif
 
 	{
 		real_point3d new_position;
@@ -2029,9 +2078,15 @@ static void physics_update_old(
 		real_vector3d rotation_axis;
 		real angular_speed;
 
+#ifdef HALO_N64
+		new_position.x = object->object.position.x + object->object.translational_velocity.i * n64_physics_step;
+		new_position.y = object->object.position.y + object->object.translational_velocity.j * n64_physics_step;
+		new_position.z = object->object.position.z + object->object.translational_velocity.k * n64_physics_step;
+#else
 		new_position.x = object->object.position.x + object->object.translational_velocity.i;
 		new_position.y = object->object.position.y + object->object.translational_velocity.j;
 		new_position.z = object->object.position.z + object->object.translational_velocity.k;
+#endif
 		scenario_location_from_line(
 			&new_location,
 			&object->object.location,
@@ -2041,6 +2096,9 @@ static void physics_update_old(
 
 		rotation_axis = object->object.angular_velocity;
 		angular_speed = normalize3d(&rotation_axis);
+#ifdef HALO_N64
+		angular_speed *= n64_physics_step;
+#endif
 		if (angular_speed != 0.0f)
 		{
 			real sine_value = sine(angular_speed);
@@ -2094,6 +2152,39 @@ static void physics_update_old(
 	return;
 }
 
+#ifdef HALO_N64
+/* Vehicles' physics (the user's ask): a vehicle's forces worked out and its
+movement made every other tick, staggered, every fourth with ANIMATIONS
+HALF RATE (n64_menu.c), the rest of vehicle_update still every tick (its
+controls, seats, timers and animations keep time). Each step covers the
+ticks since the vehicle's last (at most the interval): the forces worked
+out and the controls' are its impulse over them, its velocity carries it
+that far, its turning that much; what other objects pushed it with
+meanwhile (vehicle.collision_force, gathered every tick) counts once. A
+larger step is a coarser one: suspension and contacts are worked out half
+or a quarter as often (n64_physics_step, above) */
+
+static boolean n64_vehicle_physics_turn(
+	long object_index)
+{
+	extern int n64_half_animation_rate;
+	static struct { long object_index; long time; } last[64];
+	long index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	long interval = n64_half_animation_rate ? 4 : 2;
+	long now = game_time_get();
+	short slot = (short)(index & 63);
+	long ticks;
+
+	if ((now + index) % interval)
+		return FALSE;
+	ticks = last[slot].object_index == object_index ? now - last[slot].time : 1;
+	n64_physics_step = (real)(ticks < 1 ? 1 : ticks > interval ? interval : ticks);
+	last[slot].object_index = object_index;
+	last[slot].time = now;
+	return TRUE;
+}
+#endif
+
 void physics_update(
 	long object_index,
 	struct powered_mass_point_datum *powered_mass_points,
@@ -2110,6 +2201,10 @@ void physics_update(
 	real_vector3d total_torque;
 	short powered_mass_point_index;
 
+#ifdef HALO_N64
+	if (!n64_vehicle_physics_turn(object_index))
+		return;
+#endif
 	if (physics->radius > 0.0f)
 	{
 		physics_update_old(
@@ -2144,6 +2239,10 @@ void physics_update(
 		mass_points,
 		&total_force,
 		&total_torque);
+#ifdef HALO_N64
+	scale_vector3d(&total_force, n64_physics_step, &total_force);
+	scale_vector3d(&total_torque, n64_physics_step, &total_torque);
+#endif
 
 	{
 		struct vehicle_datum *vehicle = vehicle_datum_get(object_index);
@@ -2168,9 +2267,15 @@ void physics_update(
 			"c:\\halo\\SOURCE\\physics\\physics.c",
 			270,
 			magic_force);
+#ifdef HALO_N64
+		total_force.i += magic_force->i * n64_physics_step;
+		total_force.j += magic_force->j * n64_physics_step;
+		total_force.k += magic_force->k * n64_physics_step;
+#else
 		total_force.i += magic_force->i;
 		total_force.j += magic_force->j;
 		total_force.k += magic_force->k;
+#endif
 	}
 	if (magic_torque)
 	{
@@ -2178,9 +2283,15 @@ void physics_update(
 			"c:\\halo\\SOURCE\\physics\\physics.c",
 			276,
 			magic_torque);
+#ifdef HALO_N64
+		total_torque.i += magic_torque->i * n64_physics_step;
+		total_torque.j += magic_torque->j * n64_physics_step;
+		total_torque.k += magic_torque->k * n64_physics_step;
+#else
 		total_torque.i += magic_torque->i;
 		total_torque.j += magic_torque->j;
 		total_torque.k += magic_torque->k;
+#endif
 	}
 
 	physics_update_new(

@@ -173,6 +173,19 @@ their pauses between bursts are half as long again, with 7 or 8 twice
 the Covenant think every third tick with five or more up or three or four
 players (every second), turning as fast a tick.
 
+12 October: vehicles' physics every other tick, every fourth with
+ANIMATIONS HALF RATE (the user's ask; physics.c physics_update,
+n64_vehicle_physics_turn): a vehicle's forces are worked out and its
+movement made on its turn only, staggered; the rest of vehicle_update runs
+every tick (controls, seats, timers, animations keep time). Each step
+covers the ticks since the vehicle's last (at most the interval,
+n64_physics_step): the worked-out and control forces are scaled to that
+many ticks' impulse, the velocity carries it that far, the turning that
+much (both the new and the old physics paths); what other objects pushed it
+with meanwhile counts once. Coarser steps: the suspension and contacts are
+worked out half or a quarter as often, so vehicles may bounce or settle
+differently, most at a quarter; a driver's view moves in those steps.
+
 12 October: the settings are kept (the user's ask): the SETTINGS page and
 each controller's CONTROLS in the cartridge's EEPROM (the ROM's header now
 declares a 4 kbit one: ed64romconfig --savetype eeprom4k, header byte 0x3F
