@@ -11,3 +11,5 @@ the user's other projects are not included.
 - [Never touch the live display](never-touch-the-live-display.md) — no tests or process kills against the user's own displays (:0 and nested ones)
 - [Isolate Wine test prefixes](isolate-wine-test-prefixes.md) — fresh Wine prefixes link Documents to the real home folder; unlink them before running a game
 - [Halo CE N64 port](halo-n64-port.md) — multiplayer split-screen port to the N64 (branch n64-port): libdragon + tiny3d, map converter, state and gotchas
+- [N64 build env on Windows](n64-build-env-windows.md) — the n64-port builds in WSL Ubuntu (/home/jack/halo-ce-universal, /root/n64); ares + launcher in C:\Users\Jack\n64
+- [N64: the user tests builds](n64-user-tests-builds.md) — just build and hand over the ROM; no hidden ares captures unless asked
