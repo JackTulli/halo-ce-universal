@@ -3747,6 +3747,17 @@ static boolean n64_far_ai_biped(
 	short local_player_index;
 	extern int n64_view_total;
 
+	/* a bot's pose as often as it thinks (port/n64/game/n64_bots.c: every
+	other tick with 4 to 6 bots, every third with 7 or 8), staggered */
+	if (unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index == NONE &&
+		object->object.parent_object_index == NONE)
+	{
+		extern int n64_bots_update_interval(void);
+		int interval = n64_bots_update_interval();
+
+		if (interval > 1)
+			return ((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) % interval) != 0;
+	}
 	/* with three or four views, every biped's pose (the players' too) every
 	other tick, staggered: a quarter-screen view hides it, and the bipeds were
 	most of a 4-player tick (a living biped's camera is its sight position,

@@ -151,7 +151,12 @@ players' too) is made every other tick, staggered (objects.c; a living
 biped's camera is its sight position, not a node's). SLAYER PRO and TEAM
 SLAYER PRO: slayer with everyone starting with a pistol (in hand) and an
 assault rifle (n64_game.c `n64_game_pro_weapons`, called from
-game_engine_postspawn_player_update). Up to 8 bots whatever the players.
+game_engine_postspawn_player_update). Up to 8 bots whatever the players. With 4 to 6 bots each thinks and has
+its pose made every other tick, with 7 or 8 every third, staggered
+(`n64_bots_update_interval`): between thoughts a bot's last action is held
+(stick, aim, a held trigger) without its presses (jump, grenade, melee,
+reload, action, swap); its timers, turning and grenade chances count by the
+interval, so it plays the same, a little slower to react.
 
 12 October, an optimisation round without runs (the user tests the
 builds), from the 9 October measurements: idle objects -- an item lying at

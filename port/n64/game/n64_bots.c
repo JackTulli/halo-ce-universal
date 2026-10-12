@@ -111,7 +111,7 @@ struct bot
 	short sight_timer, choose_timer;
 	short strafe_direction, strafe_timer;
 	short fire_timer; /* > 0 firing, < 0 pausing */
-	short stuck_timer, unstick_timer, jump_timer;
+	short stuck_timer, stuck_check, unstick_timer, jump_timer;
 	short melee_timer, grenade_timer, action_timer, reload_timer, swap_timer;
 	short weapon_timer;
 	real_point3d last_seen, last_position;
@@ -122,6 +122,9 @@ struct bot
 	short goal_ticks;
 	long given_up_weapon;
 	short given_up_timer;
+	/* its action when it last thought (held between thoughts, its presses
+	not repeated) */
+	struct player_action last_action;
 	/* the way to its target (Halo's pathfinding, source/ai/path.c) */
 	boolean path_valid;
 	short path_age;
@@ -285,6 +288,17 @@ int n64_bots_count(
 	void)
 {
 	return bots.active ? bots.count : 0;
+}
+
+/* how often a bot thinks and its pose is made (ticks): with 4 to 6 bots
+every other tick, with 7 or 8 every third (the user's choice: each biped
+costs ~2.7 ms of a tick) */
+int n64_bots_update_interval(
+	void)
+{
+	short count = bots.active ? bots.created : 0;
+
+	return count >= 7 ? 3 : count >= 4 ? 2 : 1;
 }
 
 /* the bot a player is (its number, 0 on), or -1 */
@@ -522,11 +536,13 @@ static long find_better_weapon(
 	return best;
 }
 
-/* the bot's action for a tick */
+/* the bot's action for a tick: it thinks every step ticks (its timers
+count by it) */
 static void think(
 	struct bot *bot,
 	struct player_datum *player,
-	struct player_action *action)
+	struct player_action *action,
+	short step)
 {
 	struct unit_datum *unit = unit_get(player->unit_index);
 	real_point3d eye, target_eye, target_position;
@@ -561,7 +577,7 @@ static void think(
 	if (unit->object.parent_object_index != NONE)
 	{
 		if (bot->action_timer > 0)
-			bot->action_timer--;
+			bot->action_timer -= step;
 		else
 		{
 			flags |= FLAG(_unit_control_action_bit);
@@ -578,7 +594,7 @@ static void think(
 
 	/* whom to fight (now and then), and can it see them (a few times a
 	second) */
-	if (--bot->choose_timer <= 0 || !unit_alive(bot->target_unit))
+	if ((bot->choose_timer -= step) <= 0 || !unit_alive(bot->target_unit))
 	{
 		long target = nearest_enemy(bot, &unit->object.position);
 
@@ -595,7 +611,7 @@ static void think(
 	{
 		unit_get_camera_position(bot->target_unit, &target_eye);
 		target_position = object_get(bot->target_unit)->object.position;
-		if (--bot->sight_timer <= 0)
+		if ((bot->sight_timer -= step) <= 0)
 		{
 			bot->sight_timer = 6;
 			bot->target_visible = line_of_sight(&eye, &target_eye, player->unit_index);
@@ -609,11 +625,14 @@ static void think(
 		bot->target_visible = FALSE;
 
 	/* a better weapon lying near, while there is no fight in sight */
-	if (bot->given_up_timer > 0 && --bot->given_up_timer == 0)
+	if (bot->given_up_timer > 0 && (bot->given_up_timer -= step) <= 0)
+	{
+		bot->given_up_timer = 0;
 		bot->given_up_weapon = NONE;
+	}
 	if (bot->target_visible && distance < 12.f)
 		bot->goal_weapon = NONE;
-	else if (--bot->weapon_timer <= 0)
+	else if ((bot->weapon_timer -= step) <= 0)
 	{
 		bot->weapon_timer = WEAPON_SEARCH_TICKS;
 		if (bot->goal_weapon == NONE)
@@ -631,7 +650,7 @@ static void think(
 		{
 			bot->goal_weapon = NONE;
 		}
-		else if (++bot->goal_ticks > 6 * TICKS_PER_SECOND)
+		else if ((bot->goal_ticks += step) > 6 * TICKS_PER_SECOND)
 		{
 			/* (out of its reach after all) */
 			bot->given_up_weapon = bot->goal_weapon;
@@ -654,7 +673,7 @@ static void think(
 			if (length < 1.1f)
 			{
 				if (bot->action_timer > 0)
-					bot->action_timer--;
+					bot->action_timer -= step;
 				else
 				{
 					flags |= FLAG(_unit_control_action_bit);
@@ -670,7 +689,7 @@ static void think(
 	{
 		if (!in_range)
 		{
-			bot->path_age++;
+			bot->path_age += step;
 			if (!bot->path_valid || bot->path_age > PATH_LIFETIME ||
 				horizontal_distance(&bot->path_goal, &target_position) > 4.f)
 			{
@@ -721,10 +740,14 @@ static void think(
 	}
 	else
 		desired = bot->aim;
-	/* turning: quick but not instant */
-	bot->aim.i += (desired.i - bot->aim.i) * 0.5f;
-	bot->aim.j += (desired.j - bot->aim.j) * 0.5f;
-	bot->aim.k += (desired.k - bot->aim.k) * 0.5f;
+	/* turning: quick but not instant (half the way a tick) */
+	{
+		real turn = step >= 3 ? 0.875f : step == 2 ? 0.75f : 0.5f;
+
+		bot->aim.i += (desired.i - bot->aim.i) * turn;
+		bot->aim.j += (desired.j - bot->aim.j) * turn;
+		bot->aim.k += (desired.k - bot->aim.k) * turn;
+	}
 	normalize(&bot->aim);
 
 	if (moving)
@@ -748,7 +771,7 @@ static void think(
 			forward = -0.6f;
 		else if (distance > weapon->far_range)
 			forward = 0.6f;
-		if (--bot->strafe_timer <= 0)
+		if ((bot->strafe_timer -= step) <= 0)
 		{
 			bot->strafe_timer = (short)(20 + bot_random() % 45);
 			bot->strafe_direction = (short)(bot_random() & 1 ? 1 : -1);
@@ -760,12 +783,13 @@ static void think(
 	a new path */
 	if (bot->unstick_timer > 0)
 	{
-		bot->unstick_timer--;
+		bot->unstick_timer -= step;
 		forward = bot->unstick_throttle.i;
 		strafe = bot->unstick_throttle.j;
 	}
-	else if (((game_time_get() + (bot->player_index & 7)) & 15) == 0)
+	else if ((bot->stuck_check -= step) <= 0)
 	{
+		bot->stuck_check = 16;
 		real moved = horizontal_distance(&unit->object.position, &bot->last_position);
 
 		bot->last_position = unit->object.position;
@@ -786,23 +810,23 @@ static void think(
 	}
 	if (bot->jump_timer > 0)
 	{
-		bot->jump_timer--;
+		bot->jump_timer -= step;
 		flags |= FLAG(_unit_control_jump_bit);
 	}
 
 	/* its weapon: reloaded when empty, the other one when this one is
 	spent */
 	if (bot->reload_timer > 0)
-		bot->reload_timer--;
+		bot->reload_timer -= step;
 	if (bot->swap_timer > 0)
-		bot->swap_timer--;
+		bot->swap_timer -= step;
 	if (current_weapon != NONE)
 	{
 		struct weapon_datum *weapon_datum = weapon_get(current_weapon);
 		short loaded = weapon_datum->weapon.magazines[0].rounds_loaded;
 		short total = weapon_datum->weapon.magazines[0].rounds_total;
 
-		if (!weapon_can_be_fired(current_weapon) && !bot->swap_timer)
+		if (!weapon_can_be_fired(current_weapon) && bot->swap_timer <= 0)
 		{
 			short i;
 
@@ -818,7 +842,7 @@ static void think(
 				}
 			}
 		}
-		else if (!loaded && total > 0 && !bot->reload_timer)
+		else if (!loaded && total > 0 && bot->reload_timer <= 0)
 		{
 			flags |= FLAG(_unit_control_weapon_reload_bit);
 			bot->reload_timer = TICKS_PER_SECOND;
@@ -828,11 +852,11 @@ static void think(
 	/* firing: bursts and pauses while the enemy is in sight and range (an
 	explosive one never up close) */
 	if (bot->target_visible && distance < weapon->far_range + 6.f && current_weapon != NONE &&
-		!(weapon->style == _style_explosive && distance < 4.f) && !bot->swap_timer)
+		!(weapon->style == _style_explosive && distance < 4.f) && bot->swap_timer <= 0)
 	{
 		if (bot->fire_timer > 0)
 		{
-			bot->fire_timer--;
+			bot->fire_timer -= step;
 			bot->trigger_down = weapon->style == _style_auto ? TRUE : !bot->trigger_down;
 			if (bot->trigger_down)
 			{
@@ -844,7 +868,7 @@ static void think(
 		}
 		else
 		{
-			bot->fire_timer++;
+			bot->fire_timer += step;
 			bot->trigger_down = FALSE;
 			if (bot->fire_timer >= 0)
 				bot->fire_timer = (short)(burst_ticks[bots.skill] + bot_random() % 8);
@@ -855,7 +879,7 @@ static void think(
 
 	/* melee up close */
 	if (bot->melee_timer > 0)
-		bot->melee_timer--;
+		bot->melee_timer -= step;
 	else if (bot->target_visible && distance < 1.6f)
 	{
 		flags |= FLAG(_unit_control_use_equipment_bit);
@@ -863,9 +887,9 @@ static void think(
 	}
 	/* a grenade now and then */
 	if (bot->grenade_timer > 0)
-		bot->grenade_timer--;
+		bot->grenade_timer -= step;
 	else if (bot->target_visible && distance > 6.f && distance < 18.f &&
-		(long)(bot_random() % 1000) < grenade_chance[bots.skill])
+		(long)(bot_random() % 1000) < grenade_chance[bots.skill] * step)
 	{
 		/* (the grenade button sets both, as player_control.c does) */
 		flags |= FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit);
@@ -888,6 +912,13 @@ actions, by player datum's absolute index -- the bots' written over */
 void n64_bots_actions(
 	struct player_action *actions)
 {
+	/* (the presses a held action does not repeat between thoughts) */
+	unsigned long const pressed =
+		FLAG(_unit_control_action_bit) | FLAG(_unit_control_jump_bit) |
+		FLAG(_unit_control_use_equipment_bit) | FLAG(_unit_control_throw_grenade_bit) |
+		FLAG(_unit_control_weapon_secondary_trigger_bit) | FLAG(_unit_control_weapon_reload_bit) |
+		FLAG(_unit_control_swap_weapons_bit);
+	short interval = (short)n64_bots_update_interval();
 	short i;
 
 	if (!bots.active || !bots.created)
@@ -914,6 +945,17 @@ void n64_bots_actions(
 			bot->unit_index = NONE;
 			continue;
 		}
-		think(bot, player, action);
+		/* its own tick to think (staggered between the bots), or a new
+		life: a thought; else its last action held, presses not again */
+		if (bot->unit_index != player->unit_index || (game_time_get() + i) % interval == 0)
+		{
+			think(bot, player, action, interval);
+			bot->last_action = *action;
+		}
+		else
+		{
+			*action = bot->last_action;
+			action->control_flags &= ~pressed;
+		}
 	}
 }
