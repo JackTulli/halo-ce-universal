@@ -503,6 +503,48 @@ extern boolean debug_object_garbage_collection;
 
 extern struct data_array *object_header_data;
 
+#ifdef HALO_N64
+/* datum_get and datum_try_and_get on the object headers, inline (the same
+tests, asserts aside): object lookups were most of datum_get's calls, 6-7%
+of the processor in a game as a function of its own */
+static __inline struct object_header_datum *n64_object_header_try_and_get(
+	long object_index)
+{
+	struct data_array *data = object_header_data;
+	short absolute_index = (short)object_index;
+	short identifier = (short)(object_index >> 16);
+	struct object_header_datum *header;
+
+	if (object_index == NONE || absolute_index < 0 || absolute_index >= data->maximum_count)
+		return NULL;
+	header = (struct object_header_datum *)((byte *)data->data + data->size * absolute_index);
+	if (!header->identifier || (identifier && header->identifier != identifier))
+		return NULL;
+	return header;
+}
+
+static __inline struct object_header_datum *n64_object_header_get(
+	long object_index)
+{
+	struct data_array *data = object_header_data;
+	short absolute_index = (short)object_index;
+	short identifier = (short)(object_index >> 16);
+	struct object_header_datum *header;
+
+	if (absolute_index < 0 || absolute_index >= data->count)
+		return NULL;
+	header = (struct object_header_datum *)((byte *)data->data + data->size * absolute_index);
+	if (!header->identifier || (identifier && identifier != header->identifier))
+		return NULL;
+	return header;
+}
+
+#undef object_header_get
+#undef object_header_try_and_get
+#define object_header_get(index)			n64_object_header_get(index)
+#define object_header_try_and_get(index)	n64_object_header_try_and_get(index)
+#endif
+
 extern boolean debug_objects_position_velocity;
 extern boolean debug_objects_bounding_spheres;
 extern boolean debug_objects_collision_models;

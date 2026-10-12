@@ -3198,3 +3198,167 @@ boolean valid_real_sine_cosine(
 }
 
 /* ---------- private code */
+
+#ifdef HALO_N64
+#include <math.h>
+
+/* The N64's trigonometry: Cephes' single precision routines (S. Moshier),
+inline. newlib's sinf and cosf took every angle past pi/4 through
+__ieee754_rem_pio2f, and its atanf/acosf through divisions and long
+polynomials: a few per cent of a frame in the HUD and the units' aiming
+(aiming_screen_apply). Within a few units in the last place; angles
+beyond +-8192 (or out of acos's range) go to newlib. */
+#define N64_PI 3.14159265358979f
+#define N64_PI_2 1.57079632679490f
+#define N64_PI_4 0.78539816339745f
+
+/* an angle's octant and its remainder there: sine of the remainder when
+the octant asks (*use_sine), cosine else */
+static __inline real n64_trig_reduce(
+	real x,
+	int *octant)
+{
+	int j = (int)(x * 1.27323954473516f);
+	real y = (real)j;
+
+	if (j & 1)
+	{
+		j += 1;
+		y += 1.f;
+	}
+	*octant = j & 7;
+	return ((x - y * 0.78515625f) - y * 2.4187564849853515625e-4f) - y * 3.77489497744594108e-8f;
+}
+
+static __inline real n64_sine_polynomial(
+	real x)
+{
+	real z = x * x;
+
+	return ((-1.9515295891e-4f * z + 8.3321608736e-3f) * z - 1.6666654611e-1f) * z * x + x;
+}
+
+static __inline real n64_cosine_polynomial(
+	real x)
+{
+	real z = x * x;
+
+	return ((2.443315711809948e-5f * z - 1.388731625493765e-3f) * z + 4.166664568298827e-2f) * z * z - 0.5f * z + 1.f;
+}
+
+real n64_sinf(
+	real angle)
+{
+	real x = angle < 0.f ? -angle : angle, y;
+	int negative = angle < 0.f, octant;
+
+	if (!(x < 8192.f))
+		return sinf(angle);
+	x = n64_trig_reduce(x, &octant);
+	if (octant > 3)
+	{
+		negative = !negative;
+		octant -= 4;
+	}
+	y = octant == 1 || octant == 2 ? n64_cosine_polynomial(x) : n64_sine_polynomial(x);
+	return negative ? -y : y;
+}
+
+real n64_cosf(
+	real angle)
+{
+	real x = angle < 0.f ? -angle : angle, y;
+	int negative = 0, octant;
+
+	if (!(x < 8192.f))
+		return cosf(angle);
+	x = n64_trig_reduce(x, &octant);
+	if (octant > 3)
+	{
+		negative = !negative;
+		octant -= 4;
+	}
+	if (octant > 1)
+		negative = !negative;
+	y = octant == 1 || octant == 2 ? n64_sine_polynomial(x) : n64_cosine_polynomial(x);
+	return negative ? -y : y;
+}
+
+static __inline real n64_atanf(
+	real value)
+{
+	real x = value < 0.f ? -value : value, y, z;
+
+	if (x > 2.414213562373095f)
+	{
+		y = N64_PI_2;
+		x = -1.f / x;
+	}
+	else if (x > 0.4142135623730950f)
+	{
+		y = N64_PI_4;
+		x = (x - 1.f) / (x + 1.f);
+	}
+	else
+		y = 0.f;
+	z = x * x;
+	y += (((8.05374449538e-2f * z - 1.38776856032e-1f) * z + 1.99777106478e-1f) * z - 3.33329491539e-1f) * z * x + x;
+	return value < 0.f ? -y : y;
+}
+
+real n64_atan2f(
+	real y,
+	real x)
+{
+	real angle;
+
+	if (y != y || x != x)
+		return atan2f(y, x);
+	if (x == 0.f)
+		return y > 0.f ? N64_PI_2 : y < 0.f ? -N64_PI_2 : 0.f;
+	if (y == 0.f)
+		return x < 0.f ? N64_PI : 0.f;
+	angle = n64_atanf(y / x);
+	if (x < 0.f)
+		angle += y < 0.f ? -N64_PI : N64_PI;
+	return angle;
+}
+
+/* asin for |x| <= 1 */
+static __inline real n64_asinf(
+	real value)
+{
+	real a = value < 0.f ? -value : value, x, z;
+	int large = a > 0.5f;
+
+	if (a < 1.0e-4f)
+		return value;
+	if (large)
+	{
+		z = 0.5f * (1.f - a);
+		x = sqrtf(z);
+	}
+	else
+	{
+		x = a;
+		z = x * x;
+	}
+	z = ((((4.2163199048e-2f * z + 2.4181311049e-2f) * z + 4.5470025998e-2f) * z + 7.4953002686e-2f) * z +
+		1.6666752422e-1f) * z * x + x;
+	if (large)
+		z = N64_PI_2 - (z + z);
+	return value < 0.f ? -z : z;
+}
+
+real n64_acosf(
+	real x)
+{
+	if (!(x >= -1.f && x <= 1.f))
+		return acosf(x);
+	if (x < -0.5f)
+		return N64_PI - 2.f * n64_asinf(sqrtf(0.5f * (1.f + x)));
+	if (x > 0.5f)
+		return 2.f * n64_asinf(sqrtf(0.5f * (1.f - x)));
+	return N64_PI_2 - n64_asinf(x);
+}
+#endif

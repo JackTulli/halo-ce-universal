@@ -3746,7 +3746,10 @@ static boolean n64_far_ai_biped(
 	struct unit_datum *unit = (struct unit_datum *)object;
 	short local_player_index;
 
-	if (unit->unit.player_index != NONE || object->object.parent_object_index != NONE ||
+	/* (a player on a controller: always; a bot -- a player with none,
+	port/n64/game/n64_bots.c -- as an AI) */
+	if ((unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index != NONE) ||
+		object->object.parent_object_index != NONE ||
 		((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
 		return FALSE;
 	if (!n64_object_recently_seen(object_index))
@@ -4463,6 +4466,41 @@ void objects_garbage_collection(
 }
 
 
+#ifdef HALO_N64
+/* an object that waits for something else to change it: an item lying at
+rest (its update only keeps it so -- item physics runs while it is not at
+rest, and whatever moves it clears that first), an empty vehicle at rest
+(its physics waits for the same; anyone getting in becomes its child),
+scenery that does not animate. objects_update updates them every fourth
+tick: on Blood Gulch they were ~4 ms of a 21 ms tick (15 weapons 1.9,
+19 equipment 0.8, 45 scenery 1.8, 2 vehicles 1.2) */
+static boolean n64_object_idle(
+	struct object_header_datum *header)
+{
+	struct object_datum *object = header->datum;
+
+	if (object->object.parent_object_index != NONE)
+		return FALSE;
+	if (TEST_FLAG(_object_mask_item, header->type))
+		return TEST_FLAG(object->object.flags, _object_at_rest_bit);
+	if (header->type == _object_type_scenery)
+		return object->object.animation.animation_graph_index == NONE;
+	if (header->type == _object_type_vehicle && TEST_FLAG(object->object.flags, _object_at_rest_bit))
+	{
+		long child_index;
+
+		for (child_index = object->object.first_child_object_index; child_index != NONE;
+			child_index = object_get(child_index)->object.next_object_index)
+		{
+			if (TEST_FLAG(_object_mask_unit, object_get_type(child_index)))
+				return FALSE;
+		}
+		return TRUE;
+	}
+	return FALSE;
+}
+#endif
+
 void objects_update(
 	void)
 {
@@ -4542,9 +4580,14 @@ void objects_update(
 				match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 416, object_get(object_index)->object.parent_object_index==NONE);
 				match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 417, object_get(object_index)->object.next_object_index==NONE);
 			
-				if (!dont_update_object ||
+				if ((!dont_update_object ||
 					TEST_FLAG(_object_mask_unit, object_header->type) &&
 					unit_get(object_index)->unit.player_index!=NONE)
+#ifdef HALO_N64
+					/* (idle: every fourth tick, staggered) */
+					&& (!((game_time_get() + i) & 3) || !n64_object_idle(object_header))
+#endif
+					)
 				{
 #ifdef HALO_N64
 					/* timed by type (port/n64/game/n64_game.c logs the sums) */

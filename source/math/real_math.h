@@ -894,13 +894,21 @@ extern const real_rectangle3d *global_null_rectangle3d;
 
 /* ---------- public code */
 
+#ifdef HALO_N64
+/* the N64's trigonometry (real_math.c): Cephes' single precision routines */
+real n64_sinf(real angle);
+real n64_cosf(real angle);
+real n64_atan2f(real y, real x);
+real n64_acosf(real x);
+#endif
+
 __inline real sine(
 	real angle)
 {
 #ifdef HALO_N64
 	/* (single precision: the N64 plays no lockstep games, port/include/
 	halo_math.h; the double routines cost several times more) */
-	return sinf(angle);
+	return n64_sinf(angle);
 #else
 	return sin(angle);
 #endif
@@ -912,7 +920,7 @@ __inline real cosine(
 #ifdef HALO_N64
 	/* (single precision: the N64 plays no lockstep games, port/include/
 	halo_math.h; the double routines cost several times more) */
-	return cosf(angle);
+	return n64_cosf(angle);
 #else
 	return cos(angle);
 #endif
@@ -942,7 +950,7 @@ __inline real arctangent(
 #ifdef HALO_N64
 	/* (single precision: the N64 plays no lockstep games, port/include/
 	halo_math.h; the double routines cost several times more) */
-	return atan2f(y, x);
+	return n64_atan2f(y, x);
 #else
 	return atan2(y, x);
 #endif
@@ -955,7 +963,7 @@ __inline real arccosine(
 #ifdef HALO_N64
 	/* (single precision: the N64 plays no lockstep games, port/include/
 	halo_math.h; the double routines cost several times more) */
-	return acosf(x);
+	return n64_acosf(x);
 #else
 	return acos(x);
 #endif

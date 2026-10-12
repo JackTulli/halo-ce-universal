@@ -141,6 +141,22 @@ game's speed (game seconds a second) and the stack's depth.
 
 ## State (October 2026)
 
+12 October, an optimisation round without runs (the user tests the
+builds), from the 9 October measurements: idle objects -- an item lying at
+rest, an empty vehicle at rest, scenery that does not animate -- are
+updated every fourth tick (objects.c `n64_object_idle`; on Blood Gulch they
+were ~4 ms of a 21 ms 4-player tick: 15 weapons 1.9, 19 equipment 0.8, 45
+scenery 1.8, 2 vehicles 1.2; pickups are the players' side, item physics
+waits for whatever clears the at-rest flag); a bot no view drew (or far
+from every player) has its pose and function values made every other
+tick, as the Covenant; the object header lookups are inline (objects.h:
+datum_get was 6-7% of the processor, mostly object lookups); sine, cosine,
+atan2 and acos are Cephes' single precision routines (real_math.c; newlib's
+sinf reduced every angle past pi/4 through __ieee754_rem_pio2f; within
+3e-7 of libm's). +7 KB of code. Next, with measurements: the bipeds'
+movement physics (collision_move_pill, ~1.3 ms a biped a tick, a quarter
+of the tick) and the HUD's recordings (5-8 ms a frame with 2-4 views).
+
 12 October: bots in multiplayer (`port/n64/game/n64_bots.c`; the setup's
 BOTS row: left/right how many, A their skill; players and bots at most 8).
 A bot is a player of the game like the ones on the controllers --
