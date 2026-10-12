@@ -52,6 +52,11 @@ boolean errors_handle(
 	void);
 void errors_clear(
 	void);
+#ifdef HALO_N64
+/* (cold: the game calls it from inside hot functions, on paths it should
+never take; GCC lays those out of the way of the rest) */
+__attribute__((cold))
+#endif
 void error(
 	short priority,
 	const char *format,

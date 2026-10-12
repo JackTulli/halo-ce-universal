@@ -52,4 +52,32 @@ double halo_pow(double x, double y);
 #define log10(x) halo_log10(x)
 #define pow(x, y) halo_pow(x, y)
 
+#if defined(HALO_N64) && !defined(__HALO_MUSL_MATH_MATH_H)
+/* The N64 plays on one machine (split screen), so nothing has to match
+another machine to the bit, and the VR4300 does double precision slowly and
+musl's routines in software: the game's sines, cosines, powers and
+exponentials there are single precision (source/math/real_math.c, Cephes'
+polynomials, within a few units in the last place of float), still double
+to the expressions around them. musl's own sources keep their names. */
+float n64_sinf(float angle);
+float n64_cosf(float angle);
+float n64_atan2f(float y, float x);
+float n64_acosf(float x);
+float n64_powf(float x, float y);
+float n64_expf(float x);
+
+#undef sin
+#undef cos
+#undef atan2
+#undef acos
+#undef exp
+#undef pow
+#define sin(x) ((double)n64_sinf((float)(x)))
+#define cos(x) ((double)n64_cosf((float)(x)))
+#define atan2(y, x) ((double)n64_atan2f((float)(y), (float)(x)))
+#define acos(x) ((double)n64_acosf((float)(x)))
+#define exp(x) ((double)n64_expf((float)(x)))
+#define pow(x, y) ((double)n64_powf((float)(x), (float)(y)))
+#endif
+
 #endif

@@ -721,6 +721,11 @@ void network_distributed_new_game(void);
 void network_objects_placed(void);
 #endif
 
+#ifdef HALO_N64
+/* counts the maps loaded: what a list built from a map's tags was built for */
+long n64_map_generation;
+#endif
+
 void game_initialize_for_new_map(
 	void)
 {
@@ -753,9 +758,12 @@ void game_initialize_for_new_map(
 	breakable_surfaces_initialize_for_new_map();
 #ifdef HALO_N64
 	{
-		/* (the bipeds' lists of the level around them: physics/collisions.c) */
+		/* (the bipeds' lists of the level around them: physics/collisions.c;
+		lists made of a map's tags check the generation) */
+		extern long n64_map_generation;
 		void n64_pill_caches_reset(void);
 
+		n64_map_generation++;
 		n64_pill_caches_reset();
 	}
 #endif

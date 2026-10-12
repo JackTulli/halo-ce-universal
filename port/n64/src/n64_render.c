@@ -1207,9 +1207,9 @@ static int within_fog(float x0, float y0, float z0, float x1, float y1, float z1
 
 	if (!renderer.fog || debug_fog_test == 1)
 		return 1;
-	dx = fmaxf(fabsf(renderer.eye[0] - x0), fabsf(x1 - renderer.eye[0]));
-	dy = fmaxf(fabsf(renderer.eye[1] - y0), fabsf(y1 - renderer.eye[1]));
-	dz = fmaxf(fabsf(renderer.eye[2] - z0), fabsf(z1 - renderer.eye[2]));
+	dx = n64_max_f(fabsf(renderer.eye[0] - x0), fabsf(x1 - renderer.eye[0]));
+	dy = n64_max_f(fabsf(renderer.eye[1] - y0), fabsf(y1 - renderer.eye[1]));
+	dz = n64_max_f(fabsf(renderer.eye[2] - z0), fabsf(z1 - renderer.eye[2]));
 	return dx * dx + dy * dy + dz * dz <= renderer.fog_end * renderer.fog_end;
 }
 
@@ -1333,7 +1333,7 @@ void n64_render_view(const struct n64_view *view)
 	renderer.rects[renderer.view_count][2] = view->x1;
 	renderer.rects[renderer.view_count][3] = view->y1;
 	viewport = &renderer.viewports[renderer.view_count++];
-	if (!(renderer.frame_index % 30))
+	if (!(renderer.frame_index % 30) && n64_debug_flag("debug_stats"))
 	{
 		debugf("view %d: at %.2f %.2f %.2f forward %.2f %.2f %.2f up %.2f %.2f %.2f fov %.2f rect %d,%d-%d,%d\n",
 			renderer.view_count - 1, view->position[0], view->position[1], view->position[2],
@@ -1940,7 +1940,11 @@ void n64_render_frame_end(void)
 		heap_stats_t heap;
 		unsigned long long now = get_ticks();
 
-		if (renderer.window_start)
+		/* (the statistics, with "debug_stats": formatting them, the heap's
+		walk and the stack's scan cost the frame they were printed in) */
+		int stats = n64_debug_flag("debug_stats");
+
+		if (renderer.window_start && stats)
 		{
 			debugf("frames: %lu.%lu fps; per frame: draw %llu us (level %llu, objects %llu, first person %llu, hud %llu), tick %lu us\n",
 				(unsigned long)(120ULL * TICKS_PER_SECOND * 10 / (now - renderer.window_start) / 10),
@@ -1952,11 +1956,12 @@ void n64_render_frame_end(void)
 		renderer.window_start = now;
 		renderer.draw_ticks = renderer.level_ticks = renderer.object_ticks = renderer.first_person_ticks = 0;
 		renderer.hud_ticks = 0;
-		sys_get_heap_stats(&heap);
+		if (stats)
 		{
 			extern unsigned long n64_exceptions_emulated;
 			static unsigned long exceptions_before;
 
+			sys_get_heap_stats(&heap);
 			debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
 				"models %lu KB (%lu reads), textures %lu KB (%lu reads); %lu exceptions emulated\n",
 				renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,

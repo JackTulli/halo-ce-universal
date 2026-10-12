@@ -173,6 +173,42 @@ their pauses between bursts are half as long again, with 7 or 8 twice
 the Covenant think every third tick with five or more up or three or four
 players (every second), turning as fast a tick.
 
+12 October, the HUD and whatever else could be found, without runs (the
+user tests), from the 8-9 October profiles, the disassembly and a research
+pass on the VR4300 and ares (ares charges the CPU for instructions, FPU and
+divide latencies and cache misses: a data line 40 cycles, a code line 48;
+it does not seem to model the RDP's memory traffic, so the CPU is what
+counts). The HUD: each sprite rectangle a quad uploads is kept as a
+recording of its own, made after the HUD's recording and called from then
+on (rdpq_tex_upload_sub's work on the CPU every quad: 48 of them, freed with
+the map); motion sensor blips upload the dot once for all of them and draw
+plain scaled rectangles (rdpq_tex_blit's planning per blip); text loads its
+atlas a band of 32 rows at a time and draws each glyph from it (a load per
+character before) -- the same commands, texels and order. The maths: on
+the N64 the game's sin, cos, atan2, acos, pow and exp are single precision
+(port/include/halo_math.h: musl's double ones existed for lockstep network
+play, which split screen doesn't have; bipeds, vehicles and projectiles
+called them every tick); fast_ftol, fast_ftol_C and colour packing round by
+the VR4300's conversion (cvt.w.s/cvt.w.d: rint on a double was a library
+call); the animations' keyframe floors and the objects' function value
+floor and fmods are float ones, to the bit (n64_floorf, n64_fraction,
+fmodf); bots and Covenant use square_root. fminf/fmaxf/floorf/ceilf in the
+HUD, particles and fog tests are inline (newlib's asked __fpclassifyf).
+Teleporter checks (every player, every tick) read only the map's flags of
+their type (game_engine.c find_netgame_flags, listed once a map). A
+debug flag name at a second address is cached as well (it compared names
+on every call). The periodic statistics (every 30, 120 and 240 frames: float
+formatting, a heap walk, a scan of the 192 KB stack) print only with
+`debug_stats`. Code generation (tools/n64_build.py CODE_FLAGS): -mno-fix4300
+(the toolchain's default -mfix4300 put a nop after each of 8,179 floating
+point multiplies, for a multiplier bug of the first consoles' CPUs that
+ares does not have -- a real early console could get rare wrong products),
+no 8-byte padding of loops, jumps and labels; error(), display_assert and
+halt_and_catch_fire are cold. 43 KB less code (1.30 MB). Tried and left
+out: libdragon with NDEBUG (it also takes out its crash screen and debug
+channel) and without its pattern-initialised locals (two instructions in
+the texture loader).
+
 12 October, the bipeds' movement physics, again without runs (about 1 ms
 a biped a tick, measured 9 October: one collision_move_pill each, which
 gathers the level's geometry around the pill -- a walk down the collision

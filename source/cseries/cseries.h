@@ -198,6 +198,9 @@ char *strnlwr(char *string, long n);
 char *strupr(char *string);
 char *strlwr(char *string);
 char *csprintf(char *buffer, char *format, ...);
+#ifdef HALO_N64
+__attribute__((cold))
+#endif
 void display_assert(char *information, char *file, long line, boolean fatal);
 long csmemcmp(const void *p1, const void *p2, unsigned long size);
 void *csmemmove(void *destination, const void *source, unsigned long size);
@@ -225,6 +228,9 @@ extern __thread boolean display_assert_skipped;
 
 /* ---------- prototypes/MAIN.C */
 
+#ifdef HALO_N64
+__attribute__((cold))
+#endif
 void halt_and_catch_fire(void);
 
 /* ---------- prototypes/DEBUG_MEMORY.C */
@@ -330,12 +336,39 @@ extern const union real_rgb_color *global_real_rgb_violet;
 
 /* ---------- public code */
 
+#ifdef HALO_N64
+/* rint's rounding (the current mode: to nearest, ties to even) by the
+VR4300's own conversion, one instruction: rint on a double was a library
+call, made by every fast_ftol and every colour packed (bitmaps_inlines.h).
+The same results, overflow and NaN included (the invalid operation the cast
+of rint's result raised) */
+static __inline long n64_round_to_long(
+	float value)
+{
+	union { float f; long l; } word;
+
+	__asm__("cvt.w.s %0, %1" : "=f"(word.f) : "f"(value));
+	return word.l;
+}
+
+static __inline long n64_round_double_to_long(
+	double value)
+{
+	union { float f; long l; } word;
+
+	__asm__("cvt.w.d %0, %1" : "=f"(word.f) : "f"(value));
+	return word.l;
+}
+#endif
+
 __inline long fast_ftol(
 	real value)
 {
 	long result;
 
-#ifdef HALO_LINUX
+#if defined(HALO_N64)
+	result = n64_round_to_long(value);
+#elif defined(HALO_LINUX)
 	/* FISTP: round to nearest under the default control word */
 	result = (long)__builtin_rint((double)value);
 #else

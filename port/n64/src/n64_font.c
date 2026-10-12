@@ -136,6 +136,14 @@ void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long colo
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	rdpq_mode_filter(FILTER_POINT);
 	rdpq_set_prim_color(RGBA32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, color >> 24));
+	/* rdpq_tex_blit loaded each glyph on its own, the texture loader's work
+	on the CPU per character. A band of the atlas's rows (as many as TMEM
+	holds) is loaded instead, and each glyph in it drawn as the blit drew
+	it -- the same rectangle and texels, point sampled at whole pixels --
+	the next band loaded when a glyph lies outside it */
+	int band_rows = 4096 / ((TEX_FORMAT_PIX2BYTES(surface_get_format(&atlas), atlas.width) + 7) & ~7);
+	int band_top = -1, band_bottom = -1;
+
 	for (; *text; text++)
 	{
 		int c = (unsigned char)*text;
@@ -146,9 +154,24 @@ void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long colo
 		g = &font->glyphs[c - FIRST_CHARACTER];
 		if (g->present && g->width && g->height)
 		{
-			rdpq_tex_blit(&atlas, x - g->origin_x, y - g->origin_y, &(rdpq_blitparms_t){
-				.s0 = g->x, .t0 = g->y, .width = g->width, .height = g->height,
-			});
+			if (g->height > band_rows)
+			{
+				band_top = band_bottom = -1;
+				rdpq_tex_blit(&atlas, x - g->origin_x, y - g->origin_y, &(rdpq_blitparms_t){
+					.s0 = g->x, .t0 = g->y, .width = g->width, .height = g->height,
+				});
+			}
+			else
+			{
+				if (g->y < band_top || g->y + g->height > band_bottom)
+				{
+					band_top = g->y;
+					band_bottom = band_top + band_rows < atlas.height ? band_top + band_rows : atlas.height;
+					rdpq_tex_upload_sub(TILE0, &atlas, NULL, 0, band_top, atlas.width, band_bottom);
+				}
+				rdpq_texture_rectangle(TILE0, x - g->origin_x, y - g->origin_y,
+					x - g->origin_x + g->width, y - g->origin_y + g->height, g->x, g->y);
+			}
 		}
 		x += g->advance;
 	}

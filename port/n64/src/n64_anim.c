@@ -153,7 +153,8 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 	chunk->last_used = anim.clock;
 	if ((anim.requests & 4095) == 0)
 	{
-		debugf("anim: %lu requests, %lu%% read from the cartridge\n", anim.requests, anim.misses * 100 / anim.requests);
+		if (n64_debug_flag("debug_stats"))
+			debugf("anim: %lu requests, %lu%% read from the cartridge\n", anim.requests, anim.misses * 100 / anim.requests);
 		anim.misses = anim.requests = 0;
 	}
 	return chunk->data + (offset - chunk->start);

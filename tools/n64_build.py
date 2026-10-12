@@ -32,6 +32,19 @@ TINY3D = Path(os.environ.get("TINY3D", Path.home() / "n64" / "tiny3d"))
 # reasons behind each): 16-bit wchar_t, C89 with common tentative
 # definitions, MSVC's tolerance of aliasing, overflow and null checks, small
 # structures returned in registers (hs_runtime.c), no fused multiply-adds.
+# Code generation for the VR4300 under ares (both the game and the platform
+# layer). No nop after each floating point multiply: -mfix4300 (the
+# toolchain's default, libdragon 39d0d60) works around a multiplier bug of
+# the earliest consoles' CPUs, which ares does not have; 8,179 nops, a cycle
+# each. No padding before loops, jump targets and labels: the VR4300 issues
+# one instruction a cycle from its 16 KB instruction cache, so aligning them
+# to 8 bytes gains nothing and the padding takes cache lines (a miss is 48
+# cycles in ares).
+CODE_FLAGS = [
+    "-mno-fix4300",
+    "-falign-jumps=1", "-falign-loops=1", "-falign-labels=1",
+]
+
 GAME_ABI = [
     "-march=vr4300", "-mtune=vr4300", "-mabi=o64",
     "-G0",
@@ -47,6 +60,7 @@ GAME_ABI = [
     "-fsigned-char",
     "-ffunction-sections", "-fdata-sections",
     "-falign-functions=32",
+    *CODE_FLAGS,
     "-g",
     *(f"-fno-builtin-{name}" for name in (
         "wcslen", "wcsnlen", "wcschr", "wcsrchr", "wcscmp", "wcsncmp", "wcscpy",
@@ -76,6 +90,7 @@ PLATFORM_FLAGS = [
     f"-I{N64_INST}/mips64-elf/include",
     "-include", "ktls.h",
     "-falign-functions=32",
+    *CODE_FLAGS,
     "-ffunction-sections", "-fdata-sections", "-g",
     "-std=gnu17",
     "-DN64", "-DLIBDRAGON_PREVIEW=2",
@@ -238,7 +253,7 @@ def main():
         "ldlibs": " ".join(port.get("libraries", [])) + f" {TINY3D}/build/libt3d.a -ldragon -lm -ldragonsys",
         # (four link-time jobs: each lto1 takes hundreds of MB, and sixteen
         # of them beside the map conversions froze a 15 GB machine)
-        "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small] if lto else [])),
+        "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])),
     })
     # the cartridge's files (DragonFS): the converted maps, and the flags
     # port.json asks for (an "autotest" file drives the controllers by script)

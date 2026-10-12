@@ -4504,6 +4504,68 @@ long find_netgame_flags(
 	scenario = global_scenario_get();
 	flag_index = 0;
 
+#ifdef HALO_N64
+	/* each type's flags in index order, listed once a map: every player's
+	teleporter check (game_engine_update_teleporters) read every flag of
+	the map each tick, two per player; the same flags in the same order */
+	if (type >= 0 && type < 16 && scenario->netgame_flags.count <= 256)
+	{
+		extern long n64_map_generation;
+		static long generation = -1;
+		static void const *address;
+		static long count;
+		static short first[17];
+		static unsigned char indices[256];
+		short list_index;
+
+		if (generation != n64_map_generation || address != scenario->netgame_flags.address ||
+			count != scenario->netgame_flags.count)
+		{
+			short kind;
+			short listed = 0;
+
+			for (kind = 0; kind < 16; kind++)
+			{
+				first[kind] = listed;
+				for (flag_index = 0; flag_index < scenario->netgame_flags.count; flag_index++)
+				{
+					if (TAG_BLOCK_GET_ELEMENT(&scenario->netgame_flags, flag_index, struct scenario_netgame_flag)->type == kind)
+						indices[listed++] = (unsigned char)flag_index;
+				}
+			}
+			first[16] = listed;
+			generation = n64_map_generation;
+			address = scenario->netgame_flags.address;
+			count = scenario->netgame_flags.count;
+		}
+		for (list_index = first[type]; list_index < first[type + 1]; list_index++)
+		{
+			struct scenario_netgame_flag *flag = TAG_BLOCK_GET_ELEMENT(
+				&scenario->netgame_flags,
+				indices[list_index],
+				struct scenario_netgame_flag);
+
+			if (team_index != NONE && team_index != flag->team_index)
+				continue;
+			if (position)
+			{
+				if (radius >= 0.0f &&
+					distance_squared3d(&flag->position, position) > radius_squared)
+				{
+					continue;
+				}
+				if (height > 0.0f &&
+					fabs(flag->position.z - position->z) > height)
+				{
+					continue;
+				}
+			}
+			if (found_count < maximum_count)
+				flag_indices[found_count++] = indices[list_index];
+		}
+		return found_count;
+	}
+#endif
 	for (; flag_index < scenario->netgame_flags.count; flag_index++)
 	{
 		struct scenario_netgame_flag *flag = TAG_BLOCK_GET_ELEMENT(

@@ -170,7 +170,16 @@ HALO_COMMON(window_globals, 160); /* struct window_globals_prefix window_globals
 inline fast_ftol in cseries.h (fld/fistp). */
 __attribute__((weak)) long fast_ftol_C(float value)
 {
+#ifdef HALO_N64
+	/* (the VR4300's conversion in the current mode: lrintf's result without
+	the library call; cseries.h n64_round_to_long) */
+	union { float f; long l; } word;
+
+	__asm__("cvt.w.s %0, %1" : "=f"(word.f) : "f"(value));
+	return word.l;
+#else
 	return lrintf(value);
+#endif
 }
 
 /* The debug console's "crash" command, which deliberately brings the game

@@ -230,13 +230,13 @@ static real horizontal_distance(
 {
 	real dx = a->x - b->x, dy = a->y - b->y;
 
-	return (real)sqrt(dx * dx + dy * dy);
+	return square_root(dx * dx + dy * dy);
 }
 
 static void normalize(
 	real_vector3d *v)
 {
-	real length = (real)sqrt(v->i * v->i + v->j * v->j + v->k * v->k);
+	real length = square_root(v->i * v->i + v->j * v->j + v->k * v->k);
 
 	if (length > 1e-4f)
 	{
@@ -604,7 +604,7 @@ static boolean follow_path(
 	{
 		real_point3d const *point = &path->steps[path->step_index].point;
 		real dx = point->x - position->x, dy = point->y - position->y;
-		real length = (real)sqrt(dx * dx + dy * dy);
+		real length = square_root(dx * dx + dy * dy);
 
 		if (length > 0.6f)
 		{
@@ -699,7 +699,7 @@ static void think(
 			/* no path (yet): straight for it */
 			real dx = target_position.x - unit->object.position.x;
 			real dy = target_position.y - unit->object.position.y;
-			real length = (real)sqrt(dx * dx + dy * dy);
+			real length = square_root(dx * dx + dy * dy);
 
 			if (length > 0.01f)
 			{
@@ -750,7 +750,7 @@ static void think(
 		/* the way to go, relative to where it faces (Halo's throttle: i
 		forward, j left) */
 		real fi = enemy->aim.i, fj = enemy->aim.j;
-		real length = (real)sqrt(fi * fi + fj * fj);
+		real length = square_root(fi * fi + fj * fj);
 
 		if (length > 0.01f)
 		{

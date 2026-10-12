@@ -86,8 +86,14 @@ int n64_debug_flag(const char *name)
 	}
 	for (int i = 0; i < count; i++)
 	{
+		/* (the same name at another address: another file's literal; it
+		takes the slot too, or each call came back here to compare names) */
 		if (!strcmp(cache[i].name, name))
+		{
+			slots[slot].name = name;
+			slots[slot].value = cache[i].value;
 			return cache[i].value;
+		}
 	}
 	snprintf(path, sizeof(path), "rom:/%s", name);
 	file = fopen(path, "rb");

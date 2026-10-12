@@ -38,6 +38,15 @@ smaller) */
 #define BLIP_SIZE 16
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+/* uploads of a sprite's rectangle kept as recordings (below) */
+#define UPLOAD_BLOCKS 48
+
+/* the float helpers the quads need, inline: newlib's fminf and fmaxf asked
+__fpclassifyf about every argument, and floorf and ceilf were calls */
+static inline float min_f(float a, float b) { return a < b ? a : b; }
+static inline float max_f(float a, float b) { return a > b ? a : b; }
+static inline int floor_int(float x) { int i = (int)x; return (float)i > x ? i - 1 : i; }
+static inline int ceil_int(float x) { int i = (int)x; return (float)i < x ? i + 1 : i; }
 
 enum
 {
@@ -80,6 +89,20 @@ static struct
 	/* n64_hud_inset; -1 before it is first asked for */
 	int inset;
 } hud = {.inset = -1};
+
+/* A quad's texture upload was rdpq_tex_upload_sub's work on the CPU every
+time the HUD was recorded: the texture loader's plans and a dozen commands.
+Each sprite rectangle uploaded is kept as a recording of its own (made once
+the HUD's recording is done: blocks don't nest while recording) and called
+from then on -- the same commands. They stay until the next map, with the
+HUD recordings that call them. */
+static struct upload_block
+{
+	surface_t surface;
+	int s0, t0, s1, t1;
+	rspq_block_t *block; /* NULL until recorded */
+} uploads[UPLOAD_BLOCKS];
+static int upload_count;
 
 static struct meter_entry
 {
@@ -125,6 +148,12 @@ void n64_hud_set_map(const char *map_name)
 			rdpq_call_deferred((void (*)(void *))rspq_block_free, hud.recordings[i]);
 		hud.recordings[i] = NULL;
 	}
+	for (int i = 0; i < upload_count; i++)
+	{
+		if (uploads[i].block)
+			rdpq_call_deferred((void (*)(void *))rspq_block_free, uploads[i].block);
+	}
+	upload_count = 0;
 	for (int i = 0; i < METER_CACHE; i++)
 	{
 		surface_t slot = meters[i].slot;
@@ -257,6 +286,17 @@ void n64_hud_end(void)
 		hud.recordings[hud.recording] = recording;
 		rspq_block_run(recording);
 		hud.recording = -1;
+		/* the uploads this recording made directly, recorded for the next */
+		for (int i = 0; i < upload_count; i++)
+		{
+			if (!uploads[i].block)
+			{
+				rspq_block_begin();
+				rdpq_tex_upload_sub(TILE0, &uploads[i].surface, NULL, uploads[i].s0, uploads[i].t0, uploads[i].s1, uploads[i].t1);
+				uploads[i].block = rspq_block_end();
+			}
+		}
+		hud.tmem_pixels = NULL;
 	}
 	else if (hud.view >= 0 && hud.view < MAXIMUM_VIEWS && hud.recordings[hud.view])
 		rspq_block_run(hud.recordings[hud.view]);
@@ -266,11 +306,14 @@ void n64_hud_end(void)
 		extern unsigned long n64_emulated_count;
 		static unsigned long emulated;
 
-		debugf("hud: %lu fast quads, %lu uploads skipped\n", hud.fast_quads, hud.skipped_uploads);
+		if (n64_debug_flag("debug_stats"))
+		{
+			debugf("hud: %lu fast quads, %lu uploads skipped\n", hud.fast_quads, hud.skipped_uploads);
+			debugf("hud: %lu us per view (quads %lu, meters %lu), %lu quads; %lu emulated instructions per view\n",
+				TICKS_TO_US(hud.ticks) / 240, TICKS_TO_US(hud.quad_ticks) / 240, TICKS_TO_US(hud.meter_ticks) / 240,
+				hud.quads / 240, (n64_emulated_count - emulated) / 240);
+		}
 		hud.fast_quads = hud.skipped_uploads = 0;
-		debugf("hud: %lu us per view (quads %lu, meters %lu), %lu quads; %lu emulated instructions per view\n",
-			TICKS_TO_US(hud.ticks) / 240, TICKS_TO_US(hud.quad_ticks) / 240, TICKS_TO_US(hud.meter_ticks) / 240,
-			hud.quads / 240, (n64_emulated_count - emulated) / 240);
 		emulated = n64_emulated_count;
 		hud.ticks = hud.quad_ticks = hud.meter_ticks = hud.quads = 0;
 	}
@@ -472,15 +515,15 @@ static void draw_rotated(const struct n64_hud_quad *quad, const surface_t *surfa
 	int row_bytes = (TEX_FORMAT_PIX2BYTES(format, surface->width) + 7) & ~7;
 	int strip = 4096 / row_bytes - 1;
 	float ds = quad->s[1] - quad->s[0], dt = quad->t[3] - quad->t[0];
-	float t_low = fminf(quad->t[0], quad->t[3]), t_high = fmaxf(quad->t[0], quad->t[3]);
+	float t_low = min_f(quad->t[0], quad->t[3]), t_high = max_f(quad->t[0], quad->t[3]);
 
 	if (strip < 1 || fabsf(dt) < 1e-3f || fabsf(ds) < 1e-3f)
 		return;
-	for (int t0 = (int)fmaxf(floorf(t_low), 0); t0 < (int)ceilf(fminf(t_high, surface->height)); t0 += strip)
+	for (int t0 = floor_int(max_f(t_low, 0)); t0 < ceil_int(min_f(t_high, surface->height)); t0 += strip)
 	{
 		int t1 = MIN(t0 + strip, surface->height);
 		/* the strip's rows as fractions along the quad's left edge (v0 to v3) */
-		float a = (fmaxf(t0, t_low) - quad->t[0]) / dt, b = (fminf(t1, t_high) - quad->t[0]) / dt;
+		float a = (max_f(t0, t_low) - quad->t[0]) / dt, b = (min_f(t1, t_high) - quad->t[0]) / dt;
 		float v[4][5];
 
 		rdpq_tex_upload_sub(TILE0, surface, NULL, 0, t0, surface->width, MIN(t1 + 1, surface->height));
@@ -526,14 +569,14 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 	/* v0 top left, v1 top right, v2 bottom right, v3 bottom left */
 	upright = fabsf(quad->y[0] - quad->y[1]) < 0.5f && fabsf(quad->x[1] - quad->x[2]) < 0.5f &&
 		quad->x[1] > quad->x[0] && quad->y[2] > quad->y[1];
-	s0 = fminf(quad->s[0], quad->s[2]);
-	s1 = fmaxf(quad->s[0], quad->s[2]);
-	t0 = fminf(quad->t[0], quad->t[2]);
-	t1 = fmaxf(quad->t[0], quad->t[2]);
-	is0 = (int)floorf(fmaxf(s0, 0));
-	it0 = (int)floorf(fmaxf(t0, 0));
-	is1 = (int)ceilf(fminf(s1, surface.width));
-	it1 = (int)ceilf(fminf(t1, surface.height));
+	s0 = min_f(quad->s[0], quad->s[2]);
+	s1 = max_f(quad->s[0], quad->s[2]);
+	t0 = min_f(quad->t[0], quad->t[2]);
+	t1 = max_f(quad->t[0], quad->t[2]);
+	is0 = floor_int(max_f(s0, 0));
+	it0 = floor_int(max_f(t0, 0));
+	is1 = ceil_int(min_f(s1, surface.width));
+	it1 = ceil_int(min_f(t1, surface.height));
 	if (is1 <= is0 || it1 <= it0)
 		return;
 	if (quad->meter)
@@ -577,7 +620,33 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 			if (hud.tmem_pixels != surface.buffer || hud.tmem_s0 != is0 || hud.tmem_t0 != it0 ||
 				hud.tmem_s1 != is1 || hud.tmem_t1 != it1)
 			{
-				rdpq_tex_upload_sub(TILE0, &surface, NULL, is0, it0, is1, it1);
+				struct upload_block *upload = NULL;
+
+				for (int i = 0; i < upload_count; i++)
+				{
+					if (uploads[i].surface.buffer == surface.buffer && uploads[i].s0 == is0 && uploads[i].t0 == it0 &&
+						uploads[i].s1 == is1 && uploads[i].t1 == it1)
+					{
+						upload = &uploads[i];
+						break;
+					}
+				}
+				if (upload && upload->block)
+					rspq_block_run(upload->block);
+				else
+				{
+					rdpq_tex_upload_sub(TILE0, &surface, NULL, is0, it0, is1, it1);
+					if (!upload && upload_count < UPLOAD_BLOCKS && hud.recording >= 0)
+					{
+						upload = &uploads[upload_count++];
+						upload->surface = surface;
+						upload->s0 = is0;
+						upload->t0 = it0;
+						upload->s1 = is1;
+						upload->t1 = it1;
+						upload->block = NULL;
+					}
+				}
 				hud.tmem_pixels = surface.buffer;
 				hud.tmem_s0 = is0;
 				hud.tmem_t0 = it0;
@@ -638,13 +707,20 @@ void n64_hud_blip(float x, float y, float size, unsigned long color)
 
 	if (hud.dump)
 		debugf("hud blip %d,%d size %d color %08lx\n", (int)x, (int)y, (int)size, color);
-	hud.tmem_pixels = NULL;
 	if (!(color & 0xF0F0F0) || !hud.blip.buffer)
 		return;
 	set_mode(_mode_blip);
 	set_filter(0);
 	rdpq_set_prim_color(over_color(color & 0xFFFFFF));
-	rdpq_tex_blit(&hud.blip, x - size * 0.5f, y - size * 0.5f, &(rdpq_blitparms_t){
-		.scale_x = scale, .scale_y = scale,
-	});
+	/* what rdpq_tex_blit drew (its one strip: the dot's upload, then the
+	scaled rectangle), the dot uploaded once for all the blips in a row */
+	if (hud.tmem_pixels != hud.blip.buffer)
+	{
+		rdpq_tex_upload(TILE0, &hud.blip, NULL);
+		hud.tmem_pixels = hud.blip.buffer;
+		hud.tmem_s0 = hud.tmem_t0 = 0;
+		hud.tmem_s1 = hud.tmem_t1 = BLIP_SIZE;
+	}
+	rdpq_texture_rectangle_scaled(TILE0, x - size * 0.5f, y - size * 0.5f,
+		x - size * 0.5f + BLIP_SIZE * scale, y - size * 0.5f + BLIP_SIZE * scale, 0, 0, BLIP_SIZE, BLIP_SIZE);
 }

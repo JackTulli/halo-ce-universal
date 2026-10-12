@@ -6,6 +6,14 @@ file has inline function assertions.
 
 #ifndef __BITMAPS_INLINES_H
 #define __BITMAPS_INLINES_H
+
+/* (long)rint: on the N64 one conversion instruction (cseries.h), not a
+library call per channel */
+#ifdef HALO_N64
+#define BITMAPS_RINT_LONG(x) n64_round_double_to_long(x)
+#else
+#define BITMAPS_RINT_LONG(x) ((long)__builtin_rint(x))
+#endif
 #pragma once
 
 /* ---------- headers */
@@ -68,10 +76,10 @@ __inline pixel32 real_argb_color_to_pixel32(
 
 #ifdef HALO_LINUX
 		result = (pixel32)(
-			(long)__builtin_rint((double)color->blue * scale) |
-			((long)__builtin_rint((double)color->green * scale) << 8) |
-			((long)__builtin_rint((double)color->red * scale) << 16) |
-			((long)__builtin_rint((double)color->alpha * scale) << 24));
+			BITMAPS_RINT_LONG((double)color->blue * scale) |
+			(BITMAPS_RINT_LONG((double)color->green * scale) << 8) |
+			(BITMAPS_RINT_LONG((double)color->red * scale) << 16) |
+			(BITMAPS_RINT_LONG((double)color->alpha * scale) << 24));
 #else
 		__asm
 		{
@@ -109,10 +117,10 @@ __inline pixel32 real_argb_color_to_pixel32(
 
 #ifdef HALO_LINUX
 		verify = (pixel32)(
-			((long)__builtin_rint((double)color->blue * scale) & 0xff) |
-			(((long)__builtin_rint((double)color->green * scale) & 0xff) << 8) |
-			(((long)__builtin_rint((double)color->red * scale) & 0xff) << 16) |
-			((long)__builtin_rint((double)color->alpha * scale) << 24));
+			(BITMAPS_RINT_LONG((double)color->blue * scale) & 0xff) |
+			((BITMAPS_RINT_LONG((double)color->green * scale) & 0xff) << 8) |
+			((BITMAPS_RINT_LONG((double)color->red * scale) & 0xff) << 16) |
+			(BITMAPS_RINT_LONG((double)color->alpha * scale) << 24));
 #else
 		__asm
 		{
@@ -163,9 +171,9 @@ __inline pixel32 real_rgb_color_to_pixel32(
 
 #ifdef HALO_LINUX
 	result = (pixel32)(
-		((long)__builtin_rint((double)color->blue * scale) & 0xff) |
-		(((long)__builtin_rint((double)color->green * scale) & 0xff) << 8) |
-		(((long)__builtin_rint((double)color->red * scale) & 0xff) << 16));
+		(BITMAPS_RINT_LONG((double)color->blue * scale) & 0xff) |
+		((BITMAPS_RINT_LONG((double)color->green * scale) & 0xff) << 8) |
+		((BITMAPS_RINT_LONG((double)color->red * scale) & 0xff) << 16));
 #else
 	__asm
 	{
@@ -211,7 +219,7 @@ __inline pixel32 real_alpha_to_pixel32(
 		alpha>=0.0f && alpha<=1.0f);
 
 #ifdef HALO_LINUX
-	result = (pixel32)((long)__builtin_rint((double)alpha * scale) << 24);
+	result = (pixel32)(BITMAPS_RINT_LONG((double)alpha * scale) << 24);
 #else
 	__asm
 	{

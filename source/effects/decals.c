@@ -872,7 +872,13 @@ pixel32 real_a_rgb_color_to_pixel32(
 			color->green,
 			color->blue));
 
-#ifdef HALO_LINUX
+#ifdef HALO_N64
+	result = (pixel32)(
+		(n64_round_double_to_long((double)color->blue * scale) & 0xff) |
+		((n64_round_double_to_long((double)color->green * scale) & 0xff) << 8) |
+		((n64_round_double_to_long((double)color->red * scale) & 0xff) << 16) |
+		(n64_round_double_to_long((double)alpha * scale) << 24));
+#elif defined(HALO_LINUX)
 	result = (pixel32)(
 		((long)__builtin_rint((double)color->blue * scale) & 0xff) |
 		(((long)__builtin_rint((double)color->green * scale) & 0xff) << 8) |

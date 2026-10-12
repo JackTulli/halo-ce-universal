@@ -3361,4 +3361,94 @@ real n64_acosf(
 		return 2.f * n64_asinf(sqrtf(0.5f * (1.f - x)));
 	return N64_PI_2 - n64_asinf(x);
 }
+
+/* pow and exp in single precision (port/include/halo_math.h sends the
+game's calls here): the motion sensor's blips, the HUD's fades, light
+volumes and spawn ratings went through musl's double pow. Integer powers
+are multiplied out (exact where the double ones were: pow(10, 4)); the rest
+is 2 to the power y log2 x, Cephes' polynomials, within a few units in the
+last place; zero, negative, huge or tiny x go to newlib */
+static __inline real n64_exp2f(
+	real x)
+{
+	union { real f; unsigned long u; } scale;
+	long whole;
+	real fraction;
+
+	if (!(x > -126.f))
+		return x != x ? x : 0.f;
+	if (!(x < 127.f))
+		return powf(2.f, x);
+	whole = (long)x;
+	if ((real)whole > x)
+		whole--;
+	fraction = x - (real)whole;
+	if (fraction > 0.5f)
+	{
+		fraction -= 1.f;
+		whole++;
+	}
+	scale.u = (unsigned long)(whole + 127) << 23;
+	return (fraction * (((((1.535336188319500e-4f * fraction + 1.339887440266574e-3f) * fraction +
+		9.618437357674640e-3f) * fraction + 5.550332471162809e-2f) * fraction + 2.402264791363012e-1f) * fraction +
+		6.931472028550421e-1f) + 1.f) * scale.f;
+}
+
+/* log2 of a positive, normal, finite x */
+static __inline real n64_log2f(
+	real x)
+{
+	union { real f; unsigned long u; } bits;
+	long exponent;
+	real mantissa, z, z2;
+
+	bits.f = x;
+	exponent = (long)((bits.u >> 23) & 0xFF) - 127;
+	bits.u = (bits.u & 0x007FFFFF) | 0x3F800000;
+	mantissa = bits.f;
+	if (mantissa > 1.41421356f)
+	{
+		mantissa *= 0.5f;
+		exponent++;
+	}
+	/* ln m = 2 atanh z, z = (m - 1) / (m + 1), |z| < 0.172 */
+	z = (mantissa - 1.f) / (mantissa + 1.f);
+	z2 = z * z;
+	return (real)exponent + 2.885390082f * z *
+		((((z2 * (1.f / 9.f) + (1.f / 7.f)) * z2 + (1.f / 5.f)) * z2 + (1.f / 3.f)) * z2 + 1.f);
+}
+
+real n64_powf(
+	real x,
+	real y)
+{
+	long whole = (long)y;
+
+	if ((real)whole == y && whole >= -32 && whole <= 32)
+	{
+		unsigned long count = whole < 0 ? -whole : whole;
+		real result = 1.f, base = x;
+
+		while (count)
+		{
+			if (count & 1)
+				result *= base;
+			count >>= 1;
+			if (count)
+				base *= base;
+		}
+		return whole < 0 ? 1.f / result : result;
+	}
+	if (y == 0.5f && x >= 0.f)
+		return sqrtf(x);
+	if (!(x >= 1.17549435e-38f && x <= 3.4e38f))
+		return powf(x, y);
+	return n64_exp2f(y * n64_log2f(x));
+}
+
+real n64_expf(
+	real x)
+{
+	return n64_exp2f(x * 1.44269504088896f);
+}
 #endif

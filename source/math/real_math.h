@@ -900,6 +900,8 @@ real n64_sinf(real angle);
 real n64_cosf(real angle);
 real n64_atan2f(real y, real x);
 real n64_acosf(real x);
+real n64_powf(real x, real y);
+real n64_expf(real x);
 #endif
 
 __inline real sine(
@@ -2001,6 +2003,19 @@ static __inline real n64_fraction(
 	if (!(x < 8388608.f && x > -8388608.f))
 		return x - x;
 	return x - (real)(long)x;
+}
+
+/* floor of a float, to the bit (beyond 2^23 every float is whole): the
+double floor was a library call per keyframe looked up */
+static __inline real n64_floorf(
+	real x)
+{
+	real whole;
+
+	if (!(x < 8388608.f && x > -8388608.f))
+		return x;
+	whole = (real)(long)x;
+	return whole > x ? whole - 1.f : whole;
 }
 #endif
 

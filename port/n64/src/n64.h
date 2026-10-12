@@ -11,6 +11,12 @@ these plain-C declarations.
 #ifndef __HALO_N64_H
 #define __HALO_N64_H
 
+/* min and max of two floats, inline: newlib's fminf and fmaxf ask
+__fpclassifyf about both arguments, calls in per-particle and per-object
+loops (no NaNs come here) */
+static inline float n64_min_f(float a, float b) { return a < b ? a : b; }
+static inline float n64_max_f(float a, float b) { return a > b ? a : b; }
+
 #ifdef __cplusplus
 extern "C" {
 #endif

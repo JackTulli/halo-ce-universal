@@ -5232,13 +5232,23 @@ static void object_compute_function_values(
 
 		if (function->step_count>1)
 		{
+#ifdef HALO_N64
+			/* (float floor and fmod, to the bit: the double ones were library
+			calls for every function of every object each tick) */
+			real floor_value = n64_floorf(function->step_count*value);
+#else
 			real floor_value = floor(function->step_count*value);
+#endif
 			value = floor_value*function->runtime_reciprocal_step_count;
 		}
 
 		if (function->runtime_reciprocal_sawtooth_count>0.f)
 		{
+#ifdef HALO_N64
+			value = fmodf(value, function->runtime_reciprocal_sawtooth_count);
+#else
 			value = fmod(value, function->runtime_reciprocal_sawtooth_count);
+#endif
 		}
 
 		if (function->add_function_index)
@@ -5296,7 +5306,11 @@ static void object_compute_function_values(
 
 		if (TEST_FLAG(function->flags, _object_function_clip_to_bounds_and_normalize))
 		{
+#ifdef HALO_N64
+			output = n64_fraction(output+object->object.outgoing_function_values[function_index]);
+#else
 			output = fmod(output+object->object.outgoing_function_values[function_index], 1.f);
+#endif
 		}
 
 		object->object.outgoing_function_values[function_index] = output;

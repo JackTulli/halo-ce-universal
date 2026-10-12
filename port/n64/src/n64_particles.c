@@ -211,7 +211,7 @@ static void make_fireball(void)
 			noise = value_noise(x * 0.25f, y * 0.25f, 1) * 0.6f + value_noise(x * 0.5f, y * 0.5f, 2) * 0.4f;
 			value *= 0.55f + 0.7f * noise;
 			/* (nothing at the square's edge) */
-			value *= fmaxf(0.f, 1.f - (u * u + v * v)) * 1.6f;
+			value *= n64_max_f(0.f, 1.f - (u * u + v * v)) * 1.6f;
 			row[x] = value >= 1.f ? 255 : value <= 0.f ? 0 : (uint8_t)(value * 255.f);
 		}
 	}
@@ -439,7 +439,7 @@ void n64_particles_update(float dt)
 	{
 		struct explosion *e = &fx.explosions[i];
 
-		if (e->live && (e->age += fminf(dt, 0.25f)) >= SMOKE_START + SMOKE_TIME)
+		if (e->live && (e->age += n64_min_f(dt, 0.25f)) >= SMOKE_START + SMOKE_TIME)
 			e->live = 0;
 	}
 	if (!fx.live || dt <= 0.f)
@@ -634,7 +634,7 @@ static void fire_colour(const struct explosion_look *look, float t, uint8_t *out
 	else if (t < 0.5f)
 		mix(look->hot, look->warm, (t - 0.2f) / 0.3f, out);
 	else
-		mix(look->warm, look->cool, fminf(1.f, (t - 0.5f) / 0.5f), out);
+		mix(look->warm, look->cool, n64_min_f(1.f, (t - 0.5f) / 0.5f), out);
 }
 
 static void draw_explosions(const struct n64_particle_view *view)
@@ -710,7 +710,7 @@ static void draw_explosions(const struct n64_particle_view *view)
 				offset[2] += r * 0.45f * t;
 				radius = r * 0.55f * size * (0.5f + 0.75f * sqrtf(t));
 				fire_colour(look, t, p->prim);
-				fire_colour(look, fminf(1.f, t + 0.35f), p->env);
+				fire_colour(look, n64_min_f(1.f, t + 0.35f), p->env);
 				alpha = t < 0.45f ? 1.f : 1.f - (t - 0.45f) / 0.55f;
 			}
 			else
@@ -725,7 +725,7 @@ static void draw_explosions(const struct n64_particle_view *view)
 				radius = r * 0.6f * size * (0.7f + 0.9f * t);
 				for (int k = 0; k < 3; k++)
 				{
-					p->prim[k] = (uint8_t)fminf(255.f, look->smoke[k] * 1.3f);
+					p->prim[k] = (uint8_t)n64_min_f(255.f, look->smoke[k] * 1.3f);
 					p->env[k] = (uint8_t)(look->smoke[k] * 0.75f);
 				}
 				alpha = look->smoke_amount * 0.6f * (t < 0.15f ? t / 0.15f : 1.f - (t - 0.15f) / 0.85f);
@@ -753,10 +753,10 @@ static void draw_explosions(const struct n64_particle_view *view)
 				alpha *= 1.f - (z - view->fog_start) / (view->fog_end - view->fog_start);
 			if (alpha < 0.02f)
 				continue;
-			p->prim[3] = (uint8_t)(fminf(alpha, 1.f) * 255.f);
+			p->prim[3] = (uint8_t)(n64_min_f(alpha, 1.f) * 255.f);
 			/* (its depth a little nearer than its middle: the ground it sits
 			on does not cut it in half) */
-			depth = fmaxf(z - radius / scale * 0.6f, view->z_near * 2.f);
+			depth = n64_max_f(z - radius / scale * 0.6f, view->z_near * 2.f);
 			depth = (-m22 + m32 / depth) * 0.5f + 0.5f;
 			p->depth = depth >= 1.f ? 0x7FFF : depth <= 0.f ? 0 : (uint16_t)(depth * 0x7FFF);
 			if (view->chunky)
