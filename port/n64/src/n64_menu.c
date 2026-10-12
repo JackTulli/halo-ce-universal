@@ -488,14 +488,44 @@ interlaced television). */
 #define FRAME_COLOR 0xFF8CC0FFu
 #define CHOSEN_COLOR 0xA0306CB8u
 
+/* With the anamorphic widescreen setting (a 16:9 picture squeezed into the
+4:3 one, the television stretching it back) the menu's 2D is squeezed by
+3/4 about the screen's middle: it keeps its shape, in a 4:3 area in the
+middle of the wide picture, over the scene drawn wide; what spans the whole
+screen (the pages' backdrops) still does */
+static float squeeze(void)
+{
+	return menu.widescreen ? 0.75f : 1.f;
+}
+
+static float squeezed_x(float x)
+{
+	float middle = n64_render_screen_width() * 0.5f;
+
+	return middle + (x - middle) * squeeze();
+}
+
+static void menu_text(struct n64_font *font, int x, int y, unsigned long color, const char *text)
+{
+	if (squeeze() == 1.f)
+		n64_text_draw(font, x, y, color, text);
+	else
+		n64_text_draw_scaled(font, squeezed_x(x), y, color, text, squeeze());
+}
+
 static void panel(int x0, int y0, int x1, int y1, unsigned long argb)
 {
+	int whole = x0 <= 0 && x1 >= n64_render_screen_width();
+
 	rdpq_sync_pipe();
 	rdpq_set_mode_standard();
 	rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	rdpq_set_prim_color(RGBA32((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24));
-	rdpq_fill_rectangle(x0, y0, x1, y1);
+	if (whole || squeeze() == 1.f)
+		rdpq_fill_rectangle(x0, y0, x1, y1);
+	else
+		rdpq_fill_rectangle(squeezed_x(x0), y0, squeezed_x(x1), y1);
 }
 
 /* a frame's four sides (not overlapping: they are blended) */
@@ -525,20 +555,20 @@ static void blit(sprite_t *sprite, int x, int y, float scale)
 	rdpq_set_mode_standard();
 	rdpq_mode_alphacompare(1);
 	/* (at its own size texel for pixel: filtering would only blur it) */
-	rdpq_mode_filter(scale == 1.f ? FILTER_POINT : FILTER_BILINEAR);
+	rdpq_mode_filter(scale == 1.f && squeeze() == 1.f ? FILTER_POINT : FILTER_BILINEAR);
 	if (sprite_get_format(sprite) == FMT_RGBA16 || sprite_get_format(sprite) == FMT_RGBA32)
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
-	rdpq_tex_blit(&surface, x, y, &(rdpq_blitparms_t){ .scale_x = scale, .scale_y = scale });
+	rdpq_tex_blit(&surface, squeezed_x(x), y, &(rdpq_blitparms_t){ .scale_x = scale * squeeze(), .scale_y = scale });
 }
 
 static void text_centered(struct n64_font *font, int center, int y, unsigned long color, const char *text)
 {
-	n64_text_draw(font, center - n64_text_width(font, text) / 2, y, color, text);
+	menu_text(font, center - n64_text_width(font, text) / 2, y, color, text);
 }
 
 static void text_right(struct n64_font *font, int right, int y, unsigned long color, const char *text)
 {
-	n64_text_draw(font, right - n64_text_width(font, text), y, color, text);
+	menu_text(font, right - n64_text_width(font, text), y, color, text);
 }
 
 /* the chosen item's text, pulsing */
@@ -554,7 +584,7 @@ rule */
 static void page(const char *title, const char *note)
 {
 	panel(0, 0, SCREEN_W, SCREEN_H, 0x40000818);
-	n64_text_draw(menu.large, SAFE_LEFT + 8, 60, TEXT_BRIGHT, title);
+	menu_text(menu.large, SAFE_LEFT + 8, 60, TEXT_BRIGHT, title);
 	if (note)
 		text_right(menu.small, SAFE_RIGHT - 8, 60, TEXT_DIM, note);
 	panel(SAFE_LEFT, 68, SAFE_RIGHT, 68 + LINE, 0xC08CC0FF);
@@ -684,7 +714,7 @@ static void setting_row(int x0, int x1, int y, int selected, struct n64_font *fo
 		snprintf(arrows, sizeof(arrows), "<  %s  >", value);
 		value = arrows;
 	}
-	n64_text_draw(font, x0 + 14, y, selected ? TEXT_BRIGHT : TEXT_COLOR, label);
+	menu_text(font, x0 + 14, y, selected ? TEXT_BRIGHT : TEXT_COLOR, label);
 	text_right(font, x1 - 14, y, selected ? pulsing() : TEXT_COLOR, value);
 }
 
@@ -757,12 +787,12 @@ static void draw_controls(void)
 
 				chosen(x + 6, row_y - 15, x + w - 6, row_y + 5);
 				snprintf(arrows, sizeof(arrows), "<  %s  >", value);
-				n64_text_draw(menu.small, x + 14, row_y, TEXT_BRIGHT, labels[row]);
+				menu_text(menu.small, x + 14, row_y, TEXT_BRIGHT, labels[row]);
 				text_right(menu.small, x + w - 14, row_y, TEXT_BRIGHT, arrows);
 			}
 			else
 			{
-				n64_text_draw(menu.small, x + 14, row_y, TEXT_DIM, labels[row]);
+				menu_text(menu.small, x + 14, row_y, TEXT_DIM, labels[row]);
 				text_right(menu.small, x + w - 14, row_y, TEXT_COLOR, value);
 			}
 		}
@@ -797,8 +827,8 @@ static void draw_controls(void)
 		int width = n64_text_width(menu.small, text) + 8 + n64_text_width(menu.small, help);
 		int x = (SCREEN_W - width) / 2;
 
-		n64_text_draw(menu.small, x, 448, TEXT_DIM, text);
-		n64_text_draw(menu.small, x + n64_text_width(menu.small, text) + 8, 448, TEXT_COLOR, help);
+		menu_text(menu.small, x, 448, TEXT_DIM, text);
+		menu_text(menu.small, x + n64_text_width(menu.small, text) + 8, 448, TEXT_COLOR, help);
 	}
 }
 
@@ -873,7 +903,7 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 				c->player_count ? (selected ? pulsing() : TEXT_COLOR) : TEXT_DIM, labels[r]);
 			continue;
 		}
-		n64_text_draw(menu.small, x0 + 14, y + 18, selected ? TEXT_COLOR : TEXT_DIM,
+		menu_text(menu.small, x0 + 14, y + 18, selected ? TEXT_COLOR : TEXT_DIM,
 			c->firefight && r == ROW_GAME_TYPE ? "DIFFICULTY" : labels[r]);
 		if (r == ROW_GAME_TYPE && c->firefight)
 			snprintf(value, sizeof(value), "%s", difficulties[c->difficulty & 3]);
@@ -894,7 +924,7 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 		text_centered(menu.large, (x0 + x1) / 2, y + 38, selected ? TEXT_BRIGHT : TEXT_COLOR, value);
 		if (selected)
 		{
-			n64_text_draw(menu.large, x0 + 14, y + 38, pulsing(), "<");
+			menu_text(menu.large, x0 + 14, y + 38, pulsing(), "<");
 			text_right(menu.large, x1 - 14, y + 38, pulsing(), ">");
 		}
 	}
@@ -1212,6 +1242,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
 
 		n64_render_frame_begin();
+		n64_render_set_anamorphic(menu.widescreen);
 		draw_scene();
 		if (screen == SCREEN_RESULTS)
 			draw_results(results, result_count);
@@ -1232,6 +1263,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			before the menu), the loading screen on it while the map loads */
 			n64_render_set_menu_display(0);
 			n64_render_frame_begin();
+			n64_render_set_anamorphic(menu.widescreen);
 			draw_scene();
 			draw_loading(c);
 			n64_render_frame_end();

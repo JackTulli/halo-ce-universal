@@ -352,6 +352,9 @@ int n64_font_ascent(const struct n64_font *font);
 int n64_text_width(const struct n64_font *font, const char *text);
 /* text with its baseline at y; color 0xAARRGGBB */
 void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text);
+/* text squeezed across (x_scale, the anamorphic picture's 3/4), filtered */
+void n64_text_draw_scaled(const struct n64_font *font, float x, int y, unsigned long color, const char *text,
+	float x_scale);
 
 /* ---------- the menu (n64_menu.c): split screen multiplayer's setup */
 

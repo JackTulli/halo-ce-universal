@@ -197,9 +197,13 @@ aspect a third wider at the same vertical field of view; particles
 squeezed across, n64_particle_view.x_scale); the HUD squeezed by 3/4 about
 each view's middle (n64_render_hud_squeeze), so it keeps its shape in a
 4:3 area in the middle and the game's own screen projections (nav points)
-land where the wider 3D puts them; text glyphs stay unsqueezed (a third
-wider when stretched), and a scope's mask leaves the sides open. The menu
-stays 4:3.
+land where the wider 3D puts them; a scope's mask leaves the sides open.
+Then the menu too (the user's ask): with WIDESCREEN on, its scene is drawn
+wide and its 2D (panels, frames, pictures, text) squeezed by 3/4 about the
+screen's middle (n64_menu.c squeeze, squeezed_x, menu_text), the pages'
+full-screen backdrops still full width; toggling the setting shows at once.
+Text squeezed across is drawn filtered (n64_text_draw_scaled, the HUD's
+text too); at 1 it is drawn as before.
 
 12 October, the HUD and whatever else could be found, without runs (the
 user tests), from the 8-9 October profiles, the disassembly and a research

@@ -121,7 +121,16 @@ int n64_text_width(const struct n64_font *font, const char *text)
 /* text with its baseline at y; color 0xAARRGGBB */
 void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text)
 {
+	n64_text_draw_scaled(font, (float)x, y, color, text, 1.f);
+}
+
+/* text squeezed across by x_scale (the anamorphic picture's 3/4: a wide
+screen stretches it back), its glyphs filtered; at 1, as it always was */
+void n64_text_draw_scaled(const struct n64_font *font, float x, int y, unsigned long color, const char *text,
+	float x_scale)
+{
 	surface_t atlas;
+	int squeezed = x_scale != 1.f;
 
 	if (!font)
 	{
@@ -134,7 +143,7 @@ void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long colo
 	/* the colour, the glyph's coverage as alpha */
 	rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
-	rdpq_mode_filter(FILTER_POINT);
+	rdpq_mode_filter(squeezed ? FILTER_BILINEAR : FILTER_POINT);
 	rdpq_set_prim_color(RGBA32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, color >> 24));
 	/* rdpq_tex_blit loaded each glyph on its own, the texture loader's work
 	on the CPU per character. A band of the atlas's rows (as many as TMEM
@@ -157,8 +166,9 @@ void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long colo
 			if (g->height > band_rows)
 			{
 				band_top = band_bottom = -1;
-				rdpq_tex_blit(&atlas, x - g->origin_x, y - g->origin_y, &(rdpq_blitparms_t){
+				rdpq_tex_blit(&atlas, x - g->origin_x * x_scale, y - g->origin_y, &(rdpq_blitparms_t){
 					.s0 = g->x, .t0 = g->y, .width = g->width, .height = g->height,
+					.scale_x = squeezed ? x_scale : 0.f,
 				});
 			}
 			else
@@ -169,10 +179,15 @@ void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long colo
 					band_bottom = band_top + band_rows < atlas.height ? band_top + band_rows : atlas.height;
 					rdpq_tex_upload_sub(TILE0, &atlas, NULL, 0, band_top, atlas.width, band_bottom);
 				}
-				rdpq_texture_rectangle(TILE0, x - g->origin_x, y - g->origin_y,
-					x - g->origin_x + g->width, y - g->origin_y + g->height, g->x, g->y);
+				if (squeezed)
+					rdpq_texture_rectangle_scaled(TILE0, x - g->origin_x * x_scale, y - g->origin_y,
+						x + (g->width - g->origin_x) * x_scale, y - g->origin_y + g->height,
+						g->x, g->y, g->x + g->width, g->y + g->height);
+				else
+					rdpq_texture_rectangle(TILE0, x - g->origin_x, y - g->origin_y,
+						x - g->origin_x + g->width, y - g->origin_y + g->height, g->x, g->y);
 			}
 		}
-		x += g->advance;
+		x += g->advance * x_scale;
 	}
 }

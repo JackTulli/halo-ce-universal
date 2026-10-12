@@ -723,7 +723,8 @@ void n64_hud_text(int x, int y, unsigned long color, const char *text)
 		rdpq_text_print(&(rdpq_textparms_t){0}, FONT_BUILTIN_DEBUG_MONO, x, y + 8, text);
 		return;
 	}
-	n64_text_draw(font, x, y + n64_font_ascent(font), color, text);
+	/* (squeezed across with the anamorphic picture, as the rest of the HUD) */
+	n64_text_draw_scaled(font, (float)x, y + n64_font_ascent(font), color, text, n64_render_hud_squeeze());
 }
 
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color)
