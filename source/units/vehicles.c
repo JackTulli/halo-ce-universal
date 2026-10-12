@@ -910,8 +910,16 @@ static void compute_airborne_ticks(
 		vehicle_definition_get(vehicle->definition_index)->object.physics.index);
 	short mass_point_index;
 
+#ifdef HALO_N64
+	/* (counted in ticks: a physics step covers one to four) */
+	extern real n64_vehicle_physics_step(void);
+	short n64_ticks = (short)n64_vehicle_physics_step();
+
+	vehicle->vehicle.airborne_ticks = (byte)MIN(0xff, vehicle->vehicle.airborne_ticks+n64_ticks);
+#else
 	if (vehicle->vehicle.airborne_ticks<0xff)
 		vehicle->vehicle.airborne_ticks++;
+#endif
 
 	for (mass_point_index = 0; mass_point_index<physics->mass_points.count; mass_point_index++)
 	{
@@ -920,8 +928,12 @@ static void compute_airborne_ticks(
 		if (TEST_FLAG(mass_point->flags, 1))
 		{
 			vehicle->vehicle.airborne_ticks = 0;
+#ifdef HALO_N64
+			vehicle->vehicle.on_ground_ticks = (byte)MIN(0xff, vehicle->vehicle.on_ground_ticks+n64_ticks);
+#else
 			if (vehicle->vehicle.on_ground_ticks<0xff)
 				vehicle->vehicle.on_ground_ticks++;
+#endif
 			return;
 		}
 
@@ -1761,6 +1773,14 @@ static void create_crashing_effects(
 		delta.k = vehicle->object.translational_velocity.k-previous_velocity->k;
 
 		speed = magnitude3d(&delta);
+#ifdef HALO_N64
+		{
+			/* (the change a tick: a physics step covers one to four) */
+			extern real n64_vehicle_physics_step(void);
+
+			speed /= n64_vehicle_physics_step();
+		}
+#endif
 		if (speed>0.02f)
 		{
 			for (mass_point_index = 0; mass_point_index<physics->mass_points.count; mass_point_index++)
@@ -2598,8 +2618,20 @@ boolean vehicle_update(
 	global_current_collision_users[global_current_collision_user_depth++] =
 		_collision_user_vehicles;
 
+#ifdef HALO_N64
+	/* (its physics on its turn only: every other tick, every fourth with
+	ANIMATIONS HALF RATE -- physics/physics.c; the mass points below are
+	filled by the step, so the slipping, suspension, crashing and airborne
+	updates that read them wait for it too) */
+	extern boolean n64_vehicle_physics_turn(long object_index);
+
+	if (definition->unit.object.physics.index!=NONE &&
+		!TEST_FLAG(vehicle->object.flags, _object_at_rest_bit) &&
+		n64_vehicle_physics_turn(vehicle_index))
+#else
 	if (definition->unit.object.physics.index!=NONE &&
 		!TEST_FLAG(vehicle->object.flags, _object_at_rest_bit))
+#endif
 	{
 		real_vector3d previous_velocity = vehicle->object.translational_velocity;
 

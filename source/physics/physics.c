@@ -2164,7 +2164,18 @@ meanwhile (vehicle.collision_force, gathered every tick) counts once. A
 larger step is a coarser one: suspension and contacts are worked out half
 or a quarter as often (n64_physics_step, above) */
 
-static boolean n64_vehicle_physics_turn(
+/* the ticks the last vehicle physics step covered (vehicles.c: its crash
+test and airborne counts are per tick) */
+real n64_vehicle_physics_step(
+	void)
+{
+	return n64_physics_step;
+}
+
+/* (asked once a tick by vehicle_update, which leaves out the whole physics
+block -- the forces, the movement and what reads the mass points the step
+fills -- on the vehicle's other ticks) */
+boolean n64_vehicle_physics_turn(
 	long object_index)
 {
 	extern int n64_half_animation_rate;
@@ -2201,10 +2212,6 @@ void physics_update(
 	real_vector3d total_torque;
 	short powered_mass_point_index;
 
-#ifdef HALO_N64
-	if (!n64_vehicle_physics_turn(object_index))
-		return;
-#endif
 	if (physics->radius > 0.0f)
 	{
 		physics_update_old(

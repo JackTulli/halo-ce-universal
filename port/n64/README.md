@@ -185,6 +185,17 @@ much (both the new and the old physics paths); what other objects pushed it
 with meanwhile counts once. Coarser steps: the suspension and contacts are
 worked out half or a quarter as often, so vehicles may bounce or settle
 differently, most at a quarter; a driver's view moves in those steps.
+The first build crashed (the user's screenshot: effect_set_event from
+create_slipping_effects): physics_update returned early on the off ticks,
+but vehicle_update's mass points are a stack array the step fills, and the
+slipping, suspension, crashing and airborne updates (and the Ghost's hover)
+read it uninitialised. Now vehicle_update asks n64_vehicle_physics_turn and
+leaves out the whole physics block on the off ticks; the crash test takes
+the velocity change per tick and the airborne/on-ground counts add the
+step's ticks (n64_vehicle_physics_step). With ANIMATIONS HALF RATE the bots
+and Firefight's Covenant also think every fourth tick (n64_bots_update_
+interval; the bots' pose keeps n64_bots_pose_interval; think_interval, the
+turn over four ticks 0.84).
 
 12 October: the settings are kept (the user's ask): the SETTINGS page and
 each controller's CONTROLS in the cartridge's EEPROM (the ROM's header now

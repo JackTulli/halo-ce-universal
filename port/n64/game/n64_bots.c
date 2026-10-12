@@ -296,15 +296,27 @@ int n64_bots_count(
 	return bots.active ? bots.count : 0;
 }
 
-/* how often a bot thinks and its pose is made (ticks): with 4 to 6 bots
-every other tick, with 7 or 8 every third (the user's choice: each biped
-costs ~2.7 ms of a tick) */
-int n64_bots_update_interval(
+/* how often a bot's pose is made (objects.c, n64_far_ai_biped), in ticks:
+every other with 4 to 6 bots, every third with 7 or 8 (the user's choice:
+each biped costs ~2.7 ms of a tick; with ANIMATIONS HALF RATE counted on
+its half-speed clock there: every fourth or sixth) */
+int n64_bots_pose_interval(
 	void)
 {
 	short count = bots.active ? bots.created : 0;
 
 	return count >= 7 ? 3 : count >= 4 ? 2 : 1;
+}
+
+/* how often a bot thinks: as its pose, or every fourth tick with
+ANIMATIONS HALF RATE (n64_menu.c; the user's ask) -- its timers, turning
+and chances count by the interval, so it plays the same, slower to react */
+int n64_bots_update_interval(
+	void)
+{
+	extern int n64_half_animation_rate;
+
+	return n64_half_animation_rate ? 4 : n64_bots_pose_interval();
 }
 
 /* the bot a player is (its number, 0 on), or -1 */

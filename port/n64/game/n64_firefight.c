@@ -737,7 +737,9 @@ static void think(
 	/* turning: a quick but not instant swing */
 	{
 		/* (as quick a turn a tick, thinking every two ticks or three) */
-		real turn = THINK_INTERVAL >= 3 ? 0.75f : 0.6f;
+		/* (as much of the turn as the ticks between thoughts would have
+		made: 0.6 over two, 0.75 over three, 0.84 over four) */
+		real turn = THINK_INTERVAL >= 4 ? 0.84f : THINK_INTERVAL >= 3 ? 0.75f : 0.6f;
 
 		enemy->aim.i += (desired.i - enemy->aim.i) * turn;
 		enemy->aim.j += (desired.j - enemy->aim.j) * turn;
@@ -1174,7 +1176,13 @@ void n64_firefight_tick(
 	firefight.paths_this_tick = 0;
 	if (firefight.path_cooldown > 0)
 		firefight.path_cooldown--;
-	think_interval = firefight.enemy_count >= 5 || firefight.player_count >= 3 ? 3 : 2;
+	{
+		/* (every fourth tick with ANIMATIONS HALF RATE: n64_menu.c) */
+		extern int n64_half_animation_rate;
+
+		think_interval = n64_half_animation_rate ? 4 :
+			firefight.enemy_count >= 5 || firefight.player_count >= 3 ? 3 : 2;
+	}
 	for (i = 0; i < firefight.enemy_count; i++)
 	{
 		if ((game_time_get() + i) % THINK_INTERVAL == 0)

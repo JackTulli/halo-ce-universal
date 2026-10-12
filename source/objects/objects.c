@@ -3778,8 +3778,8 @@ static boolean n64_far_ai_biped(
 	if (unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index == NONE &&
 		object->object.parent_object_index == NONE)
 	{
-		extern int n64_bots_update_interval(void);
-		int interval = n64_bots_update_interval();
+		extern int n64_bots_pose_interval(void);
+		int interval = n64_bots_pose_interval();
 
 		if (interval > 1)
 			return ((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) % interval) != 0;
