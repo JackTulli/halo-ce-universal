@@ -22,8 +22,15 @@ units" everything here is drawn in), already lit.
 #include "n64.h"
 
 /* the screen: the game's 320x240, or the menu's 640x480 interlaced
-(n64_render_set_menu_display) */
+(n64_render_set_menu_display), or the game's in 480i (Settings: DISPLAY
+480I, where the map leaves room: 640x480 or 512x480, n64_render_set_480i) */
 static int screen_width = 320, screen_height = 240;
+enum { DISPLAY_GAME, DISPLAY_MENU, DISPLAY_GAME_480I };
+static int display_mode = DISPLAY_GAME;
+/* 480i as asked, tried for this game yet, the frames left to say it
+didn't fit; the anamorphic picture (Settings: WIDESCREEN) */
+static int want_480i, tried_480i, notice_480i_frames;
+static int anamorphic;
 #define SCREEN_WIDTH screen_width
 #define SCREEN_HEIGHT screen_height
 #define MAXIMUM_VIEWS 4
@@ -452,7 +459,7 @@ void n64_render_set_menu_display(int on)
 	heap_stats_t heap;
 
 	on = on != 0;
-	if (on == (screen_width == 640))
+	if (on == (display_mode == DISPLAY_MENU))
 		return;
 	/* the RSP and the RDP done with the buffers, the deferred calls made
 	(the last frame given to the display) */
@@ -468,12 +475,18 @@ void n64_render_set_menu_display(int on)
 			GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
 		screen_width = 640;
 		screen_height = 480;
+		display_mode = DISPLAY_MENU;
+		/* (the menu's scene as it is: the game sets its own) */
+		anamorphic = 0;
 	}
 	else
 	{
 		free(game_display_place);
 		game_display_place = NULL;
 		game_display_init();
+		display_mode = DISPLAY_GAME;
+		/* (480i, if asked, once the map is in: n64_render_frame_begin) */
+		tried_480i = 0;
 	}
 	sys_get_heap_stats(&heap);
 	debugf("n64: display %dx%d%s, heap %d KB free\n", screen_width, screen_height, on ? " interlaced" : "",
@@ -483,6 +496,106 @@ void n64_render_set_menu_display(int on)
 int n64_render_screen_width(void)
 {
 	return screen_width;
+}
+
+/* ---------- 480i in the game, and the anamorphic picture */
+
+void n64_render_set_480i(int on)
+{
+	want_480i = on != 0;
+}
+
+void n64_render_set_anamorphic(int on)
+{
+	anamorphic = on != 0;
+}
+
+/* the game lays its views and HUD out on a 640x480 screen: the N64's
+pixels for one of its units, across and down */
+float n64_render_layout_scale_x(void)
+{
+	return screen_width * (1.f / 640.f);
+}
+
+float n64_render_layout_scale_y(void)
+{
+	return screen_height * (1.f / 480.f);
+}
+
+/* the HUD's squeeze about each view's middle: with the anamorphic picture
+(a 16:9 picture squeezed into the 4:3 one, the television stretching it
+back) the HUD keeps its proportions and its 4:3 place in the middle; the
+game's own projections onto the screen (nav points) land where the wider
+3D puts them */
+float n64_render_hud_squeeze(void)
+{
+	return anamorphic ? 0.75f : 1.f;
+}
+
+/* the width a pixel shows at (the screen 4:3 whatever its size: 512x480's
+are wider), and with the anamorphic picture a third wider again */
+static float display_pixel_aspect(void)
+{
+	return (640.f / screen_width) * (screen_height / 480.f) * (anamorphic ? 4.f / 3.f : 1.f);
+}
+
+static void drop_all_models(void);
+
+/* room for the display (two buffers and the z-buffer, 16 bits a pixel) and
+the models the game draws (the cache is emptied first: it refills) */
+#define ROOM_FOR_MODELS (448 * 1024)
+
+static int display_fits(int width, int height)
+{
+	unsigned long size = (unsigned long)width * height * 2 + 256;
+	void *blocks[4] = {NULL, NULL, NULL, NULL};
+	int fits = 1;
+
+	for (int i = 0; i < 3 && fits; i++)
+		fits = (blocks[i] = malloc(size)) != NULL;
+	if (fits)
+		fits = (blocks[3] = malloc(ROOM_FOR_MODELS)) != NULL;
+	for (int i = 0; i < 4; i++)
+		free(blocks[i]);
+	return fits;
+}
+
+/* the game's display in 480i: 640x480 where the map leaves room (two
+buffers of 600 KB and the z-buffer's 600 KB, where 320x240 took 600 KB in
+all), else 512x480 (480 KB each, stretched to the same 4:3), else 320x240
+as it was and a word on the screen. Blood Gulch and Sidewinder leave room
+for neither. Each frame is shown as both fields (INTERLACE_FULL, as the
+menu) */
+static void try_480i(void)
+{
+	static const short sizes[2][2] = {{640, 480}, {512, 480}};
+	heap_stats_t heap;
+
+	tried_480i = 1;
+	rspq_wait();
+	display_close();
+	drop_all_models();
+	/* (the models' memory freed: their releases were deferred) */
+	rspq_wait();
+	for (int i = 0; i < 2; i++)
+	{
+		if (display_fits(sizes[i][0], sizes[i][1]))
+		{
+			display_init((resolution_t){.width = sizes[i][0], .height = sizes[i][1], .interlaced = INTERLACE_FULL},
+				DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+			screen_width = sizes[i][0];
+			screen_height = sizes[i][1];
+			display_mode = DISPLAY_GAME_480I;
+			n64_hud_forget_recordings();
+			sys_get_heap_stats(&heap);
+			debugf("n64: game display %dx%d interlaced, heap %d KB free\n", screen_width, screen_height,
+				heap.free / 1024);
+			return;
+		}
+	}
+	game_display_init();
+	notice_480i_frames = 150;
+	debugf("n64: no room for 480i on this map\n");
 }
 
 int n64_render_screen_height(void)
@@ -629,6 +742,15 @@ static void drop_model(int index)
 	loaded->data = NULL;
 	loaded->setups = NULL;
 	loaded->blocks = NULL;
+}
+
+/* every model in the cache dropped (the RSP done with them: try_480i) */
+static void drop_all_models(void)
+{
+	if (!models.header || !models.loaded)
+		return;
+	for (int i = 0; i < models.header->model_count; i++)
+		drop_model(i);
 }
 
 /* the render modes of model batches, recorded once each: textured (the
@@ -1008,6 +1130,8 @@ void n64_render_frame_begin(void)
 
 	renderer.chunky = renderer.want_chunky;
 	renderer.unstretched = 0;
+	if (want_480i && display_mode == DISPLAY_GAME && !tried_480i && level.data)
+		try_480i();
 	renderer.surface = display_get();
 	render_wait_us = TICKS_TO_US(TICKS_READ() - before_display);
 	render_start_ticks = TICKS_READ();
@@ -1344,7 +1468,7 @@ void n64_render_view(const struct n64_view *view)
 		view->y1 - view->y0);
 	renderer.unstretched = renderer.chunky;
 	/* the view's shape on the screen (in chunky mode drawn half as wide) */
-	renderer.aspect = (float)(view->x1 - view->x0) / (float)(view->y1 - view->y0);
+	renderer.aspect = (float)(view->x1 - view->x0) / (float)(view->y1 - view->y0) * display_pixel_aspect();
 	/* (the far plane stays the game's: tiny3d does not clip at it, so big
 	triangles across a near far plane came and went as the eye moved; what
 	lies wholly past the fog's end is left out instead, beyond_fog) */
@@ -1499,6 +1623,9 @@ static void draw_particles(int first_person)
 		view.forward[k] = renderer.forward[k];
 	}
 	view.pixels_per_unit = renderer.pixels_per_unit;
+	/* (the pixels per unit are the height's; across, as wide as a pixel
+	shows) */
+	view.x_scale = 1.f / display_pixel_aspect();
 	view.x0 = rect[0];
 	view.y0 = rect[1];
 	view.x1 = rect[2];
@@ -1772,7 +1899,7 @@ static void render_object(const struct n64_object *object)
 			pixels *= 0.6f;
 		if (pixels < 1.5f)
 			return;
-		far = model->far_count && pixels < FAR_PIXELS;
+		far = model->far_count && pixels < FAR_PIXELS * (screen_height * (1.f / 240.f));
 	}
 	object_in_view = 1;
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
@@ -1899,6 +2026,15 @@ static void draw_counter(void)
 		renderer.fps = (int)((unsigned long long)renderer.fps_frames * TICKS_PER_SECOND * 10 / (now - renderer.fps_window_start));
 		renderer.fps_frames = 0;
 		renderer.fps_window_start = now;
+	}
+	if (notice_480i_frames)
+	{
+		/* (480i asked for, but the map left no room for it) */
+		notice_480i_frames--;
+		rdpq_sync_pipe();
+		rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 24, SCREEN_HEIGHT / 2,
+			"NOT ENOUGH MEMORY FOR 480I ON THIS MAP");
 	}
 	if (renderer.hide_counter)
 		return;

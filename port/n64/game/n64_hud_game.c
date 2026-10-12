@@ -40,6 +40,28 @@ struct n64_meter_parameters
 	real gradient;
 };
 
+/* the game's 640x480 layout in the N64's pixels (half, at 320x240): across,
+squeezed about the view's middle with the anamorphic picture
+(n64_render_hud_squeeze); without it, the same scaling as before to the bit */
+static real hud_x(
+	real x)
+{
+	real scale = n64_render_layout_scale_x();
+	real squeeze = n64_render_hud_squeeze();
+	real middle;
+
+	if (squeeze == 1.f)
+		return x * scale;
+	middle = (render.camera.viewport_bounds.x0 + render.camera.viewport_bounds.x1) * 0.5f * scale;
+	return middle + (x * scale - middle) * squeeze;
+}
+
+static real hud_y(
+	real y)
+{
+	return y * n64_render_layout_scale_y();
+}
+
 void *_texture_cache_bitmap_get_hardware_format(
 	struct bitmap_data *bitmap,
 	boolean block,
@@ -94,8 +116,8 @@ void rasterizer_psuedo_dynamic_screen_quad_draw(
 	texel_v *= parameters->map_texture_scale[0].j ? parameters->map_texture_scale[0].j : 1.f;
 	for (i = 0; i < 4; i++)
 	{
-		quad.x[i] = (origin_x + vertices[i].position.x) * 0.5f;
-		quad.y[i] = (origin_y + vertices[i].position.y) * 0.5f;
+		quad.x[i] = hud_x(origin_x + vertices[i].position.x);
+		quad.y[i] = hud_y(origin_y + vertices[i].position.y);
 		quad.s[i] = vertices[i].texture_coordinates.x * texel_u * 0.5f;
 		quad.t[i] = vertices[i].texture_coordinates.y * texel_v * 0.5f;
 	}
@@ -126,8 +148,8 @@ static void draw_text(
 
 	if (!bounds)
 		bounds = &window;
-	x = bounds->x0 / 2;
-	y = bounds->y0 / 2;
+	x = (short)hud_x(bounds->x0);
+	y = (short)hud_y(bounds->y0);
 	n64_hud_text(x, y, 0xFFFFFFFF, text);
 }
 
@@ -195,7 +217,13 @@ void rasterizer_hud_motion_sensor_blip_draw(
 		(unsigned long)PIN(color->blue * intensity * 255.f, 0.f, 255.f);
 
 	(void)large_blip;
-	n64_hud_blip(x * 0.5f, y * 0.5f, MAX(2.f, size * 0.0625f * radius), argb);
+	{
+		/* (its size in 320x240's pixels, then the screen's) */
+		real pixels = MAX(2.f, size * 0.0625f * radius);
+
+		n64_hud_blip(hud_x(x), hud_y(y), pixels * n64_render_layout_scale_x() * 2.f * n64_render_hud_squeeze(),
+			pixels * n64_render_layout_scale_y() * 2.f, argb);
+	}
 	return;
 }
 

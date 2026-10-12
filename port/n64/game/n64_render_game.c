@@ -476,10 +476,15 @@ void render_frame(
 				view.z_far = debug_far;
 		}
 		/* the game lays the views out on a 640x480 screen */
-		view.x0 = camera->viewport_bounds.x0 / 2;
-		view.y0 = camera->viewport_bounds.y0 / 2;
-		view.x1 = camera->viewport_bounds.x1 / 2;
-		view.y1 = camera->viewport_bounds.y1 / 2;
+		{
+			/* (half at 320x240; 480i's 640x480 or 512x480) */
+			float scale_x = n64_render_layout_scale_x(), scale_y = n64_render_layout_scale_y();
+
+			view.x0 = (short)(camera->viewport_bounds.x0 * scale_x);
+			view.y0 = (short)(camera->viewport_bounds.y0 * scale_y);
+			view.x1 = (short)(camera->viewport_bounds.x1 * scale_x);
+			view.y1 = (short)(camera->viewport_bounds.y1 * scale_y);
+		}
 		view.local_player_index = window->local_player_index;
 		view.visible_clusters = NULL;
 		view.cluster_count = 0;

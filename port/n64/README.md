@@ -173,6 +173,34 @@ their pauses between bursts are half as long again, with 7 or 8 twice
 the Covenant think every third tick with five or more up or three or four
 players (every second), turning as fast a tick.
 
+12 October, three of the user's asks (untested here). The HUD is recorded
+every sixth frame with three or four views (was fourth), the views' turns
+spread over the six (n64_hud_begin). Settings has two rows more: DISPLAY
+240P/480I and WIDESCREEN OFF/ANAMORPHIC. 480i in the game
+(n64_render_set_480i, try_480i): once the map is in, the 320x240 display is
+closed, the model cache emptied (it refills), and 640x480 tried, then
+512x480 (stretched to the same 4:3 by the VI), each only if two buffers, the
+z-buffer and 448 KB for the models fit (display_fits allocates and frees
+them); else 320x240 again and "NOT ENOUGH MEMORY FOR 480I ON THIS MAP" for
+five seconds. Shown as both fields per frame (INTERLACE_FULL, two buffers,
+as the menu). Memory decides: at level load the small maps leave 2.1-2.4 MB
+(Wizard, Chill Out, Prisoner, Hang 'em High, Rat Race, Longest, Carousel),
+the middle ones ~1.8 MB, Blood Gulch 1.05-1.1 and Sidewinder 1.3 -- 640x480
+needs 1.8 MB of display where 320x240 took 0.6, so in practice 512x480 on
+the small maps and 240p on the big ones. The game's 640x480 layout is now
+scaled by n64_render_layout_scale_x/_y (views, HUD quads, text, blips; half
+at 320x240, to the bit as before), the 3D's aspect by the pixel's shape
+(display_pixel_aspect), the far versions' pixel threshold by the lines,
+HUD sprites point sampled at the screen's whole multiple (2 at 640x480).
+The anamorphic picture: a 16:9 view squeezed into the 4:3 one (the 3D's
+aspect a third wider at the same vertical field of view; particles
+squeezed across, n64_particle_view.x_scale); the HUD squeezed by 3/4 about
+each view's middle (n64_render_hud_squeeze), so it keeps its shape in a
+4:3 area in the middle and the game's own screen projections (nav points)
+land where the wider 3D puts them; text glyphs stay unsqueezed (a third
+wider when stretched), and a scope's mask leaves the sides open. The menu
+stays 4:3.
+
 12 October, the HUD and whatever else could be found, without runs (the
 user tests), from the 8-9 October profiles, the disassembly and a research
 pass on the VR4300 and ares (ares charges the CPU for instructions, FPU and

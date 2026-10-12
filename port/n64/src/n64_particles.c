@@ -532,6 +532,7 @@ static void draw_particles(const struct n64_particle_view *view)
 			continue;
 		/* (half again Halo's size: fewer, larger particles) */
 		radius = p->radius * 1.5f * (1.f + (p->end_scale - 1.f) * (p->age / p->life));
+		x *= view->x_scale;
 		scale = view->pixels_per_unit / z;
 		d->x0 = view->center_x + x * scale;
 		d->y0 = view->center_y - y * scale;
@@ -739,6 +740,7 @@ static void draw_explosions(const struct n64_particle_view *view)
 			z = dx * view->forward[0] + dy * view->forward[1] + dz * view->forward[2];
 			if (z < view->z_near * 2.f || (view->fog_end > 0.f && z > view->fog_end))
 				continue;
+			x *= view->x_scale;
 			scale = view->pixels_per_unit / z;
 			radius *= scale;
 			if (radius > limit)

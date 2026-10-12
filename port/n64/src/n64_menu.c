@@ -16,7 +16,9 @@ setup: the players join with A on their controller (B leaves, Z changes
 team), any of them chooses the game type, the map and the score to win;
 START (or A on "START GAME") plays. Settings: particles on or off, chunky
 mode (the game drawn
-half as wide, its pixels twice as wide: n64_render_set_chunky), the view
+half as wide, its pixels twice as wide: n64_render_set_chunky), the display
+(240p, or 480i where the map leaves the memory: n64_render_set_480i), the
+anamorphic widescreen picture (n64_render_set_anamorphic), the view
 models' quality (n64_render_set_view_model_quality), the HUD's inset from
 the screen's edges for a television's overscan (n64_hud_set_inset), the FPS
 counter (off unless turned on). After a
@@ -124,6 +126,9 @@ static struct
 	struct shown_picture map_picture, type_picture;
 	/* the settings (particles: on unless turned off) */
 	int chunky;
+	/* the game in 480i (n64_render_set_480i), the anamorphic picture */
+	int interlaced;
+	int widescreen;
 	int no_particles;
 	/* 0 low, 1 medium, 2 high */
 	int view_model;
@@ -652,8 +657,8 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
 	CONTROL_COUNT };
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK,
-	SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_DISPLAY, SETTING_WIDESCREEN, SETTING_PARTICLES, SETTING_VIEW_MODEL,
+	SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
 #define HUD_INSET_STEP 4
 #define HUD_INSET_MAXIMUM 20
 
@@ -802,6 +807,8 @@ static void draw_settings(int item)
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
 		{"THE GAME'S 3D DRAWN HALF AS WIDE, EACH PIXEL", "DOUBLED ACROSS (THE HUD STAYS SHARP)"},
+		{"480I: TWICE THE LINES, ON MAPS WITH THE", "MEMORY FOR IT (THE BIGGEST STAY 240P)"},
+		{"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
 		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
 		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES", ""},
 		{"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
@@ -811,17 +818,20 @@ static void draw_settings(int item)
 	char value[32];
 
 	page("SETTINGS", NULL);
-	setting_row(112, 528, 118, item == SETTING_CHUNKY, menu.large, "CHUNKY MODE", menu.chunky ? "ON" : "OFF");
-	setting_row(112, 528, 156, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
-	setting_row(112, 528, 194, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
+	setting_row(112, 528, 106, item == SETTING_CHUNKY, menu.large, "CHUNKY MODE", menu.chunky ? "ON" : "OFF");
+	setting_row(112, 528, 136, item == SETTING_DISPLAY, menu.large, "DISPLAY", menu.interlaced ? "480I" : "240P");
+	setting_row(112, 528, 166, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
+		menu.widescreen ? "ANAMORPHIC" : "OFF");
+	setting_row(112, 528, 196, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
+	setting_row(112, 528, 226, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
 		menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
 	if (menu.hud_inset)
 		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
 	else
 		snprintf(value, sizeof(value), "OFF");
-	setting_row(112, 528, 232, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
-	setting_row(112, 528, 270, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
-	list_item(SCREEN_W / 2, 318, 180, item == SETTING_BACK, "BACK");
+	setting_row(112, 528, 256, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
+	setting_row(112, 528, 286, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
+	list_item(SCREEN_W / 2, 324, 180, item == SETTING_BACK, "BACK");
 	panel(112, 352, 528, 404, 0x80102040);
 	frame_line(112, 352, 528, 404, 0x806080A0);
 	for (int line = 0; line < 2; line++)
@@ -1059,6 +1069,10 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					setting = (setting + 1) % SETTING_COUNT;
 				if (setting == SETTING_CHUNKY && (pad->left || pad->right || pad->pressed.a))
 					menu.chunky = !menu.chunky;
+				if (setting == SETTING_DISPLAY && (pad->left || pad->right || pad->pressed.a))
+					menu.interlaced = !menu.interlaced;
+				if (setting == SETTING_WIDESCREEN && (pad->left || pad->right || pad->pressed.a))
+					menu.widescreen = !menu.widescreen;
 				if (setting == SETTING_PARTICLES && (pad->left || pad->right || pad->pressed.a))
 					menu.no_particles = !menu.no_particles;
 				if (setting == SETTING_VIEW_MODEL && pad->left)
@@ -1227,6 +1241,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_set_view_model_quality(menu.view_model);
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);
+			n64_render_set_480i(menu.interlaced);
+			n64_render_set_anamorphic(menu.widescreen);
 			/* everyone starts standing */
 			for (int p = 0; p < 4; p++)
 			{

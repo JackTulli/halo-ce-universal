@@ -221,6 +221,18 @@ static sprite_t *hud_sprite(int number)
 
 void n64_render_hud_phase(void);
 
+/* the views' recordings dropped (the display changed size: 480i), each
+recorded again the next time its view is drawn */
+void n64_hud_forget_recordings(void)
+{
+	for (int i = 0; i < MAXIMUM_VIEWS; i++)
+	{
+		if (hud.recordings[i])
+			rdpq_call_deferred((void (*)(void *))rspq_block_free, hud.recordings[i]);
+		hud.recordings[i] = NULL;
+	}
+}
+
 void n64_hud_set_view_count(int count)
 {
 	hud.view_count = count;
@@ -258,12 +270,18 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	hud.view = view;
 	if (view < 0 || view >= MAXIMUM_VIEWS)
 		return 0;
-	/* with three or four views, each view's every fourth frame: one view's
-	HUD code a frame; with two, each view's every third (the HUD's code
-	is ~5 ms a recording) */
-	if (hud.recordings[view] && (hud.view_frames[view]++ + view) %
-		(hud.view_count > 2 ? 4 : hud.view_count == 2 ? 3 : HUD_INTERVAL))
-		return 0;
+	/* with three or four views, each view's every sixth frame (the user's
+	choice: the HUD's code is ~5 ms a recording, and four views made one a
+	frame), the views' turns spread over the six (four views: frames 0, 1,
+	3 and 4 of each six, not four in a row); with two, each view's every
+	third */
+	{
+		int interval = hud.view_count > 2 ? 6 : hud.view_count == 2 ? 3 : HUD_INTERVAL;
+		int turn = hud.view_count > 0 ? view * interval / hud.view_count : view;
+
+		if (hud.recordings[view] && (hud.view_frames[view]++ + turn) % interval)
+			return 0;
+	}
 	hud.recording = view;
 	hud.dump = hud.views == 600 || hud.views == 601;
 	n64_profile_zone = 1;
@@ -610,7 +628,14 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 		int flip_x = quad->s[0] > quad->s[2], flip_y = quad->t[0] > quad->t[2];
 		int row_bytes = (TEX_FORMAT_PIX2BYTES(surface_get_format(&surface), width) + 7) & ~7;
 
-		set_filter(fabsf(scale_x - 1.f) < 0.02f && fabsf(scale_y - 1.f) < 0.02f);
+		/* (point sampled at the screen's own multiple of the sprites' half
+		size: 1 at 320x240, 2 at 640x480 -- whole texels to whole pixels) */
+		{
+			float native_x = n64_render_layout_scale_x() * 2.f, native_y = n64_render_layout_scale_y() * 2.f;
+
+			set_filter(native_x == (float)(int)native_x &&
+				fabsf(scale_x - native_x) < 0.02f && fabsf(scale_y - native_y) < 0.02f);
+		}
 
 		/* a rectangle of the sprite that fits TMEM, unflipped: one upload
 		(none when the last quad's is still there) and one scaled rectangle
@@ -701,12 +726,12 @@ void n64_hud_text(int x, int y, unsigned long color, const char *text)
 	n64_text_draw(font, x, y + n64_font_ascent(font), color, text);
 }
 
-void n64_hud_blip(float x, float y, float size, unsigned long color)
+void n64_hud_blip(float x, float y, float width, float height, unsigned long color)
 {
-	float scale = size / BLIP_SIZE;
+	float scale_x = width / BLIP_SIZE, scale_y = height / BLIP_SIZE;
 
 	if (hud.dump)
-		debugf("hud blip %d,%d size %d color %08lx\n", (int)x, (int)y, (int)size, color);
+		debugf("hud blip %d,%d size %d color %08lx\n", (int)x, (int)y, (int)width, color);
 	if (!(color & 0xF0F0F0) || !hud.blip.buffer)
 		return;
 	set_mode(_mode_blip);
@@ -721,6 +746,6 @@ void n64_hud_blip(float x, float y, float size, unsigned long color)
 		hud.tmem_s0 = hud.tmem_t0 = 0;
 		hud.tmem_s1 = hud.tmem_t1 = BLIP_SIZE;
 	}
-	rdpq_texture_rectangle_scaled(TILE0, x - size * 0.5f, y - size * 0.5f,
-		x - size * 0.5f + BLIP_SIZE * scale, y - size * 0.5f + BLIP_SIZE * scale, 0, 0, BLIP_SIZE, BLIP_SIZE);
+	rdpq_texture_rectangle_scaled(TILE0, x - width * 0.5f, y - height * 0.5f,
+		x - width * 0.5f + BLIP_SIZE * scale_x, y - height * 0.5f + BLIP_SIZE * scale_y, 0, 0, BLIP_SIZE, BLIP_SIZE);
 }

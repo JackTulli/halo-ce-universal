@@ -212,6 +212,17 @@ that size), or back to the game's 320x240: the old display's memory freed
 first, the game's buffers where they were before the menu */
 void n64_render_set_menu_display(int on);
 int n64_render_screen_width(void);
+/* Settings: the game in 480i where the map leaves room (640x480, else
+512x480, else 320x240 and a word on the screen), tried once the map is in;
+the anamorphic picture (16:9 squeezed into 4:3: a wider view across, the
+HUD squeezed about each view's middle) */
+void n64_render_set_480i(int on);
+void n64_render_set_anamorphic(int on);
+/* the N64's pixels for one of the game's units (it lays the views and the
+HUD out on a 640x480 screen), across and down; the HUD's squeeze */
+float n64_render_layout_scale_x(void);
+float n64_render_layout_scale_y(void);
+float n64_render_hud_squeeze(void);
 int n64_render_screen_height(void);
 
 /* ---------- sound (n64_sound.c): the main menu's music, the game's
@@ -289,6 +300,9 @@ struct n64_particle_view
 {
 	float eye[3], right[3], up[3], forward[3];
 	float pixels_per_unit, center_x, center_y;
+	/* across: x scale of the pixels per unit (a pixel wider than tall:
+	512x480, the anamorphic picture) */
+	float x_scale;
 	float x0, y0, x1, y1;
 	float z_near, z_far; /* world units, this pass's */
 	float fog_start, fog_end; /* 0: no fog */
@@ -404,6 +418,8 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1);
 void n64_hud_end(void);
 /* the views this frame (more views: each one's HUD code runs less often) */
 void n64_hud_set_view_count(int count);
+/* the views' HUD recordings dropped (the display changed size) */
+void n64_hud_forget_recordings(void);
 /* the HUD's inset from each view's edges in pixels, for a television's
 overscan (Settings: HUD INSET; port.json flag "debug_hud_inset=<pixels>") */
 void n64_hud_set_inset(int pixels);
@@ -411,7 +427,7 @@ int n64_hud_inset(void);
 void n64_hud_quad(const struct n64_hud_quad *quad);
 void n64_hud_text(int x, int y, unsigned long color, const char *text);
 /* a motion sensor blip: centre in pixels, position and size in pixels */
-void n64_hud_blip(float x, float y, float size, unsigned long color);
+void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
 
 #ifdef __cplusplus
 }
