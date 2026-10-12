@@ -181,8 +181,12 @@ runs at half speed on those ticks (objects.c n64_pose_clock): what was every
 tick is every other, three or four views' every other is every fourth,
 unseen AI's every fourth, bots' every second or third every fourth or
 sixth. Held weapons and riders still follow their parent every tick;
-projectiles and items keep the full rate; the first-person weapon follows
-the camera every frame as before. n64_half_animation_rate (n64_menu.c).
+projectiles and items keep the full rate. n64_half_animation_rate
+(n64_menu.c). Then the first-person gun too (the user's ask): its pose's
+orientations (keyframes, overlays, sway) are worked out every other frame,
+the views taking turns, a new weapon's at once; in between the last ones are
+placed at the camera as it is now, so the gun stays in the view's hand
+(first_person_weapons.c first_person_weapon_build_node_matrices).
 Settings rows are 28 pixels apart now (eight and BACK).
 
 12 October, three of the user's asks (untested here). The HUD is recorded

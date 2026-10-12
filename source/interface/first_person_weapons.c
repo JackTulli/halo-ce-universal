@@ -1116,8 +1116,28 @@ static void first_person_weapon_build_node_matrices(
 			weapon_definition->weapon.interface_definition.first_person_model.index);
 		struct animation_graph *animation_graph= animation_graph_definition_get(
 			weapon_definition->weapon.interface_definition.first_person_animations.index);
+#ifdef HALO_N64
+		/* Settings: ANIMATIONS HALF RATE (n64_menu.c): the pose's orientations
+		worked out every other frame, the players' views taking turns (a new
+		weapon's at once); in between, the last ones are placed at the camera
+		as it is now (below), so the gun stays where the view holds it */
+		extern int n64_half_animation_rate;
+		static long n64_posed_weapon[MAXIMUM_LOCAL_PLAYERS] = { NONE, NONE, NONE, NONE };
+		boolean n64_pose = TRUE;
 
+		if (local_player_index>=0 && local_player_index<MAXIMUM_LOCAL_PLAYERS)
+		{
+			n64_pose = !n64_half_animation_rate ||
+				!((render.frame_index+local_player_index)&1) ||
+				n64_posed_weapon[local_player_index]!=first_person_weapon->weapon_index;
+			if (n64_pose)
+				n64_posed_weapon[local_player_index]= first_person_weapon->weapon_index;
+		}
+
+		if (n64_pose && animation_graph->first_person_weapon_animations.count)
+#else
 		if (animation_graph->first_person_weapon_animations.count)
+#endif
 		{
 			struct animation_graph_first_person_weapon_animations *first_person_weapon_animations=
 				TAG_BLOCK_GET_ELEMENT(
