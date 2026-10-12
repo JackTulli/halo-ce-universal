@@ -11,6 +11,7 @@ libdragon's MIPS GCC for the big-endian VR4300. The platform layer
 (port/n64/src) is ordinary libdragon code. See port/n64/README.md.
 """
 
+import fnmatch
 import json
 import os
 import shlex
@@ -91,6 +92,18 @@ def main():
     os.chdir(ROOT)
     port = json.load(open(PORT_DIR / "port.json", encoding="utf-8"))
     opt = port.get("optimisation", "-Os")
+    # the game's units (and the XDK layer compiled with them) may have a
+    # level of their own ("game_optimisation"); the platform layer keeps
+    # "optimisation"
+    game_opt = port.get("game_optimisation", opt)
+    # small data ("small_data": bytes, -G): globals up to that size in
+    # .sdata/.sbss, reached from $gp in one instruction instead of two
+    # (libdragon itself is built with the compiler's default, 8); 0 keeps
+    # every global out of it
+    small = f"-G{int(port.get('small_data', 0))}"
+    global GAME_ABI, PLATFORM_FLAGS
+    GAME_ABI = [small if flag == "-G0" else flag for flag in GAME_ABI]
+    PLATFORM_FLAGS = [small if flag == "-G0" else flag for flag in PLATFORM_FLAGS]
     projects = load_projects()
     project = projects["halobetacache"]
     options = project.get("options", {})
@@ -145,7 +158,7 @@ def main():
     # keep the plain symbols tools/n64_link_check.py reads
     lto = ["-flto", "-ffat-lto-objects"] if port.get("lto") else []
     game_cflags = " ".join([
-        *GAME_ABI, opt, *lto, *GAME_FLAGS,
+        *GAME_ABI, game_opt, *lto, *GAME_FLAGS,
         f"-I{PORT_DIR}/include", "-Iport/linux/include", "-Iport/include",
         f"-include {PORT_DIR}/include/halo_n64_prefix.h",
         f"-include {semantics}",
@@ -155,10 +168,15 @@ def main():
 
     objects = []
 
+    # extra flags by source: a path, or a pattern ("source/physics/*.c");
+    # every matching entry's flags are added, in port.json's order (a later
+    # -O wins over the unit's own)
     source_flags = port.get("source_flags", {})
 
     def add(source, cflags):
-        extra = source_flags.get(str(source).replace(os.sep, "/"))
+        name = str(source).replace(os.sep, "/")
+        extra = " ".join(flags for pattern, flags in source_flags.items()
+                         if pattern == name or fnmatch.fnmatchcase(name, pattern))
         if extra:
             cflags = f"{cflags} {extra}"
         obj = BUILD_DIR / "obj" / Path(source).with_suffix(".o")
@@ -184,7 +202,7 @@ def main():
     # the host-independent Linux units compiled again: the game's ABI and
     # the SDK declarations, through platform.h
     xdk_cflags = " ".join([
-        *GAME_ABI, opt, *lto,
+        *GAME_ABI, game_opt, *lto,
         "-std=gnu11", "-w", "-DHALO_LINUX_PLATFORM_LAYER",
         f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include", "-Iport/linux/src",
         "-Iport/linux/include", "-Iport/include", "-Isource", "-Isource/cseries",
@@ -220,7 +238,7 @@ def main():
         "ldlibs": " ".join(port.get("libraries", [])) + f" {TINY3D}/build/libt3d.a -ldragon -lm -ldragonsys",
         # (four link-time jobs: each lto1 takes hundreds of MB, and sixteen
         # of them beside the map conversions froze a 15 GB machine)
-        "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", opt] if lto else [])),
+        "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small] if lto else [])),
     })
     # the cartridge's files (DragonFS): the converted maps, and the flags
     # port.json asks for (an "autotest" file drives the controllers by script)

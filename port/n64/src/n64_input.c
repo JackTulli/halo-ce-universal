@@ -10,6 +10,8 @@ gamepad layer (xdk_input.c).
 
 #include "n64.h"
 
+struct n64_controls n64_controls[4];
+
 void n64_input_poll(void)
 {
 	joypad_poll();

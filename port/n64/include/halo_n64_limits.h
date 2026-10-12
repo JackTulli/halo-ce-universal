@@ -37,11 +37,15 @@ here is only the Xbox's, kept for code that names it.
 #define HALO_PORT_MAXIMUM_LISTED_OBJECTS_PER_MAP 128
 #define HALO_PORT_MAXIMUM_EFFECTS 64
 #define HALO_PORT_MAXIMUM_EFFECT_LOCATIONS 128
-#define HALO_PORT_MAXIMUM_PARTICLES 128
-#define HALO_PORT_MAXIMUM_PARTICLE_SYSTEMS 16
-#define HALO_PORT_MAXIMUM_SYSTEM_PARTICLES 128
-#define HALO_PORT_MAXIMUM_CONTRAILS 32
-#define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 128
+/* Halo's particles, particle systems and contrails are never made on the
+N64 (their creators return at once; port/n64/src/n64_particles.c has its
+own): a token pool each, the game state's memory given back to the heap
+(n64_game_state_trim) */
+#define HALO_PORT_MAXIMUM_PARTICLES 1
+#define HALO_PORT_MAXIMUM_PARTICLE_SYSTEMS 1
+#define HALO_PORT_MAXIMUM_SYSTEM_PARTICLES 1
+#define HALO_PORT_MAXIMUM_CONTRAILS 1
+#define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 1
 #define HALO_PORT_MAXIMUM_LIGHTS_PER_MAP 64
 #define HALO_PORT_MAXIMUM_GAME_LOOPING_SOUNDS 128
 

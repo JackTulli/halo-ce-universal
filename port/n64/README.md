@@ -8,7 +8,10 @@ music in the menu and its sounds in the game (not the environment's). No
 campaign, no networking. It starts at a menu of its own over the scene
 behind Halo's main menu (the ring in space): 1-4 players join, choose the
 game type, one of the 13 multiplayer maps and the score, and play; after
-the scores, back to the menu. Settings has chunky mode.
+the scores, back to the menu. CONTROLS lets each controller choose its
+scheme, crouch and look; SETTINGS has chunky mode, particles, the view
+models' quality, the HUD's inset (for televisions' overscan) and the FPS
+counter.
 
 `NOTES.md` is the working notebook (what the game needs from the left-out
 renderer, how a split-screen game starts without menus).
@@ -32,6 +35,9 @@ Everything lives in `~/n64` (none of it needs root):
 - ares (`flatpak install --user flathub dev.ares.ares`) to run the ROM.
 - The Xbox game's maps in `build/xbox/disc/maps` (from your own disc).
 - Python 3 with Pillow.
+- Optional: Will Turnbow's fan-made Halo font (dafont.com, "Halo", free) as
+  `~/n64/fonts/Halo.ttf`: the title's logo gets its 64 in it
+  (`tools/n64/ui.py` logo_64); without it the logo is Halo's own.
 
 ## Build
 
@@ -55,7 +61,16 @@ flatpak run dev.ares.ares --system "Nintendo 64" --setting Nintendo64/ExpansionP
 
 Controller ports 1 and 2 are the two players (stick: look; C buttons: move;
 Z: fire; R: grenade; A: jump; B: reload/action; L: melee; D-pad up: switch
-weapon; down: crouch; left: zoom; right: switch grenades).
+weapon; down: crouch; left: zoom; right: switch grenades). The menu's
+CONTROLS page gives each controller its own scheme -- standard (that one),
+bumper jumper (R jumps, A throws a grenade), GoldenEye (the stick turns and
+walks, C left/right strafe, C up/down look) or north (the stick walks and
+strafes, the C buttons look) -- crouch held or toggled, look inverted or
+not, fire and grenades swapped or not, and the stick's and the C buttons'
+look speeds (1-10, 1.25 times a step; the C buttons look with the stick all
+the way over, at 1.5 times the stick's speed at 5) (`port/n64/src/xdk_input.c`,
+Halo's turning rates scaled in `source/game/player_control.c`). Settings
+are not saved yet: they reset at every boot.
 
 ## How it is put together
 
@@ -113,14 +128,158 @@ measurements: vertices alone, materials alone), `profile` (samples at the vertic
 (each sound started, the first 300, and every five seconds the voices,
 the sounds playing and the mixer's CPU time), `debug_no_sound` (the
 game's sounds off, to measure them), `profile_sound` (with `profile
-profile_zone`: only while the mixer is fed).
+profile_zone`: only while the mixer is fed), `debug_game_state` (each of
+Halo's game-state allocations, at boot).
 `devtools/n64_timing.c` times chosen game functions through `--wrap`.
 
 `devtools/ares-run.sh` and `ares-shots.sh` run a ROM in ares on a hidden
 Xvfb display (`:97`) with the debug log captured; `ares-gdb.sh` + `rsp.py`
-read the CPU's state through ares' GDB server without gdb.
+read the CPU's state through ares' GDB server without gdb. On the Windows
+PC (WSL, the shared agent tools): `devtools/bench-wsl.sh <label> <seconds>
+<scenes>` builds and runs the benchmark scenes, `bench-summary.py` adds the
+game's speed (game seconds a second) and the stack's depth.
 
 ## State (October 2026)
+
+11 October: the menu runs at 640x480 interlaced, the game at 320x240 as
+before. `n64_render_set_menu_display` (`n64_render.c`) closes libdragon's
+display and opens the other: the menu's is two 640x480 16-bit buffers shown
+as both fields (`INTERLACE_FULL`) and a 640x480 z-buffer (1.8 MB), the
+game's three 320x240 buffers; while the menu runs a block of the game
+buffers' size holds their place, so a game's heap is laid out as before.
+`n64_menu_run` switches on entry and, once a game is chosen, back to
+320x240, where it draws the loading screen once more (shown while the map
+loads). After a game, `main_menu_load` (`source/main/main.c`, HALO_N64)
+unloads the old map before the menu, not after it, and frees its image
+(`n64_game_free_map`): the menu's display needs the memory, and the next
+game reads its map again. Every screen is laid out on 640x480 with Halo's
+fonts and pictures at their own size, as on the Xbox's menus (text half as
+big against the screen as before), inside a ~5% safe area, lines two
+pixels thick (a one-pixel line flickers on an interlaced television); the
+logo is exported 560 pixels wide (RGBA32), the maps' pictures at 256x128
+and the game types' at 192x96 (`tools/n64/ui.py` PICTURES); one map
+picture and one game type picture are kept loaded at a time. CONTROLS and
+SETTINGS rows are a name on the left and the value on the right. Heap in a
+game (one player, Battle Creek): 1845 -> 1843 KB after the map, 1626 ->
+1623 KB after the level. Flag `debug_game_ticks=<n>`: a game ends after n
+ticks (testing the way back to the menu).
+
+11 October, memory and the CPU (built, not run here: the user tests):
+
+- The heap has ~0.8 MB more in a game. Halo's game state was the 1 MB
+  ceiling the port began with (`HALO_PORT_GAME_STATE_CPU_SIZE`), of which
+  the N64's pools took ~640 KB; when the first map locks it, the buffer is
+  shrunk in place to what was allocated (`n64_game_state_trim`,
+  `port/n64/game/n64_game.c`; the log says "n64: game state N KB of 1024 KB
+  used, M KB given back", and an allocation after the lock stops the game
+  with a message rather than overrunning). The pools of what the N64 never
+  makes are tokens: decals (2048, 112 KB -- none are made now,
+  `decals_enabled`: nothing drew them, and every bullet impact cast a ray
+  and clipped a decal against the level's surfaces), glows (512 particles,
+  50 KB), Halo's own particles, particle systems and contrails, the other
+  widgets (flags, antennas, light volumes, lightning): ~404 KB used, ~620 KB
+  given back (counted from the allocation calls in the ELF). The program
+  image is 134 KB smaller: the render globals' 128 rendered clusters (one
+  now: the Xbox renderer's visibility pass filled them, 52 KB), the
+  profiler's 150 tick timers in each of its nine frames (eight, 32 KB), the
+  decal clipping buffer (30 KB), and the code (below). The game runs on
+  libdragon's own 64 KB main stack made 192 KB deep by lowering the heap's
+  top under it (`sbrk_top`, as the display does for the Z buffer, which
+  stays in the last megabyte): 128 KB of heap instead of a 192 KB stack of
+  its own (`port/n64/src/n64_main.c`). Firefight's heap low point (~90 KB)
+  was under the model cache's margin (96 KB): a model load there first
+  dropped others and waited for the RSP to finish with them.
+- Small data: the game and the platform layer are compiled with `-G8`
+  (port.json `small_data`; libdragon's own default): globals of up to 8
+  bytes in `.sdata`/`.sbss`, read from `$gp` in one instruction instead of
+  `lui` and a load. 2.3% fewer instructions in the program (306,788 ->
+  299,715; `lui` 13,446 -> 8,824), 28 KB less code; in ares an instruction
+  is a cycle and an instruction-cache line refill 48.
+- A view's object draws are sorted by a merge sort written out (newlib's
+  `qsort` called its comparison through a pointer and swapped two-byte
+  entries a byte at a time, twice a view), to the same order (checked
+  against a stable reference sort on the host).
+- The "free half megabyte" (Kaze Emanuar, December 2024) is RDRAM's ninth
+  bits: 0.5 MB per 4 MB that only the RDP and VI use (coverage, the Z
+  buffer's slopes). The CPU reaches them only in the MIPS interface's EBus
+  test mode, uncached, four bits per 32-bit word, and any ordinary write to
+  a byte resets its ninth bit; ares v148 (the user's) does not emulate that
+  access at all (its hidden-bit support came in July 2026), so data kept
+  there would read back as garbage. Not used; the game state above is the
+  half megabyte this ROM had idle.
+- `tools/n64_build.py`: `game_optimisation` (the game's own level, e.g.
+  `-Os` -- not used: an earlier -Os build crashed, untested since),
+  `small_data`, and `source_flags` patterns (`source/physics/*.c`). GCC
+  keeps each function's own -O level through LTO.
+11 October, Sidewinder ("completely bugged, horrible artifacting and
+missing models"), found from the converter's data:
+
+- Its snow pines' needles were solid cards, as were Blood Gulch's shrubs,
+  ferns and broadleaf plants: Halo's model shaders test the base map's
+  alpha (at 0x7F) unless marked "not alpha tested", and blend alpha-blended
+  decals by it. The converter ignored both, and mksprite's CI4 quantizer
+  drops alpha anyway. Such textures now keep a transparent palette entry of
+  their own (`tools/n64/level.py` cutout_palette; split_palette for the
+  colour-change ones, as the needles are), their batches carry
+  MATERIAL_ALPHA_TEST and the renderer draws them cut out at half alpha
+  (MODEL_MODE_CUTOUT). The weapons' decals (rocket launcher, sniper rifle,
+  shotgun, frag grenade, flamethrower) and the ammo boxes are cut out too.
+  Far versions keep cut-out parts textured and leave decals out; one with
+  cut-out parts no lighter than the near version is dropped (the pines are
+  cards the simplifier cannot merge: 15 KB a pine, not 30).
+- Holes in the ground, cliffs and base walls: a surface several BSP
+  clusters list (it crosses between them) went to the first of them, and
+  Sidewinder's potentially visible sets are tight (a cluster sees 7-17 of
+  its 35): from where another of them was visible and the first was not,
+  the surface was not drawn (258 surfaces; Blood Gulch 189). level.py
+  surface_homes gives it to one of them that every eye seeing any of them
+  sees too, else to a group drawn when any of them is visible: the level
+  file (version 4) lists each cluster's owners. Clusters: Sidewinder 35 ->
+  43, Battle Creek 29 -> 48, Blood Gulch 30 -> 37 (a few more batches).
+- Objects were drawn by their own cluster alone: a player, vehicle or tree
+  near a portal vanished from places that see only the cluster beside it.
+  Now any cluster the object's sphere reaches (Halo's cluster partitions,
+  object_get_first_cluster) in the eye's set draws it
+  (`port/n64/game/n64_render_game.c`).
+- The teleporters' energy (one emitted colour on a grey mask) was an opaque
+  green slab: translucent now (MATERIAL_BLEND, MODEL_MODE_BLEND at
+  GLOW_ALPHA, no depth written).
+- Smeared trims: a level batch's texture coordinates started at its lowest
+  whole repeat, and a lone 1,229-texel trim triangle passed s10.5's 1,024
+  (clamped). Level and model batches are centred on 0 now, and a model
+  part spanning more than s10.5 holds is batched within 1,792 texels
+  (Blood Gulch's trees: 21 clamped vertices -> 4). Damnation, Boarding
+  Action and Hang 'em High still have single level triangles too long for
+  s10.5 (63, 57 and 6; were 107, 180 and 52): they would need splitting.
+
+9 October, afternoon (on the user's Windows PC, in WSL):
+
+- Water (Battle Creek's creek, Halo's `swat`): one flat colour, blended
+  (`MATERIAL_WATER`, `tools/n64/level.py` water_colour; the renderer's
+  `WATER_ALPHA`): untextured, its vertices the shader's perpendicular and
+  parallel tints' mean x0.7. Before, its base map's ~0.2 alpha was lost in
+  CI4's one-bit palette alpha and, with no lightmap and no light of its own,
+  the surface drew opaque black over the creek bed -- and cost ~6 ms of
+  draw in view of it.
+- The HUD's black pixels: its bitmaps were halved with Lanczos (its
+  undershoot, divided by a small alpha when unpremultiplied, left dark
+  texels along every thin outline), their transparent texels black
+  (bilinear filtering mixed them in), every quad filtered at 1:1 (half a
+  texel of blur), and meters' edge texels darkened by their coverage, opaque.
+  Now `tools/n64/hud.py` halves by box filter and bleeds the edges' colour
+  into the transparent texels; quads at their sprite's size are point
+  sampled; meter texels of at least half the meter's own strongest opacity
+  are drawn at least three quarters as bright, the rest cut out.
+- Settings: HUD INSET (0-20 pixels, by 4: Halo's window bounds shrink by it
+  while the HUD lays out -- corners, messages, scores, nav points; flag
+  `debug_hud_inset=<pixels>`) and FPS COUNTER (off unless turned on; a
+  `debug_map` game still shows it).
+- CONTROLS (the title's new entry): per controller, the scheme, crouch held
+  or toggled (a jump stands back up) and look inverted
+  (`n64_controls`, n64.h; `xdk_input.c`).
+- Aim assist stronger (HALO_N64): the weapons' autoaim and magnetism cones
+  x1.75, their reach x1.25 (`source/game/aim_assist.c`); magnetism friction
+  0.6 -> 0.75 and adhesion 0.7 -> 0.95 (`source/game/player_control.c`).
 
 9 October: particles again, simply (`port/n64/src/n64_particles.c`): what
 effects make -- muzzle flashes, sparks, dust, blood, smoke, explosions --

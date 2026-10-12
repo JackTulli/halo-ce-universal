@@ -1064,6 +1064,18 @@ static void get_local_player_input_blob(
 					}
 				}
 			}
+#ifdef HALO_N64
+			{
+				/* each player's look speeds (the menu's CONTROLS: the stick's
+				or the C buttons', by the scheme; port/n64/src/xdk_input.c) */
+				extern void n64_look_speed(int local_player_index, float *yaw, float *pitch);
+				float yaw_speed, pitch_speed;
+
+				n64_look_speed(local_player_index, &yaw_speed, &pitch_speed);
+				look_yaw_rate *= yaw_speed;
+				look_pitch_rate *= pitch_speed;
+			}
+#endif
 
 			input->throttle.i = input_state->forward_movement;
 			input->throttle.j = input_state->strafe;
@@ -1195,10 +1207,20 @@ static void get_local_player_input_blob(
 							fabs(input->throttle.j) > _real_epsilon))
 						{
 							real game_speed = game_time_get_speed();
+#ifdef HALO_N64
+							/* the N64's stronger aim assist (aim_assist.c): the aim
+							slows more over a target (friction 0.6 -> 0.75) and is
+							carried along with it more (adhesion 0.7 -> 0.95) */
+							real input_scale = 1.f - control->magnetism_level *
+								PIN(constants->magnetism_friction * 1.25f, 0.f, 0.8f);
+							real magnetism_scale = control->magnetism_level *
+								PIN(constants->magnetism_adhesion * 1.35f, 0.f, 1.f);
+#else
 							real input_scale = 1.f - control->magnetism_level *
 								PIN(constants->magnetism_friction, 0.f, 1.f);
 							real magnetism_scale = control->magnetism_level *
 								PIN(constants->magnetism_adhesion, 0.f, 1.f);
+#endif
 
 							if (game_players_are_double_speed())
 							{

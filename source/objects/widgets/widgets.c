@@ -61,7 +61,12 @@ symbols in this file:
 
 enum
 {
+#ifdef HALO_N64
+	/* (none are made on the N64: widget_new, below) */
+	MAXIMUM_WIDGETS_PER_MAP = 1
+#else
 	MAXIMUM_WIDGETS_PER_MAP = 64
+#endif
 };
 
 /* ---------- macros */

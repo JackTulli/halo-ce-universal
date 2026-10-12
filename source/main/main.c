@@ -1118,6 +1118,7 @@ void main_menu_load(
 {
 	extern void n64_game_results(void);
 	extern void n64_game_menu(void);
+	extern void n64_game_free_map(void);
 	extern unsigned long n64_ticks(void);
 	struct game_options options;
 	boolean in_progress = game_in_progress();
@@ -1127,6 +1128,10 @@ void main_menu_load(
 	{
 		n64_game_results();
 		game_dispose_from_old_map();
+		/* the old map unloaded and its memory given back before the menu
+		(its 640x480 display needs it); the next game reads its map again */
+		game_unload();
+		n64_game_free_map();
 	}
 	n64_game_menu();
 	main_globals.connection = _game_connection_local;
@@ -1140,9 +1145,7 @@ void main_menu_load(
 	/* not the same spawns every game */
 	options.random_seed = n64_ticks();
 	game_precache_new_map(options.map_name, TRUE);
-	if (in_progress)
-		game_unload();
-	else
+	if (!in_progress)
 		game_dispose_from_old_map();
 	main_new_map(&options);
 

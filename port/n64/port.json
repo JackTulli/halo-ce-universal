@@ -80,5 +80,6 @@
   ],
   "flags": [],
   "ldflags": [],
-  "lto": true
+  "lto": true,
+  "small_data": 8
 }

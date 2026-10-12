@@ -168,7 +168,12 @@ static struct lightning_globals lightning_globals = {0};
 void lightnings_initialize(
 	void)
 {
+#ifdef HALO_N64
+	/* (no widgets are made on the N64, widgets.c) */
+	lightning_globals.lightning_data = game_state_data_new("lightnings", 1, 8);
+#else
 	lightning_globals.lightning_data = game_state_data_new("lightnings", 256, 8);
+#endif
 	match_assert("c:\\halo\\SOURCE\\objects\\widgets\\lightning.c", 50, lightning_globals.lightning_data);
 
 	return;

@@ -21,8 +21,11 @@ units" everything here is drawn in), already lit.
 
 #include "n64.h"
 
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
+/* the screen: the game's 320x240, or the menu's 640x480 interlaced
+(n64_render_set_menu_display) */
+static int screen_width = 320, screen_height = 240;
+#define SCREEN_WIDTH screen_width
+#define SCREEN_HEIGHT screen_height
 #define MAXIMUM_VIEWS 4
 #define WORLD_SCALE 64.0f
 /* an object smaller than this on screen is drawn in its far version */
@@ -54,7 +57,18 @@ enum
 	MATERIAL_DOUBLE = 256,
 	/* a natural material's detail map, drawn over it (record_overlay) */
 	MATERIAL_OVERLAY = 512,
+	/* Halo's water: untextured, one flat colour on its vertices, blended at
+	WATER_ALPHA (tools/n64/level.py) */
+	MATERIAL_WATER = 1024,
+	/* a model glow of one emitted colour (a teleporter's energy), drawn
+	translucent at GLOW_ALPHA (tools/n64/models.py glow_texture) */
+	MATERIAL_BLEND = 2048,
 };
+
+/* the water's opacity (MATERIAL_WATER) */
+#define WATER_ALPHA 128
+/* a translucent glow's (MATERIAL_BLEND) */
+#define GLOW_ALPHA 112
 
 /* ---------- the level file */
 
@@ -68,6 +82,9 @@ struct level_header
 	uint32_t clusters_offset, batches_offset;
 	uint32_t vertices_offset, vertices_size;
 	uint32_t indices_offset, indices_size;
+	/* the clusters' owners: BSP cluster indices (level_cluster) */
+	uint32_t owners_offset;
+	uint16_t owner_total, pad;
 };
 
 struct level_texture
@@ -82,10 +99,14 @@ struct level_material
 	uint16_t flags;
 };
 
+/* a BSP cluster's surfaces, or those several clusters share (where they
+cross between them): drawn when any of its owners -- BSP clusters -- is in
+the eye's potentially visible set (none: always) */
 struct level_cluster
 {
 	float minimum[3], maximum[3];
 	uint16_t first_batch, batch_count;
+	uint16_t first_owner, owner_count;
 };
 
 struct level_batch
@@ -104,6 +125,7 @@ static struct
 	struct level_texture *textures;
 	struct level_material *materials;
 	struct level_cluster *clusters;
+	uint16_t *owners;
 	struct level_batch *batches;
 	T3DVertPacked *vertices;
 	/* each batch's triangle strips (draw_batch), chunks of tiny3d index
@@ -402,6 +424,67 @@ both) let it, 4096 was no faster then -- with the level drawn as strips
 16 KB more. */
 int rspq_lowpri_buffer_words = 0x1000;
 
+/* ---------- the display: the game's 320x240, or the menu's 640x480
+interlaced (n64_render_set_menu_display) */
+
+/* the game's: three 320x240 buffers (and the z-buffer, which libdragon
+puts at the top of the heap the first time a frame asks for it) */
+#define GAME_DISPLAY_BYTES (3 * 320 * 240 * 2)
+
+static void game_display_init(void)
+{
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+	screen_width = 320;
+	screen_height = 240;
+}
+
+/* while the menu runs, the place the game's buffers had, kept for them (so
+that a game's heap is laid out as it was) */
+static void *game_display_place;
+
+void n64_render_set_menu_display(int on)
+{
+	heap_stats_t heap;
+
+	on = on != 0;
+	if (on == (screen_width == 640))
+		return;
+	/* the RSP and the RDP done with the buffers, the deferred calls made
+	(the last frame given to the display) */
+	rspq_wait();
+	/* (frees the buffers and the z-buffer; black until the next frame) */
+	display_close();
+	if (on)
+	{
+		game_display_place = malloc(GAME_DISPLAY_BYTES);
+		/* each frame shown as both fields (INTERLACE_FULL: a whole 640x480
+		picture), two buffers: 2 x 600 KB, and the z-buffer's 600 KB */
+		display_init((resolution_t){.width = 640, .height = 480, .interlaced = INTERLACE_FULL}, DEPTH_16_BPP, 2,
+			GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+		screen_width = 640;
+		screen_height = 480;
+	}
+	else
+	{
+		free(game_display_place);
+		game_display_place = NULL;
+		game_display_init();
+	}
+	sys_get_heap_stats(&heap);
+	debugf("n64: display %dx%d%s, heap %d KB free\n", screen_width, screen_height, on ? " interlaced" : "",
+		heap.free / 1024);
+}
+
+int n64_render_screen_width(void)
+{
+	return screen_width;
+}
+
+int n64_render_screen_height(void)
+{
+	return screen_height;
+}
+
 void n64_render_initialize(void)
 {
 	char setting[16];
@@ -411,7 +494,7 @@ void n64_render_initialize(void)
 		rspq_lowpri_buffer_words = atoi(setting);
 	debugf("n64: rspq buffers of %d words\n", rspq_lowpri_buffer_words);
 	renderer.clear_color = RGBA32(96, 112, 140, 0xFF);
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+	game_display_init();
 	rdpq_init();
 	t3d_init((T3DInitParams){});
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
@@ -545,8 +628,12 @@ static void drop_model(int index)
 
 /* the render modes of model batches, recorded once each: textured (the
 doubling is in the texture), shaded by the baked sky light, one RDP cycle;
-glows unlit and cut out; untextured */
-enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, MODEL_MODES_WITH_DEPTH,
+glows unlit and cut out; untextured; textured and cut out where the
+texture's alpha is under half (Halo's alpha-tested model shaders: a snow
+pine's needles, MATERIAL_ALPHA_TEST); glows of one colour translucent, over
+the rest (their order last: MATERIAL_BLEND) */
+enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, MODEL_MODE_CUTOUT, MODEL_MODE_BLEND,
+	MODEL_MODES_WITH_DEPTH,
 	/* the same, for skies: no depth */
 	NUMBER_OF_MODEL_MODES = MODEL_MODES_WITH_DEPTH * 2 };
 /* each mode without fog, then with (n64_render_set_fog) */
@@ -554,7 +641,9 @@ static rspq_block_t *model_modes[2 * NUMBER_OF_MODEL_MODES];
 
 static int model_mode(sprite_t *sprite, int flags)
 {
-	int mode = !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : MODEL_MODE_TEXTURED;
+	int mode = !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_BLEND) ? MODEL_MODE_BLEND :
+		(flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : (flags & MATERIAL_ALPHA_TEST) ? MODEL_MODE_CUTOUT :
+		MODEL_MODE_TEXTURED;
 
 	if (flags & MATERIAL_SKY)
 		mode += MODEL_MODES_WITH_DEPTH;
@@ -584,9 +673,25 @@ static void record_model_modes(void)
 		}
 		else if (kind == MODEL_MODE_TEXTURED)
 			rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
+		else if (kind == MODEL_MODE_CUTOUT)
+		{
+			rdpq_mode_combiner(RDPQ_COMBINER_TEX_SHADE);
+			rdpq_mode_alphacompare(128);
+		}
+		else if (kind == MODEL_MODE_BLEND)
+		{
+			/* the texture's colour at GLOW_ALPHA (the shade's alpha is the
+			fog), blended (the RDP cannot add: its blender wraps), tested
+			against the depth but not written */
+			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, TEX0), (0, 0, 0, PRIM)));
+			rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+			rdpq_mode_zbuf(depth && debug_fog_test != 4, false);
+		}
 		else
 			rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
 		rdpq_mode_end();
+		if (kind == MODEL_MODE_BLEND)
+			rdpq_set_prim_color(RGBA32(255, 255, 255, GLOW_ALPHA));
 		model_modes[mode] = rspq_block_end();
 	}
 }
@@ -824,11 +929,12 @@ int n64_render_load_level(const char *map_name, int low)
 	data_cache_hit_writeback_invalidate(level.data, size);
 
 	level.header = (struct level_header *)level.data;
-	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 3,
+	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 4,
 		"%s was converted for another build", path);
 	level.textures = (struct level_texture *)(level.data + level.header->textures_offset);
 	level.materials = (struct level_material *)(level.data + level.header->materials_offset);
 	level.clusters = (struct level_cluster *)(level.data + level.header->clusters_offset);
+	level.owners = (uint16_t *)(level.data + level.header->owners_offset);
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
 	level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
 	level.indices = level.data + level.header->indices_offset;
@@ -991,7 +1097,13 @@ static void record_material(int index)
 	rdpq_mode_fog(renderer.fog ? RDPQ_FOG_STANDARD : 0);
 	/* Halo's environment shader doubles texture x light; the converter
 	doubled the textures, so one combiner cycle does */
-	if (textured && (material->flags & MATERIAL_DETAIL))
+	if (material->flags & MATERIAL_WATER)
+	{
+		/* water: the vertices' colour at a constant opacity (the shade's
+		alpha is the fog) */
+		rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, SHADE), (0, 0, 0, ENV)));
+	}
+	else if (textured && (material->flags & MATERIAL_DETAIL))
 	{
 		/* terrain: light x (0.5 + detail), the detail map's mipmaps
 		interpolated by rdpq in a first pass (they fade to grey in the
@@ -1015,7 +1127,9 @@ static void record_material(int index)
 		rdpq_mode_alphacompare(128);
 	}
 	rdpq_mode_end();
-	if (textured && (material->flags & MATERIAL_DETAIL))
+	if (material->flags & MATERIAL_WATER)
+		rdpq_set_env_color(RGBA32(255, 255, 255, WATER_ALPHA));
+	else if (textured && (material->flags & MATERIAL_DETAIL))
 		rdpq_set_env_color(RGBA32(128, 128, 128, 255));
 	else if (textured && (material->flags & MATERIAL_DOUBLE))
 		rdpq_set_env_color(RGBA32(255, 255, 255, 255));
@@ -1112,11 +1226,22 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 
 		if (!cluster->batch_count)
 			continue;
-		/* out of the eye's potentially visible set (a cluster past the
-		BSP's own, surfaces no cluster listed, is always drawn) */
-		if (view->visible_clusters && c < view->cluster_count &&
-			!(view->visible_clusters[c >> 5] & (1UL << (c & 31))))
-			continue;
+		/* out of the eye's potentially visible set: none of its owners in
+		it (one past the BSP's own clusters counts as in it; surfaces no
+		cluster listed have none and are always drawn) */
+		if (view->visible_clusters && cluster->owner_count)
+		{
+			int seen = 0;
+
+			for (int k = cluster->first_owner; k < cluster->first_owner + cluster->owner_count && !seen; k++)
+			{
+				int owner = level.owners[k];
+
+				seen = owner >= view->cluster_count || (view->visible_clusters[owner >> 5] & (1UL << (owner & 31)));
+			}
+			if (!seen)
+				continue;
+		}
 		if (!t3d_frustum_vs_aabb(&viewport->viewFrustum, &minimum, &maximum) ||
 			beyond_fog(cluster->minimum[0], cluster->minimum[1], cluster->minimum[2],
 				cluster->maximum[0], cluster->maximum[1], cluster->maximum[2]))
@@ -1322,7 +1447,8 @@ static int current_model_mode = -1;
 
 static void use_setup(struct loaded_model *loaded, int b, struct model_batch *batch, unsigned long color)
 {
-	int key = (batch->texture << 8) | batch->flags;
+	/* (the texture and the flags: model batches use flags up to MATERIAL_BLEND) */
+	int key = (batch->texture << 12) | (batch->flags & 0xFFF);
 	sprite_t *sprite = debug_untextured || batch->texture < 0 ? NULL : models.sprites[batch->texture];
 	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags);
 
@@ -1515,15 +1641,67 @@ static void queue_draw(int model_index, int b, unsigned long color, T3DMat4FP *m
 	queued_count++;
 }
 
-static int compare_draws(const void *a, const void *b)
+/* x goes before y: by mode and texture, colour, then node matrices (an
+object's batches together) */
+static inline int draw_before(const struct queued_draw *x, const struct queued_draw *y)
 {
-	const struct queued_draw *x = &queued_draws[*(const uint16_t *)a], *y = &queued_draws[*(const uint16_t *)b];
-
 	if (x->order != y->order)
-		return x->order < y->order ? -1 : 1;
+		return x->order < y->order;
 	if (x->color != y->color)
-		return x->color < y->color ? -1 : 1;
-	return x->matrices < y->matrices ? -1 : x->matrices > y->matrices;
+		return x->color < y->color;
+	return x->matrices < y->matrices;
+}
+
+/* The queue in that order: runs of eight by insertion, then merged (newlib's
+qsort called its comparison through a pointer and swapped bytes at a time:
+several hundred draws a view, sorted twice a view). Stable: draws alike
+keep the order they were queued in. */
+static void sort_draws(void)
+{
+	static uint16_t scratch[MAXIMUM_QUEUED_DRAWS];
+	uint16_t *from = queued_order, *to = scratch;
+	int n = queued_count;
+
+	for (int start = 0; start < n; start += 8)
+	{
+		int end = start + 8 < n ? start + 8 : n;
+
+		for (int i = start + 1; i < end; i++)
+		{
+			uint16_t index = from[i];
+			const struct queued_draw *draw = &queued_draws[index];
+			int j = i;
+
+			while (j > start && draw_before(draw, &queued_draws[from[j - 1]]))
+			{
+				from[j] = from[j - 1];
+				j--;
+			}
+			from[j] = index;
+		}
+	}
+	for (int width = 8; width < n; width *= 2)
+	{
+		for (int low = 0; low < n; low += 2 * width)
+		{
+			int middle = low + width < n ? low + width : n;
+			int high = low + 2 * width < n ? low + 2 * width : n;
+			int a = low, b = middle, k = low;
+
+			while (a < middle && b < high)
+				to[k++] = draw_before(&queued_draws[from[b]], &queued_draws[from[a]]) ? from[b++] : from[a++];
+			while (a < middle)
+				to[k++] = from[a++];
+			while (b < high)
+				to[k++] = from[b++];
+		}
+		uint16_t *swap = from;
+
+		from = to;
+		to = swap;
+	}
+	if (from != queued_order)
+		memcpy(queued_order, from, n * sizeof(queued_order[0]));
 }
 
 static void flush_draws(void)
@@ -1532,7 +1710,7 @@ static void flush_draws(void)
 
 	if (!queued_count)
 		return;
-	qsort(queued_order, queued_count, sizeof(queued_order[0]), compare_draws);
+	sort_draws();
 	for (int i = 0; i < queued_count; i++)
 	{
 		struct queued_draw *draw = &queued_draws[queued_order[i]];

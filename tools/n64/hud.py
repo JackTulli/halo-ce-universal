@@ -42,6 +42,47 @@ def unpremultiply(img):
     return Image.merge("RGBA", (divide(r), divide(g), divide(b), a))
 
 
+def halve(img, premultiplied):
+    """an image at half size, each texel its area's mean (Lanczos rang: its
+    undershoot, divided by a small alpha, left dark texels along every thin
+    outline). Premultiplied channels are averaged each on its own; a meter's
+    fill order is weighted by its shape (PIL weights colour by alpha)"""
+    size = (max(1, img.width // 2), max(1, img.height // 2))
+    if not premultiplied:
+        return img.resize(size, Image.BOX)
+    return Image.merge("RGBA", [c.resize(size, Image.BOX) for c in img.split()])
+
+
+def bleed(img, passes=2):
+    """the colour of the transparent texels next to a shape: the mean of its
+    neighbours' (bilinear filtering mixes each texel with its neighbours, and
+    transparent black ones darkened the shapes' edges)"""
+    w, h = img.size
+    px = bytearray(img.tobytes())
+    known = bytearray(1 if px[i * 4 + 3] else 0 for i in range(w * h))
+    for _ in range(passes):
+        filled = []
+        for i in range(w * h):
+            if known[i]:
+                continue
+            x, y = i % w, i // w
+            r = g = b = n = 0
+            for yy in range(max(0, y - 1), min(h, y + 2)):
+                for xx in range(max(0, x - 1), min(w, x + 2)):
+                    j = yy * w + xx
+                    if known[j]:
+                        r += px[j * 4]
+                        g += px[j * 4 + 1]
+                        b += px[j * 4 + 2]
+                        n += 1
+            if n:
+                filled.append((i, r // n, g // n, b // n))
+        for i, r, g, b in filled:
+            px[i * 4:i * 4 + 3] = bytes((r, g, b))
+            known[i] = 1
+    return Image.frombytes("RGBA", img.size, bytes(px))
+
+
 class HudExporter:
     def __init__(self, xmap, defs, map_name, out_dir):
         self.map = xmap
@@ -90,10 +131,9 @@ class HudExporter:
         return self.count
 
     def write(self, img, png, meter):
-        w, h = img.size
-        img = img.resize((max(1, w // 2), max(1, h // 2)), Image.LANCZOS)
+        img = halve(img.convert("RGBA"), not meter)
         if not meter:
-            img = unpremultiply(img)
+            img = bleed(unpremultiply(img))
         r, g, b, a = img.split()
         grey = max(abs(x - y) for x, y in zip(r.getextrema(), g.getextrema())) < 24 and \
             max(abs(x - y) for x, y in zip(g.getextrema(), b.getextrema())) < 24

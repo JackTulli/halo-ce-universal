@@ -14,7 +14,10 @@ The output file (big-endian):
     header         'H64L', version, counts and offsets (struct below)
     textures[]     name[24] (rom:/tex/<map>/<name>.sprite), width, height
     materials[]    texture index, flags
-    clusters[]     bounds min[3], max[3] (floats, world units), first batch, batch count
+    clusters[]     bounds min[3], max[3] (floats, world units), first batch, batch count,
+                   first owner, owner count: drawn when any of its owners (BSP clusters,
+                   in owners[]) is in the eye's potentially visible set; none, always
+    owners[]       u16 BSP cluster indices, padded to 4 bytes
     batches[]      material, vertex count, triangle count, vertex pair offset, index offset,
                    bounds min[3], max[3] (s16, N64 units)
     vertices       tiny3d T3DVertPacked, two vertices per 32 bytes
@@ -46,10 +49,11 @@ MAXIMUM_UV_EXTENT = 512.0  # texels; s10.5 holds +-1024, keep well inside it
 # 4 KB of TMEM (no palette), twice a colour texture's texels
 GREYSCALE_TEXELS = 8192
 # its batches' uv extent: twice the texels a side would double the batches
-# at MAXIMUM_UV_EXTENT; a batch's coordinates start within its first
-# repeat, so they stay under extent + 128 texels, inside s10.5's 1024
+# at MAXIMUM_UV_EXTENT; a batch's coordinates are centred on 0 (write), so
+# they stay within half of it and half a repeat, inside s10.5's +-1024 (a
+# batch's first triangle is taken whatever its extent: up to ~2000 texels)
 GREYSCALE_UV_EXTENT = 832.0
-VERSION = 3
+VERSION = 4
 
 MATERIAL_ALPHA_TEST = 1
 MATERIAL_TWO_SIDED = 2
@@ -68,6 +72,28 @@ MATERIAL_DETAIL = 128
 MATERIAL_DOUBLE = 256
 # a natural material's detail, drawn over it (overlay_material)
 MATERIAL_OVERLAY = 512
+# a MATERIAL_DOUBLE vertex's light at most (per channel, of 255): the RDP's
+# combiner does not clamp -- the doubling cycle's 1.0-1.5 clips to white but
+# 1.5-2.0 wraps to black -- so texture x light must stay under 0.75. Above
+# it Sidewinder's bright snow (the cliffs' light x the stretch x the
+# overlay's brightening, up to ~1.1) was speckled black, blue and cyan where
+# one channel or all wrapped. Halo's own min(1, 2 x texture x light) is kept
+# up to 0.75, 1.5 x texture past it (the brightest texels clip to white)
+DOUBLE_SHADE_LIMIT = 191
+# Halo's water (shader_transparent_water): untextured, its vertices one flat
+# colour (water_colour), blended at the renderer's WATER_ALPHA -- the
+# cheapest transparent surface: no texture load, no lightmap splits. (Its
+# base map's alpha, ~0.2, was lost in CI4's one-bit palette alpha, and the
+# vertices of a surface without a lightmap had no light: the creek drew black)
+MATERIAL_WATER = 1024
+# a model glow of one emitted colour (models.py glow_texture: a teleporter's
+# energy), drawn translucent (the renderer's GLOW_ALPHA)
+MATERIAL_BLEND = 2048
+# the water's colour: its perpendicular and parallel tints' mean (by their
+# brightness), dimmed about as far as its reflection map darkens it
+WATER_SHADE = 0.7
+# a water shader without a tint of its own
+WATER_DEFAULT_COLOUR = (0.12, 0.16, 0.45)
 
 # rock, earth, snow, wood (Halo's material types: dirt, sand, stone, snow,
 # wood, leaves, ice) with a detail map have it drawn over them in a second
@@ -129,6 +155,13 @@ class Texture:
         self.name, self.width, self.height = name, width, height
         # the texture's average colour (0..1), for drawing it untextured
         self.colour = colour
+
+
+# an alpha-tested texture (cutout_texture): texels under this alpha are cut
+# out (Halo's test is at 0x7F); one with fewer than this share of them is
+# drawn whole
+CUTOUT_ALPHA = 128
+CUTOUT_MINIMUM_SHARE = 0.005
 
 
 # the colours Halo fills a lightmap page's unused texels with
@@ -297,35 +330,79 @@ def write_list(path, names):
     Path(path).write_text("".join(f"{n}\n" for n in names))
 
 
-def split_palette(img, mask):
+def split_palette(img, mask, cutout=False):
     """img (RGBA) as a 16-colour paletted image: the texels where mask < 128
     take entries 0-7, the others 8-15, each half the image's own colours
-    there (median cut)"""
-    pixels = list(img.convert("RGB").getdata())
+    there (median cut). Cut out (alpha-tested), the texels of alpha under
+    CUTOUT_ALPHA take entry 7, transparent (its colour the lower half's
+    mean), the lower half's colours the 7 others; returns the image and its
+    PNG transparency then (None without)"""
+    rgba = list(img.convert("RGBA").getdata())
+    pixels = [p[:3] for p in rgba]
     inside = [m >= 128 for m in mask.getdata()]
+    cut = [cutout and p[3] < CUTOUT_ALPHA for p in rgba]
     palette = []
     for half in (False, True):
-        colours = [p for p, m in zip(pixels, inside) if m == half] or [(0, 0, 0)]
+        count = 7 if cutout and not half else 8
+        colours = [p for p, m, c in zip(pixels, inside, cut) if m == half and not c] or [(0, 0, 0)]
         sample = Image.new("RGB", (len(colours), 1))
         sample.putdata(colours)
-        quantized = sample.quantize(colors=8, method=Image.Quantize.MEDIANCUT)
-        entries = quantized.getpalette()[:24]
-        entries += entries[-3:] * ((24 - len(entries)) // 3)
-        palette.append([tuple(entries[i:i + 3]) for i in range(0, 24, 3)])
+        quantized = sample.quantize(colors=count, method=Image.Quantize.MEDIANCUT)
+        entries = quantized.getpalette()[:3 * count]
+        entries += entries[-3:] * ((3 * count - len(entries)) // 3)
+        palette.append([tuple(entries[i:i + 3]) for i in range(0, 3 * count, 3)])
+        if count == 7:
+            palette[-1].append(tuple(int(sum(c[k] for c in colours) / len(colours)) for k in range(3)))
     out = Image.new("P", img.size)
     out.putpalette([c for half in palette for colour in half for c in colour])
     cache = {}
     indices = []
-    for p, m in zip(pixels, inside):
+    for p, m, c in zip(pixels, inside, cut):
+        if c:
+            indices.append(7)
+            continue
         key = (p, m)
         index = cache.get(key)
         if index is None:
             half = palette[1 if m else 0]
-            best = min(range(8), key=lambda i: (half[i][0] - p[0]) ** 2 + (half[i][1] - p[1]) ** 2 + (half[i][2] - p[2]) ** 2)
+            choices = range(7) if cutout and not m else range(8)
+            best = min(choices, key=lambda i: (half[i][0] - p[0]) ** 2 + (half[i][1] - p[1]) ** 2 + (half[i][2] - p[2]) ** 2)
             index = cache[key] = best + (8 if m else 0)
         indices.append(index)
     out.putdata(indices)
+    if cutout:
+        return out, bytes([255] * 7 + [0] + [255] * 8)
     return out
+
+
+def cutout_palette(img):
+    """img (RGBA) as a 16-colour paletted image for an alpha-tested texture
+    and its PNG transparency: the texels of alpha under CUTOUT_ALPHA take
+    entry 15, transparent, its colour the others' mean (the RDP filters the
+    palette's colours: the edges mix it in), the others entries 0-14 (median
+    cut of their colours)"""
+    pixels = list(img.convert("RGBA").getdata())
+    opaque = [p[:3] for p in pixels if p[3] >= CUTOUT_ALPHA] or [(0, 0, 0)]
+    sample = Image.new("RGB", (len(opaque), 1))
+    sample.putdata(opaque)
+    entries = sample.quantize(colors=15, method=Image.Quantize.MEDIANCUT).getpalette()[:45]
+    entries += entries[-3:] * ((45 - len(entries)) // 3)
+    palette = [tuple(entries[i:i + 3]) for i in range(0, 45, 3)]
+    mean = tuple(int(sum(c[k] for c in opaque) / len(opaque)) for k in range(3))
+    cache = {}
+    indices = []
+    for p in pixels:
+        if p[3] < CUTOUT_ALPHA:
+            indices.append(15)
+            continue
+        index = cache.get(p[:3])
+        if index is None:
+            index = cache[p[:3]] = min(range(15), key=lambda i: sum((palette[i][k] - p[k]) ** 2 for k in range(3)))
+        indices.append(index)
+    out = Image.new("P", img.size)
+    out.putpalette([c for colour in palette + [mean] for c in colour])
+    out.putdata(indices)
+    return out, bytes([255] * 15 + [0])
 
 
 class LevelBuilder:
@@ -366,6 +443,8 @@ class LevelBuilder:
         self.shader_span = {}
         # materials left out (dropped_shader)
         self.dropped = set()
+        # water materials: their colour (MATERIAL_WATER)
+        self.water_colour = {}
         # natural materials' detail drawn over them: material -> overlay
         self.overlay_detail = False
         self.overlay_of = {}
@@ -394,11 +473,45 @@ class LevelBuilder:
         self.texture_by_bitmap[bitmap_datum] = index
         return index
 
-    def write_texture(self, img, tag_name, mask=None, fmt=None):
+    def has_cutout(self, bitmap_datum):
+        """whether a bitmap has transparent texels to cut out (at least
+        CUTOUT_MINIMUM_SHARE of them under CUTOUT_ALPHA)"""
+        key = ("holes", bitmap_datum)
+        if key not in self.texture_by_bitmap:
+            tag = self.map.tag(bitmap_datum)
+            images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+            try:
+                img = decode(self.map, images[0], 64) if images else None
+            except ValueError:
+                img = None
+            alpha = list(img.getchannel("A").getdata()) if img is not None else []
+            self.texture_by_bitmap[key] = bool(alpha) and \
+                sum(1 for a in alpha if a < CUTOUT_ALPHA) >= CUTOUT_MINIMUM_SHARE * len(alpha)
+        return self.texture_by_bitmap[key]
+
+    def cutout_texture(self, bitmap_datum):
+        """an alpha-tested texture (Halo's model shaders test the base map's
+        alpha unless told not to): its transparent texels kept (write_texture
+        cutout), or the plain texture if it has none (has_cutout). Returns
+        (texture, whether it is cut out)"""
+        key = ("cutout", bitmap_datum)
+        if key in self.texture_by_bitmap:
+            return self.texture_by_bitmap[key]
+        result = (self.texture(bitmap_datum), False)
+        if self.has_cutout(bitmap_datum):
+            tag = self.map.tag(bitmap_datum)
+            img = decode(self.map, bitmap_images(self.map, tag, self.defs)[0], 64)
+            result = (self.write_texture(img, tag.name, cutout=True), True)
+        self.texture_by_bitmap[key] = result
+        return result
+
+    def write_texture(self, img, tag_name, mask=None, fmt=None, cutout=False):
         """a texture from an image; with a mask (L, the image's size: a
         player's colour change), a CI4 texture's palette is split: entries
         0-7 for the texels outside the mask, 8-15 for those in it (the
-        renderer tints the upper half)"""
+        renderer tints the upper half); cut out (alpha-tested), a CI4
+        texture's transparent texels keep their own palette entry
+        (cutout_palette: mksprite's quantizer drops the alpha)"""
         # at most 64 texels a side and 4 KB of TMEM with mipmaps: CI4 64x64
         # is 2 KB, its mipmaps about 0.7 KB more
         fmt = fmt or TEXTURE_FORMAT
@@ -421,8 +534,14 @@ class LevelBuilder:
         work_dir = self.out_dir / "tex" / f".{self.map_name}"
         work_dir.mkdir(parents=True, exist_ok=True)
         png = work_dir / f"{self.texture_prefix}{index:02d}.png"
-        if mask is not None and fmt == "CI4":
+        if mask is not None and fmt == "CI4" and cutout:
+            paletted, transparency = split_palette(img, mask, cutout=True)
+            paletted.save(png, transparency=transparency)
+        elif mask is not None and fmt == "CI4":
             split_palette(img, mask).save(png)
+        elif cutout and fmt == "CI4":
+            paletted, transparency = cutout_palette(img)
+            paletted.save(png, transparency=transparency)
         else:
             img.save(png)
         name = self.make_sprite(png, fmt)
@@ -540,6 +659,11 @@ class LevelBuilder:
                     self.overlay_of[index] = overlay[0]
                     self.material_by_shader[shader_datum] = index
                     return index
+            elif group == "swat":
+                index = self.add_material(-1, MATERIAL_TRANSPARENT | MATERIAL_WATER | MATERIAL_UNTEXTURED)
+                self.water_colour[index] = self.water_tint(tag)
+                self.material_by_shader[shader_datum] = index
+                return index
             else:
                 # transparent shaders: their first map, blended
                 flags |= MATERIAL_TRANSPARENT
@@ -623,6 +747,15 @@ class LevelBuilder:
             blend = struct.unpack("<H", self.map.read(tag.address + 44, 2))[0]
             return blend != 0
         return group != "swat"
+
+    def water_tint(self, tag):
+        """a water shader's colour (MATERIAL_WATER)"""
+        f = self.fields("ShaderTransparentWater")
+        read = lambda field, fmt: struct.unpack(fmt, self.map.read(tag.address + f[field], struct.calcsize(fmt)))
+        tints = [[c * read(view + " brightness", "<f")[0] for c in read(view + " tint color", "<3f")]
+                 for view in ("view perpendicular", "view parallel")]
+        colour = tuple(min(1.0, (a + b) / 2 * WATER_SHADE) for a, b in zip(*tints))
+        return colour if max(colour) > 0.02 else WATER_DEFAULT_COLOUR
 
     def add_material(self, texture, flags, shade=1.0, terrain=None, uv_scale=(1.0, 1.0)):
         self.materials.append((texture, flags))
@@ -847,7 +980,10 @@ class LevelBuilder:
                             if d > 0:
                                 color = [c + l * d for c, l in zip(color, lc)]
                     lightmap = (page, lightmap_uvs[v][0] / 32767.0, lightmap_uvs[v][1] / 32767.0) if lightmap_uvs else None
-                    vertex = ((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color), lightmap)
+                    if material in self.water_colour:
+                        # water: its flat colour, never split by light
+                        color, lightmap = list(self.water_colour[material]), None
+                    vertex =((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color), lightmap)
                     # the same vertex twice (position, texture coordinate,
                     # light): one, so that batches share it
                     key = (tuple(round(c, 4) for c in vertex[0]), tuple(round(c, 5) for c in vertex[2]),
@@ -865,8 +1001,7 @@ class LevelBuilder:
         # clusters: their surfaces (surface indices), batched per material
         cluster_count, cluster_ptr = struct.unpack("<iI", x.read(base + bo["clusters"], 8))
         csize = self.defs.size("ScenarioStructureBSPCluster")
-        clusters = []
-        used = set()
+        listed = []
         so = self.fields("ScenarioStructureBSPSubcluster")
         ssize = self.defs.size("ScenarioStructureBSPSubcluster")
         for ci in range(cluster_count):
@@ -882,16 +1017,67 @@ class LevelBuilder:
             seen = set()
             members = []
             for i in indices:
-                if 0 <= i < surfaces_count and surface_info[i] and i not in used and i not in seen:
+                if 0 <= i < surfaces_count and surface_info[i] and i not in seen:
                     seen.add(i)
                     members.append(i)
-            clusters.append(members)
-            used.update(members)
-        # surfaces no cluster lists (rare): a last cluster of their own
-        leftover = [i for i in range(surfaces_count) if surface_info[i] and i not in used]
+            listed.append(members)
+        return self.surface_homes(listed, self.cluster_pvs(bsp_tag, bo, cluster_count), surfaces_count,
+                                  surface_info), surface_info
+
+    def cluster_pvs(self, bsp_tag, bo, cluster_count):
+        """the BSP's potentially visible sets: visible(eye, cluster), or None"""
+        size, _, _, pointer, _ = struct.unpack("<iIIII", self.map.read(bsp_tag.address + bo["cluster data"], 20))
+        words = (cluster_count + 31) // 32
+        if cluster_count <= 0 or not pointer or size < cluster_count * words * 4:
+            return None
+        data = self.map.read(pointer, cluster_count * words * 4)
+
+        def visible(eye, cluster):
+            word = struct.unpack_from("<I", data, (eye * words + (cluster >> 5)) * 4)[0]
+            return (word >> (cluster & 31)) & 1
+        return visible
+
+    def surface_homes(self, listed, visible, surfaces_count, surface_info):
+        """each BSP cluster's surfaces for the level file: [(surfaces, the BSP
+        clusters whose visibility draws them)]. A surface several clusters
+        list (where it crosses between them) goes to one of them that every
+        eye seeing any of them sees too; if none is, to a group of its own
+        drawn when any of them is visible -- given to the first that listed it,
+        it was not drawn from where the potentially visible set has another
+        of them and not that one: holes in Sidewinder's ground and cliffs
+        (188 surfaces; Blood Gulch 75). Surfaces no cluster lists (rare): a
+        last group drawn always"""
+        owners = {}
+        for ci, members in enumerate(listed):
+            for i in members:
+                owners.setdefault(i, []).append(ci)
+        count = len(listed)
+        out = [([], (ci,)) for ci in range(count)]
+        groups = {}
+
+        def covers(home, owned):
+            return all(visible(eye, home) or not any(visible(eye, o) for o in owned) for eye in range(count))
+        placed = set()
+        for members in listed:
+            for i in members:
+                if i in placed:
+                    continue
+                placed.add(i)
+                owned = owners[i]
+                if len(owned) == 1 or visible is None:
+                    out[owned[0]][0].append(i)
+                    continue
+                home = next((o for o in owned if covers(o, owned)), None)
+                if home is not None:
+                    out[home][0].append(i)
+                else:
+                    groups.setdefault(tuple(owned), []).append(i)
+        for owned, members in groups.items():
+            out.append((members, owned))
+        leftover = [i for i in range(surfaces_count) if surface_info[i] and i not in placed]
         if leftover:
-            clusters.append(leftover)
-        return clusters, surface_info
+            out.append((leftover, ()))
+        return out
 
     def fit_detail_scales(self, surface_info):
         """halves a detail map's scale until every triangle of it fits a
@@ -1108,7 +1294,8 @@ class LevelBuilder:
         self.fit_detail_scales(surface_info)
         out_batches = []
         out_clusters = []
-        for indices in clusters:
+        out_owners = []
+        for indices, owned in clusters:
             first = len(out_batches)
             by_material = {}
             for i in indices:
@@ -1129,19 +1316,27 @@ class LevelBuilder:
                             hi[k] = max(hi[k], v[0][k])
             if lo[0] == math.inf:
                 lo = hi = [0.0, 0.0, 0.0]
-            out_clusters.append((lo, hi, first, len(out_batches) - first))
+            out_clusters.append((lo, hi, first, len(out_batches) - first, len(out_owners), len(owned)))
+            out_owners.extend(owned)
 
         vertex_data = bytearray()
         index_data = bytearray()
         batch_records = []
         for material, verts, tris in out_batches:
-            texture, _ = self.materials[material]
+            texture, flags = self.materials[material]
             tw, th = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
             shade = self.material_shade[material]
+            # the vertices' light at most DOUBLE_SHADE_LIMIT where the
+            # renderer doubles texture x light
+            top = DOUBLE_SHADE_LIMIT if flags & MATERIAL_DOUBLE else 255
             terrain = self.material_terrain[material]
             su, sv = self.material_uv_scale[material]
-            u0 = math.floor(min(v[2][0] * su for v in verts))
-            v0 = math.floor(min(v[2][1] * sv for v in verts))
+            # the batch's coordinates about 0 (whole repeats off): s10.5 holds
+            # +-1024 texels, so a triangle may span up to ~2000 (from its
+            # lowest whole coordinate, 1024 at most: Sidewinder's long trims
+            # were clamped there, their texture smeared)
+            u0 = round((min(v[2][0] * su for v in verts) + max(v[2][0] * su for v in verts)) / 2)
+            v0 = round((min(v[2][1] * sv for v in verts) + max(v[2][1] * sv for v in verts)) / 2)
             if len(verts) % 2:
                 verts = verts + [verts[-1]]
             pair_offset = len(vertex_data) // 32
@@ -1159,7 +1354,7 @@ class LevelBuilder:
                         # the base map's colour, doubled as its textures are
                         colour = terrain.sampler.sample(v[2])
                         light = [l * min(1.0, c * self.texture_brightness) for l, c in zip(light, colour)]
-                    r, g, b_, = (min(255, int(round(c * shade * 255))) for c in light)
+                    r, g, b_, = (min(top, int(round(c * shade * 255))) for c in light)
                     return (r << 24) | (g << 16) | (b_ << 8) | 255
                 vertex_data += struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[1]), *pos(b), pack_normal(b[1]),
                                            rgba(a), rgba(b), *st(a), *st(b))
@@ -1172,30 +1367,35 @@ class LevelBuilder:
         header_size = 64
         textures_size = len(self.textures) * 28
         materials_size = len(self.materials) * 4
-        clusters_size = len(out_clusters) * 28
+        clusters_size = len(out_clusters) * 32
+        owners_size = (len(out_owners) * 2 + 3) & ~3
         batches_size = len(batch_records) * 24
         offset = header_size
         textures_offset = offset; offset += textures_size
         materials_offset = offset; offset += materials_size
         clusters_offset = offset; offset += clusters_size
+        owners_offset = offset; offset += owners_size
         batches_offset = offset; offset += batches_size
         offset = (offset + 7) & ~7
         vertices_offset = offset; offset += len(vertex_data)
         indices_offset = offset; offset += len(index_data)
 
         out = bytearray()
-        out += b"H64L" + struct.pack(">I f HHHH II II II II", VERSION, 1.0 / POSITION_SCALE,
+        out += b"H64L" + struct.pack(">I f HHHH II II II II IHxx", VERSION, 1.0 / POSITION_SCALE,
                                      len(self.textures), len(self.materials), len(out_clusters), len(batch_records),
                                      textures_offset, materials_offset, clusters_offset, batches_offset,
-                                     vertices_offset, len(vertex_data), indices_offset, len(index_data))
+                                     vertices_offset, len(vertex_data), indices_offset, len(index_data),
+                                     owners_offset, len(out_owners))
         out += b"\0" * (header_size - len(out))
         for t in self.textures:
             name = t.name.encode()
             out += name + b"\0" * (24 - len(name)) + struct.pack(">HH", t.width, t.height)
         for texture, flags in self.materials:
             out += struct.pack(">hH", texture, flags)
-        for lo, hi, first, count in out_clusters:
-            out += struct.pack(">3f3fHH", *lo, *hi, first, count)
+        for lo, hi, first, count, owner_first, owner_count in out_clusters:
+            out += struct.pack(">3f3fHHHH", *lo, *hi, first, count, owner_first, owner_count)
+        out += struct.pack(f">{len(out_owners)}H", *out_owners)
+        out += b"\0" * (batches_offset - len(out))
         for material, nv, nt, pair_offset, index_offset, lo, hi in batch_records:
             out += struct.pack(">HBBII3h3h", material, nv, nt, pair_offset, index_offset, *lo, *hi)
         out += b"\0" * (vertices_offset - len(out))

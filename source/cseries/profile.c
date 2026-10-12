@@ -285,7 +285,14 @@ symbols in this file:
 enum
 {
 	MAXIMUM_PROFILE_SECTIONS = 256,
+#ifdef HALO_N64
+	/* (a frame's ticks past these are counted in the last: the N64 runs at
+	most seven a frame, and the 150 timers of the nine frames kept were 32
+	KB of the 40 the profiler's globals took) */
+	MAXIMUM_GAME_TICKS_PER_FRAME = 8,
+#else
 	MAXIMUM_GAME_TICKS_PER_FRAME = 150,
+#endif
 #if defined(HALO_XBOX) || defined(HALO_N64)
 	/* the console's memory: a short history (every index is taken modulo
 	this, and the dump looks three frames back) */

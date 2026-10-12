@@ -241,6 +241,19 @@ symbols in this file:
 
 /* ---------- constants */
 
+#ifdef HALO_N64
+/* The N64 draws no decals (bullet holes, scorch marks, the maps' painted
+ones): none are made (decals_enabled), which spared a ray and the clipping
+of a decal against the level's surfaces at every impact, and the pools are
+tokens (the game state's 2048 decals were 112 KB of the heap) */
+enum
+{
+	NUMBER_OF_DECAL_LAYERS = 5,
+	MAXIMUM_DECALS_PER_MAP = 16,
+	MAXIMUM_DECAL_VERTICES = 16,
+	MAXIMUM_DECAL_SURFACE_QUEUE_SIZE = 16
+};
+#else
 enum
 {
 	NUMBER_OF_DECAL_LAYERS = 5,
@@ -248,6 +261,7 @@ enum
 	MAXIMUM_DECAL_VERTICES = 1024,
 	MAXIMUM_DECAL_SURFACE_QUEUE_SIZE = 1024
 };
+#endif
 
 enum
 {
@@ -341,8 +355,10 @@ struct decal_geometry
 	long decal_surface_indices[MAXIMUM_DECAL_SURFACE_QUEUE_SIZE];
 };
 
+#ifndef HALO_N64
 typedef char decal_geometry_size_check[
 	sizeof(struct decal_geometry) == 0x7804 ? 1 : -1];
+#endif
 
 struct decal_projection
 {
@@ -464,7 +480,11 @@ static long decal_insert(
 
 extern struct data_array *global_decal_data;
 
+#ifdef HALO_N64
+boolean decals_enabled= FALSE;
+#else
 boolean decals_enabled= TRUE;
+#endif
 static real_point2d decal_points2d_temp[2][12];
 static struct decal_globals *decal_globals;
 static struct decal_geometry decal_geometry = {0};

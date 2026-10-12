@@ -268,6 +268,16 @@ void game_state_initialize_for_new_map(
 {
 	const char *name;
 
+#ifdef HALO_N64
+	{
+		/* every allocation is made by now (the game state is locked from
+		here on): the buffer, sized for the Xbox's pools, gives back what
+		the N64's do not use (port/n64/game/n64_game.c; once) */
+		extern void n64_game_state_trim(unsigned long used);
+
+		n64_game_state_trim((unsigned long)game_state_globals.cpu_allocation_size);
+	}
+#endif
 	game_state_globals.locked = TRUE;
 	game_state_globals.saved_game_valid = FALSE;
 	game_state_globals.revert_time = NONE;
@@ -488,6 +498,21 @@ static void code_001af650(
 {
 	// The January compiler inlines this logger into both arena allocators while
 	// retaining one out-of-line copy under its private address-derived name.
+#ifdef HALO_N64
+	/* no d:\ to write to: the debug log, with the port.json flag
+	"debug_game_state" (each allocation; the N64's pools are sized from it) */
+	extern int n64_debug_flag(char const *name);
+	extern void n64_log(char const *text);
+
+	if (n64_debug_flag("debug_game_state"))
+	{
+		char line[128];
+
+		snprintf(line, sizeof(line), "game state: %s %s %ld%s", name, type ? type : "", size, gpu ? " (gpu)" : "");
+		n64_log(line);
+	}
+	return;
+#endif
 	FILE *file = bss_004d27b0;
 
 	if (!file)
@@ -524,6 +549,17 @@ void *game_state_malloc(
 	match_assert("c:\\halo\\SOURCE\\saved games\\game_state.c", 153, !(size&3));
 	match_assert("c:\\halo\\SOURCE\\saved games\\game_state.c", 156, !game_state_globals.locked);
 	match_assert("c:\\halo\\SOURCE\\saved games\\game_state.c", 159, game_state_globals.cpu_allocation_size+size<=GAME_STATE_CPU_SIZE);
+#ifdef HALO_N64
+	{
+		/* (the N64 compiles the checks out; these two matter: past the
+		lock the buffer has been trimmed to what was allocated before it,
+		and past the ceiling there is no buffer) */
+		extern void n64_fatal(char const *text);
+
+		if (game_state_globals.locked || game_state_globals.cpu_allocation_size+size>GAME_STATE_CPU_SIZE)
+			n64_fatal("a game state allocation after the game state was locked, or past its size");
+	}
+#endif
 
 	code_001af650(name, type, size, FALSE);
 

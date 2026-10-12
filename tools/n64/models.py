@@ -52,11 +52,17 @@ from PIL import Image
 
 from .bitmaps import bitmap_images, decode
 from .decimate import decimate
-from .level import (LevelBuilder, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW, MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED,
-                    MATERIAL_UNTEXTURED, pack_normal, unpack_normal)
+from .level import (LevelBuilder, MATERIAL_ALPHA_TEST, MATERIAL_BLEND, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW,
+                    MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, MATERIAL_UNTEXTURED, pack_normal, unpack_normal)
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
+# a batch's texture coordinates span at most this many texels (centred on
+# 0: s10.5 holds +-1024), where a part's span more (build_batches)
+MODEL_UV_EXTENT = 1792.0
+# (the converter's own flag, not written: a part of an alpha-blended decal
+# shader, left out of the far version)
+DECAL = 0x8000
 VERSION = 4
 LOD_PREFERENCE = ("low", "super low", "medium", "high", "super high")
 OBJECT_GROUPS = ("bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach", "ctrl", "lifi", "plac", "ssce")
@@ -75,6 +81,9 @@ FIRST_PERSON_DEVIATION = float(os.environ.get("N64_FIRST_PERSON_DEVIATION", "0.0
 # FAR_MINIMUM)
 FAR_SHARE = 0.25
 FAR_MINIMUM = 24
+# a far version with cut-out parts is kept only below this share of the
+# near version's triangles
+FAR_CUTOUT_SHARE = 0.75
 # by the object's group: players matter most; what lies on the floor or
 # flies is small on screen
 GROUP_BUDGETS = {"bipd": 600, "vehi": 600, "weap": 250, "eqip": 250, "garb": 250, "proj": 150}
@@ -155,6 +164,8 @@ class ModelConverter:
         self.textures.texture_brightness = 1.0
         # (base map, multipurpose map) -> texture with a split palette
         self.masked = {}
+        # glow textures of one emitted colour (glow_texture: MATERIAL_BLEND)
+        self.solid_glows = set()
         # by model tag index: a factor for its vertices' positions, flags
         # for its batches, no far version (tools/n64/ui.py's sky)
         self.position_scales = {}
@@ -250,14 +261,27 @@ class ModelConverter:
             # Xbox's channel order)
             change_source = struct.unpack("<H", self.map.read(tag.address + so["change color source"], 2))[0]
             multipurpose = struct.unpack("<I", self.map.read(tag.address + so["multipurpose map"] + 12, 4))[0]
+            # Halo tests the base map's alpha (at 0x7F) unless the shader says
+            # "not alpha tested"; an alpha-blended decal (bit 3) is blended
+            # by it -- here both cut out, where the base map has transparent
+            # texels (Sidewinder's snow pines' needles, Blood Gulch's shrubs
+            # and plants were solid cards; the weapons' decals were drawn
+            # whole over their bodies)
+            cut = (not model_flags & 4 or model_flags & 8) and self.textures.has_cutout(base)
+            cut_flags = (MATERIAL_ALPHA_TEST | (DECAL if model_flags & 8 else 0)) if cut else 0
             if change_source and self.map.tag(multipurpose) is not None:
-                texture = self.masked_texture(base, multipurpose)
+                texture = self.masked_texture(base, multipurpose, cut)
                 if texture >= 0:
-                    return texture, flags | MATERIAL_CHANGE_COLOR, (base, multipurpose)
+                    return texture, flags | MATERIAL_CHANGE_COLOR | cut_flags, (base, multipurpose)
+            if cut:
+                return self.textures.cutout_texture(base)[0], flags | cut_flags, (base, None)
             return self.textures.texture(base), flags, (base, None)
         if tag.group_name == "senv":
             so = self.f("ShaderEnvironment")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
+            env_flags = struct.unpack("<H", self.map.read(tag.address + so["shader environment flags"], 2))[0]
+            if env_flags & 1 and self.textures.has_cutout(base):
+                return self.textures.cutout_texture(base)[0], MATERIAL_ALPHA_TEST, (base, None)
             return self.textures.texture(base), 0, (base, None)
         # transparent shaders (glowing screens, sights, meters): meters and
         # numeric displays need Halo's own drawing and are left out (texture
@@ -279,7 +303,12 @@ class ModelConverter:
                     flags |= MATERIAL_TWO_SIDED
                 if value & 0x80 and group != "sgla":
                     return None, 0, None
-        return self.glow_texture(tag), flags, None
+        texture = self.glow_texture(tag)
+        # a glow of one emitted colour (a teleporter's energy) is drawn
+        # translucent: solid, Sidewinder's teleporters were opaque green slabs
+        if texture in self.solid_glows:
+            flags |= MATERIAL_BLEND
+        return texture, flags, None
 
     def glow_texture(self, shader_tag):
         """a transparent shader's first map as a cut-out glow (RGBA16): its
@@ -317,6 +346,7 @@ class ModelConverter:
                     colour = tuple(int(max(0.0, min(1.0, c)) * 255) for c in emitted) + (255,)
                     img = Image.new("RGBA", (4, 4), colour)
                     index = self.textures.write_texture(img, tag.name, fmt="RGBA16")
+                    self.solid_glows.add(index)
                 else:
                     brightness = Image.merge("RGB", (r, g, b)).convert("L").point(lambda v: 255 if v >= 48 else 0)
                     index = self.textures.write_texture(Image.merge("RGBA", (r, g, b, brightness)), tag.name, fmt="RGBA16")
@@ -335,10 +365,10 @@ class ModelConverter:
             return None
         return img.getchannel("B").resize(size, Image.BILINEAR)
 
-    def masked_texture(self, base, multipurpose):
+    def masked_texture(self, base, multipurpose, cutout=False):
         """the base map whole at 64x64, its palette split by the colour-change
-        mask, or -1"""
-        key = (base, multipurpose)
+        mask (and its transparent texels cut out), or -1"""
+        key = (base, multipurpose, bool(cutout))
         if key in self.masked:
             return self.masked[key]
         index = -1
@@ -351,7 +381,7 @@ class ModelConverter:
                 img = None
             mask = self.change_mask(multipurpose, img.size) if img is not None else None
             if img is not None:
-                index = self.textures.write_texture(img, tag.name, mask=mask)
+                index = self.textures.write_texture(img, tag.name, mask=mask, cutout=cutout)
         self.masked[key] = index
         return index
 
@@ -412,7 +442,12 @@ class ModelConverter:
             triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)), cross_nodes=not detail,
                                  max_deviation=deviation)
 
-        groups = self.texture_windows(bitmap, vertices, triangles) if detail and texture >= 0 and DETAIL_WINDOWS else None
+        groups = None
+        if detail and texture >= 0 and DETAIL_WINDOWS:
+            # (cut out: the windows keep the transparent texels; ui.py's
+            # override takes no such argument)
+            groups = self.texture_windows(bitmap, vertices, triangles, cutout=True) if flags & MATERIAL_ALPHA_TEST \
+                else self.texture_windows(bitmap, vertices, triangles)
         if not groups:
             groups = [(texture, None, triangles)]
         for group_texture, st_of, group_triangles in groups:
@@ -422,12 +457,16 @@ class ModelConverter:
                     index_data):
         """the model's far version: every region's first permutation at its
         lowest level of detail, one untextured mesh coloured with each part's
-        texture's average colour, simplified to a quarter of the budget"""
+        texture's average colour, simplified to a quarter of the budget. Cut
+        out (alpha-tested) parts keep their texture, each its share of the
+        triangles (a snow pine's needles: untextured, their cards were
+        solid green slabs); decals are left out"""
         rf, pf, gf = self.f("ModelRegion"), self.f("ModelRegionPermutation"), self.f("ModelGeometry")
         rsize, psize, gsize = (self.defs.size(s) for s in ("ModelRegion", "ModelRegionPermutation", "ModelGeometry"))
         part_size = self.defs.size("ModelGeometryPart")
         mf = self.f("Model")
         vertices, triangles = [], []
+        cut_parts = []
         rc, rp = self.block(address + mf["regions"])
         for r in range(rc):
             pc, pp = self.block(rp + r * rsize + rf["permutations"])
@@ -445,18 +484,31 @@ class ModelConverter:
             for p in range(parts_count):
                 part_vertices, part_triangles, texture, flags = self.part_mesh(parts + p * part_size, nodes_inverse,
                                                                               u_scale, v_scale, shaders)
-                if not part_triangles or flags & MATERIAL_GLOW:
+                if not part_triangles or flags & (MATERIAL_GLOW | DECAL):
+                    continue
+                if flags & MATERIAL_ALPHA_TEST and texture is not None and texture >= 0:
+                    cut_parts.append((part_vertices, part_triangles, texture, flags))
                     continue
                 colour = self.textures.textures[texture].colour if texture is not None and texture >= 0 else (0.6, 0.6, 0.6)
                 base = len(vertices)
                 for v in part_vertices:
                     vertices.append((v[0], v[1], v[2], tuple(min(1.0, c * v[3]) for c in colour), v[4]))
                 triangles.extend((a + base, b + base, c + base) for a, b, c in part_triangles)
-        if not triangles:
+        total = len(triangles) + sum(len(p[1]) for p in cut_parts)
+        if not total:
             return
         target = max(FAR_MINIMUM, int(budget * FAR_SHARE))
-        if len(triangles) > target:
-            triangles = decimate(vertices, triangles, target, cross_nodes=True)
+        for part_vertices, part_triangles, texture, flags in cut_parts:
+            share = max(8, target * len(part_triangles) // total)
+            if len(part_triangles) > share:
+                part_triangles = decimate(part_vertices, part_triangles, share, cross_nodes=True)
+            self.build_batches(part_vertices, part_triangles, texture, flags | self.current_flags, None, batches,
+                               vertex_data, index_data)
+        if not triangles:
+            return
+        share = max(8, target * len(triangles) // total)
+        if len(triangles) > share:
+            triangles = decimate(vertices, triangles, share, cross_nodes=True)
         self.build_batches(vertices, triangles, -1, MATERIAL_UNTEXTURED, lambda uv: (0.0, 0.0), batches, vertex_data,
                            index_data)
 
@@ -495,10 +547,10 @@ class ModelConverter:
                      if a < vertex_count and b < vertex_count and c < vertex_count]
         return vertices, triangles, texture, flags
 
-    def texture_windows(self, bitmap, vertices, triangles):
+    def texture_windows(self, bitmap, vertices, triangles, cutout=False):
         """a first-person part's triangles grouped by window of its atlas:
         [(texture, uv -> texels, triangles)], or None to keep the atlas
-        whole"""
+        whole (cutout: alpha-tested, the windows' transparent texels kept)"""
         if bitmap is None:
             return None
         bitmap, multipurpose = bitmap
@@ -516,10 +568,15 @@ class ModelConverter:
         aw, ah = max(1, int(atlas.width * scale)), max(1, int(atlas.height * scale))
         atlas = atlas.resize((aw, ah), Image.LANCZOS)
         mask = self.change_mask(multipurpose, (aw, ah)) if multipurpose is not None else None
-        whole = self.masked_texture(bitmap, multipurpose) if multipurpose is not None else self.textures.texture(bitmap)
-        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles)
+        if multipurpose is not None:
+            whole = self.masked_texture(bitmap, multipurpose, cutout)
+        elif cutout:
+            whole = self.textures.cutout_texture(bitmap)[0]
+        else:
+            whole = self.textures.texture(bitmap)
+        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles, cutout)
 
-    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles):
+    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles, cutout=False):
         """texture_windows' grouping over an image already at its size: the
         triangles that fit a window's span get that window, the rest the
         whole texture"""
@@ -567,7 +624,8 @@ class ModelConverter:
             oy = int(max(0, min(math.floor(y0) - 1, ah - wh)))
             crop = atlas.crop((ox, oy, ox + ww, oy + wh))
             texture = self.textures.write_texture(crop, f"{name} window",
-                                                  mask=mask.crop((ox, oy, ox + ww, oy + wh)) if mask else None)
+                                                  mask=mask.crop((ox, oy, ox + ww, oy + wh)) if mask else None,
+                                                  cutout=cutout)
             groups.append((texture, lambda uv, ox=ox, oy=oy: (uv[0] * aw - ox, uv[1] * ah - oy), tris))
         if coarse:
             groups.append((whole, None, coarse))
@@ -581,28 +639,58 @@ class ModelConverter:
         # triangles of the same nodes together: fewer segments per batch
         triangles = sorted(triangles, key=lambda t: tuple(sorted({vertices[i][0] for i in t})))
         tw, th = (self.textures.textures[texture].width, self.textures.textures[texture].height) if texture >= 0 else (32, 32)
+        # a part whose texture coordinates span more than s10.5 holds (Blood
+        # Gulch's trees: bark repeated ~100 times, 8,000 texels): its batches
+        # each within MODEL_UV_EXTENT, the triangles in order of their
+        # coordinates within a group of nodes
+        wide = False
+        if st_of is None and triangles and texture >= 0:
+            us = [vertices[i][2][0] for t in triangles for i in t]
+            vs = [vertices[i][2][1] for t in triangles for i in t]
+            wide = (max(us) - min(us)) * tw > MODEL_UV_EXTENT or (max(vs) - min(vs)) * th > MODEL_UV_EXTENT
+        if wide:
+            triangles = sorted(triangles, key=lambda t: (tuple(sorted({vertices[i][0] for i in t})),
+                                                         min(vertices[i][2][0] for i in t), min(vertices[i][2][1] for i in t)))
         while triangles:
             groups = {}
             taken = []
             rest = []
+            full = False
+            box = None
             for tri in triangles:
-                if rest:
+                if full:
                     rest.append(tri)
                     continue
+                if wide:
+                    tu = [vertices[i][2][0] for i in tri]
+                    tv = [vertices[i][2][1] for i in tri]
+                    grown = (min(tu), min(tv), max(tu), max(tv)) if box is None else \
+                        (min(box[0], *tu), min(box[1], *tv), max(box[2], *tu), max(box[3], *tv))
+                    if taken and ((grown[2] - grown[0]) * tw > MODEL_UV_EXTENT or
+                                  (grown[3] - grown[1]) * th > MODEL_UV_EXTENT):
+                        rest.append(tri)
+                        continue
                 trial = {k: set(v) for k, v in groups.items()}
                 for i in tri:
                     trial.setdefault(vertices[i][0], set()).add(i)
                 slots = sum((len(s) + 1) // 2 * 2 for s in trial.values())
                 if slots > MAXIMUM_CACHE and taken:
                     rest.append(tri)
+                    full = True
                     continue
                 groups = trial
                 taken.append(tri)
+                if wide:
+                    box = grown
             triangles = rest
             batch_st = st_of
             if batch_st is None:
-                u0 = math.floor(min(vertices[i][2][0] for t in taken for i in t))
-                v0 = math.floor(min(vertices[i][2][1] for t in taken for i in t))
+                # (centred on 0, whole repeats off: from the lowest whole
+                # coordinate, Blood Gulch's trees passed s10.5's 1024 texels)
+                us = [vertices[i][2][0] for t in taken for i in t]
+                vs = [vertices[i][2][1] for t in taken for i in t]
+                u0 = round((min(us) + max(us)) / 2)
+                v0 = round((min(vs) + max(vs)) / 2)
                 batch_st = lambda uv, u0=u0, v0=v0: ((uv[0] - u0) * tw, (uv[1] - v0) * th)
             slot_of = {}
             segments = []
@@ -621,7 +709,7 @@ class ModelConverter:
             index_offset = len(index_data)
             for tri in taken:
                 index_data += bytes(slot_of[i] for i in tri)
-            batches.append((texture, flags, segments, len(taken), index_offset))
+            batches.append((texture, flags & ~DECAL, segments, len(taken), index_offset))
 
     @staticmethod
     def pack_pair(a, b, st_of):
@@ -709,7 +797,21 @@ class ModelConverter:
             near_count = len(batches) - first_batch
             far_first = len(batches)
             if tag.index not in self.first_person and tag.index not in self.units and tag.index not in self.no_far:
+                marks = len(vertex_data), len(index_data)
                 self.convert_far(a, gc, gp, nodes_inverse, u_scale, v_scale, shaders, budget, batches, vertex_data, index_data)
+                # a far version with textured cut-out parts no lighter than
+                # the near one (a snow pine's needles are cards the simplifier
+                # cannot merge) is only the model's data twice over
+                first_geometries = {permutation_records[region_records[r][1]] for r in range(first_region, len(region_records))
+                                    if region_records[r][0] > 0}
+                near_triangles = sum(batches[b][3] for g in first_geometries if g >= 0
+                                     for b in range(geometry_records[g][0], geometry_records[g][0] + geometry_records[g][1]))
+                far_triangles = sum(b[3] for b in batches[far_first:])
+                if any(b[1] & MATERIAL_ALPHA_TEST for b in batches[far_first:]) and \
+                        far_triangles > FAR_CUTOUT_SHARE * near_triangles:
+                    del batches[far_first:]
+                    del vertex_data[marks[0]:]
+                    del index_data[marks[1]:]
             model_records.append((tag.index, nc, rc, first_region, first_batch, near_count,
                                   far_first - first_batch, len(batches) - far_first))
             model_data.append((vertex_data, index_data))

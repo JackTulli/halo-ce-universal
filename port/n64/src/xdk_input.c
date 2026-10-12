@@ -21,6 +21,14 @@ so the default layout is the one N64 shooters used (Turok, Perfect Dark's
     D-pad right switch grenades (white)
     Start       start
 
+Each controller can choose another scheme on the menu's CONTROLS page
+(n64_controls, n64.h): bumper jumper (R jumps, A throws a grenade),
+GoldenEye's (the stick turns and walks, C left and right strafe, C up and
+down look) or north (the stick walks and strafes, the C buttons look);
+crouch held or toggled (a jump stands back up), look inverted or not, fire
+and grenades swapped or not, and the look speeds of the stick and of the C
+buttons (n64_look_speed: Halo's turning rates times them).
+
 Test mode (a file "autotest" on the cartridge): the first two ports are
 driven by a script instead, so an unattended run exercises the game
 (n64_test_input).
@@ -148,22 +156,103 @@ static SHORT stick(int value)
 	return (SHORT)scaled;
 }
 
-static void pad_to_gamepad(const struct n64_pad *pad, XINPUT_GAMEPAD *gamepad)
+/* a C button pair as one axis of an Xbox stick: -1, 0 or 1 times full (a C
+button looks with the stick all the way over -- Halo turns faster still
+when the stick is held there -- times the C buttons' own look speed,
+n64_look_speed) */
+static SHORT c_axis(unsigned short buttons, unsigned short plus, unsigned short minus)
 {
-	unsigned short b = pad->buttons;
+	return (SHORT)((buttons & plus) ? 32767 : (buttons & minus) ? -32767 : 0);
+}
 
-	gamepad->sThumbRX = stick(pad->stick_x);
-	gamepad->sThumbRY = stick(pad->stick_y);
-	gamepad->sThumbLY = (b & N64_BUTTON_C_UP) ? 32767 : (b & N64_BUTTON_C_DOWN) ? -32768 : 0;
-	gamepad->sThumbLX = (b & N64_BUTTON_C_RIGHT) ? 32767 : (b & N64_BUTTON_C_LEFT) ? -32768 : 0;
-	gamepad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = (b & N64_BUTTON_Z) ? 255 : 0;
-	gamepad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = (b & N64_BUTTON_R) ? 255 : 0;
-	gamepad->bAnalogButtons[XINPUT_GAMEPAD_A] = (b & N64_BUTTON_A) ? 255 : 0;
+/* the C buttons' look speed at the menu's 5: half again the stick's (with
+no in-between, the slow end of the stick's range is no use to them) */
+#define C_LOOK_SPEED 1.5f
+
+/* a look speed of the menu's (n64_controls: 1-10 less 5): 1.25 times
+faster a step */
+static float look_speed(signed char setting)
+{
+	float speed = 1.f;
+
+	for (int i = 0; i < setting; i++)
+		speed *= 1.25f;
+	for (int i = 0; i > setting; i--)
+		speed *= 0.8f;
+	return speed;
+}
+
+void n64_look_speed(int local_player_index, float *yaw, float *pitch)
+{
+	const struct n64_controls *controls = &n64_controls[n64_gamepad_ports[local_player_index & 3] & 3];
+	float stick_speed = look_speed(controls->stick_speed);
+	float c_speed = C_LOOK_SPEED * look_speed(controls->c_speed);
+
+	*yaw = controls->scheme == N64_SCHEME_NORTH ? c_speed : stick_speed;
+	*pitch = controls->scheme == N64_SCHEME_NORTH || controls->scheme == N64_SCHEME_GOLDENEYE ? c_speed : stick_speed;
+}
+
+static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEPAD *gamepad)
+{
+	struct n64_controls *controls = &n64_controls[n64_port & 3];
+	unsigned short b = pad->buttons, pressed = b & ~controls->last_buttons;
+	unsigned short jump = N64_BUTTON_A, grenade = N64_BUTTON_R, fire = N64_BUTTON_Z;
+	SHORT look_y;
+	int crouch;
+
+	switch (controls->scheme)
+	{
+	case N64_SCHEME_GOLDENEYE:
+		gamepad->sThumbRX = stick(pad->stick_x);
+		gamepad->sThumbLY = stick(pad->stick_y);
+		gamepad->sThumbLX = c_axis(b, N64_BUTTON_C_RIGHT, N64_BUTTON_C_LEFT);
+		look_y = c_axis(b, N64_BUTTON_C_UP, N64_BUTTON_C_DOWN);
+		break;
+	case N64_SCHEME_NORTH:
+		gamepad->sThumbLX = stick(pad->stick_x);
+		gamepad->sThumbLY = stick(pad->stick_y);
+		gamepad->sThumbRX = c_axis(b, N64_BUTTON_C_RIGHT, N64_BUTTON_C_LEFT);
+		look_y = c_axis(b, N64_BUTTON_C_UP, N64_BUTTON_C_DOWN);
+		break;
+	default:
+		gamepad->sThumbRX = stick(pad->stick_x);
+		gamepad->sThumbLY = c_axis(b, N64_BUTTON_C_UP, N64_BUTTON_C_DOWN);
+		gamepad->sThumbLX = c_axis(b, N64_BUTTON_C_RIGHT, N64_BUTTON_C_LEFT);
+		look_y = stick(pad->stick_y);
+		break;
+	}
+	gamepad->sThumbRY = !controls->inverted ? look_y : look_y == -32768 ? 32767 : (SHORT)-look_y;
+	if (controls->scheme == N64_SCHEME_BUMPER_JUMPER)
+	{
+		jump = N64_BUTTON_R;
+		grenade = N64_BUTTON_A;
+	}
+	/* fire and grenades swapped: fire on the grenade's button */
+	if (controls->swap_fire)
+	{
+		fire = grenade;
+		grenade = N64_BUTTON_Z;
+	}
+	/* crouch: held, or toggled by each press (a jump stands back up) */
+	if (controls->toggle_crouch)
+	{
+		if (pressed & N64_BUTTON_D_DOWN)
+			controls->crouched = !controls->crouched;
+		if (pressed & jump)
+			controls->crouched = 0;
+		crouch = controls->crouched;
+	}
+	else
+		crouch = (b & N64_BUTTON_D_DOWN) != 0;
+	controls->last_buttons = b;
+	gamepad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = (b & fire) ? 255 : 0;
+	gamepad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = (b & grenade) ? 255 : 0;
+	gamepad->bAnalogButtons[XINPUT_GAMEPAD_A] = (b & jump) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_X] = (b & N64_BUTTON_B) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_B] = (b & N64_BUTTON_L) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_Y] = (b & N64_BUTTON_D_UP) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] = (b & N64_BUTTON_D_RIGHT) ? 255 : 0;
-	if (b & N64_BUTTON_D_DOWN)
+	if (crouch)
 		gamepad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
 	if (b & N64_BUTTON_D_LEFT)
 		gamepad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
@@ -208,7 +297,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		n64_input_get(n64_gamepad_ports[port], &pad);
 		if (!pad.connected)
 			return ERROR_DEVICE_NOT_CONNECTED;
-		pad_to_gamepad(&pad, &state->Gamepad);
+		pad_to_gamepad(n64_gamepad_ports[port], &pad, &state->Gamepad);
 	}
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))
 	{

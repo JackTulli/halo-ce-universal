@@ -69,13 +69,21 @@ unsigned long n64_heap_free(void)
 
 /* Halo's deepest calls (collision, physics under the game tick) need more
 than the 64 KB libdragon keeps for main's stack at the top of RAM (~97 KB
-in Wizard), and the heap grows up to it: the game runs on a stack of its
-own, filled with a pattern so that its deepest use can be reported
-(n64_stack_used) */
+in Wizard), and the heap grows up to it. The game runs on main's stack
+made deeper: the heap's top is lowered by GAME_STACK_EXTRA (libdragon's
+sbrk_top, the call its display makes for the Z buffer), right under those
+64 KB, so the stack goes on down into it -- 192 KB of stack for 128 KB of
+heap (a stack of its own from the heap, as before, cost all 192 KB and left
+libdragon's 64 KB idle). Filled with a pattern so that its deepest use can
+be reported (n64_stack_used). */
 #define GAME_STACK_SIZE (192 * 1024)
+#define GAME_STACK_EXTRA (GAME_STACK_SIZE - 64 * 1024)
 #define GAME_STACK_FILL 0xA5A5A5A5u
 
+void *sbrk_top(int incr);
+
 static uint32_t *game_stack;
+static unsigned long game_stack_size = GAME_STACK_SIZE;
 
 __asm__(
 	".text\n"
@@ -104,7 +112,7 @@ void n64_call_on_stack(void (*function)(void), void *top);
 
 unsigned long n64_stack_used(void)
 {
-	unsigned long words = GAME_STACK_SIZE / 4, i;
+	unsigned long words = game_stack_size / 4, i;
 
 	if (!game_stack)
 		return 0;
@@ -143,12 +151,36 @@ int main(void)
 		}
 	}
 	n64_profile_start();
+	{
+		/* main's stack (the top 64 KB of RAM) with the heap's top lowered
+		under it: one stack, the game on it from here */
+		uint8_t *extra = sbrk_top(GAME_STACK_EXTRA);
+		uint8_t *top = (uint8_t *)KSEG0_START_ADDR + get_memory_size();
+		uint8_t *here = (uint8_t *)__builtin_frame_address(0);
+
+		if (extra != (uint8_t *)-1 && extra + GAME_STACK_EXTRA == top - 64 * 1024 && here > top - 64 * 1024 &&
+			here <= top)
+		{
+			/* the pattern up to a little under this frame */
+			game_stack = (uint32_t *)extra;
+			game_stack_size = (unsigned long)((here - 1024 - extra) & ~15);
+			for (unsigned long i = 0; i < game_stack_size / 4; i++)
+				game_stack[i] = GAME_STACK_FILL;
+			debugf("halo-n64: the game's stack is main's, %lu KB deep\n", (unsigned long)(here - extra) / 1024);
+			game_main();
+			return 0;
+		}
+		if (extra != (uint8_t *)-1)
+			sbrk_top(-GAME_STACK_EXTRA);
+	}
+	/* (as it was: a stack of the game's own from the heap) */
 	game_stack = memalign(16, GAME_STACK_SIZE);
 	if (!game_stack)
 	{
 		game_main();
 		return 0;
 	}
+	game_stack_size = GAME_STACK_SIZE;
 	for (unsigned long i = 0; i < GAME_STACK_SIZE / 4; i++)
 		game_stack[i] = GAME_STACK_FILL;
 	/* the top, less the argument area the ABI lets a callee use */

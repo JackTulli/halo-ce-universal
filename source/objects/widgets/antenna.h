@@ -19,7 +19,12 @@ header included in hcex build.
 enum
 {
 	ANTENNA_TAG = 'ant!',
+#ifdef HALO_N64
+	/* (no widgets are made on the N64, widgets.c) */
+	MAXIMUM_ANTENNAS = 1,
+#else
 	MAXIMUM_ANTENNAS = 12,
+#endif
 	MAXIMUM_ANTENNA_VERTICES = 20,
 };
 

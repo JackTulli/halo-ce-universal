@@ -220,7 +220,12 @@ struct data_array *flag_data;
 void flags_initialize(
 	void)
 {
+#ifdef HALO_N64
+	/* (no widgets are made on the N64, widgets.c) */
+	flag_data = game_state_data_new("flag", 1, 0x16BC);
+#else
 	flag_data = game_state_data_new("flag", 2, 0x16BC);
+#endif
 	if (!flag_data)
 		error(_error_immediate, "couldn't allocate flag globals");
 

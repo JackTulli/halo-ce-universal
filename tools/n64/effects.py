@@ -36,7 +36,19 @@ from PIL import Image
 from .bitmaps import bitmap_images, decode
 
 MAGIC = b"N64F"
-VERSION = 1
+VERSION = 2
+# the explosions the N64 draws its own way (n64_particles.c n64_explosion:
+# a flash, a fireball, smoke): the effect's tag name, its kind (n64.h
+# N64_EXPLOSION_*); listed after the records, the header's bytes 20-25 the
+# list's offset (u32) and count (u16), each entry u16 effect tag index, u8
+# kind, u8 pad
+EXPLOSIONS = {
+    "weapons\\frag grenade\\effects\\explosion": 0,
+    "weapons\\plasma grenade\\effects\\explosion": 1,
+    "weapons\\rocket launcher\\effects\\rocket explosion": 2,
+    "vehicles\\scorpion\\shell explosion": 3,
+    "weapons\\needler\\effects\\explosion": 4,
+}
 CELL = 16
 COLUMNS, ROWS = 8, 4
 CELLS = COLUMNS * ROWS
@@ -285,7 +297,13 @@ class EffectParticles:
         out += i4
         out += colour_table
         out += body
+        explosions = sorted((t.index, EXPLOSIONS[t.name]) for t in self.map.tags
+                            if t.group_name == "effe" and t.name in EXPLOSIONS)
+        out += b"\0" * ((-len(out)) % 4)
+        struct.pack_into(">IH", out, 20, len(out), len(explosions))
+        for index, kind in explosions:
+            out += struct.pack(">HBB", index, kind, 0)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(bytes(out))
         return {"effects": len(indices), "emitters": sum(struct.unpack_from(">H", r, 2)[0] for r in records.values()),
-                "cells": len(cells), "bytes": len(out)}
+                "cells": len(cells), "explosions": len(explosions), "bytes": len(out)}

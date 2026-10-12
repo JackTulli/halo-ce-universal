@@ -36,7 +36,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "../src/n64.h"
 
 typedef char verify_render_globals_used_size[
-	offsetof(struct render_globals, environment_surface_flags) == 0xD290 ? 1 : -1];
+	offsetof(struct render_globals, environment_surface_flags) == 0x430 ? 1 : -1];
 
 /* ---------- globals (rasterizer.c) */
 
@@ -316,6 +316,28 @@ boolean n64_object_recently_seen(
 		n64_object_seen[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (N64_SEEN_SLOTS - 1)]) <= 2;
 }
 
+/* whether any cluster an object's bounding sphere reaches (Halo's cluster
+partitions: its ultimate parent's) is in the eye's potentially visible set:
+Halo draws an object from every cluster it touches. By its own cluster
+alone, players, vehicles and scenery near a portal vanished from places
+that see only the cluster beside theirs (Sidewinder's clusters see 7-17 of
+its 35) */
+static boolean object_reaches_visible_cluster(
+	long object_index)
+{
+	struct object_cluster_iterator iterator;
+	short cluster;
+
+	for (cluster = object_get_first_cluster(&iterator, object_index); cluster != NONE;
+		cluster = object_get_next_cluster(&iterator, object_index))
+	{
+		if (cluster < 0 || cluster >= n64_view_cluster_count ||
+			(n64_view_clusters[cluster >> 5] & (1UL << (cluster & 31))))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 static void render_objects_for_view(
 	short local_player_index,
 	boolean third_person)
@@ -333,9 +355,10 @@ static void render_objects_for_view(
 		struct frame_object const *entry = &frame_objects[i];
 		short cluster = entry->cluster;
 
-		/* in a cluster the eye cannot see */
+		/* in a cluster the eye cannot see, and reaching into none it can */
 		if (n64_view_clusters && cluster >= 0 && cluster < n64_view_cluster_count &&
-			!(n64_view_clusters[cluster >> 5] & (1UL << (cluster & 31))))
+			!(n64_view_clusters[cluster >> 5] & (1UL << (cluster & 31))) &&
+			!object_reaches_visible_cluster(entry->object_index))
 			continue;
 		if (viewer_unit != NONE && entry->ultimate_parent == viewer_unit)
 			continue;
@@ -560,11 +583,23 @@ void render_frame(
 			{
 				extern int n64_firefight_status(char *text, int size);
 				char status[64];
+				/* the HUD's inset (Settings: HUD INSET, for a television's
+				overscan): Halo lays its HUD out in the window's bounds (its
+				corners, messages, scores, nav points' reach), so they shrink
+				by it on every side meanwhile; the game's units are twice
+				the N64's pixels */
+				rectangle2d window_bounds = render.camera.window_bounds;
+				int inset = n64_hud_inset();
 
+				render.camera.window_bounds.x0 += inset * 2;
+				render.camera.window_bounds.y0 += inset * 2;
+				render.camera.window_bounds.x1 -= inset * 2;
+				render.camera.window_bounds.y1 -= inset * 2;
 				interface_draw_screen();
+				render.camera.window_bounds = window_bounds;
 				/* Firefight's wave, lives and score, low in the middle */
 				if (n64_firefight_status(status, sizeof(status)))
-					n64_hud_text((view.x0 + view.x1) / 2 - 62, view.y1 - 16, 0xFFC0E0FF, status);
+					n64_hud_text((view.x0 + view.x1) / 2 - 62, view.y1 - 16 - inset, 0xFFC0E0FF, status);
 			}
 			n64_hud_end();
 		}

@@ -105,8 +105,15 @@ enum
 enum
 {
 	MAXIMUM_GLOW_MARKERS = 5,
+#ifdef HALO_N64
+	/* (no widgets are made on the N64, widgets.c: token pools, 57 KB of
+	the game state given back) */
+	MAXIMUM_GLOWS = 1,
+	MAXIMUM_GLOW_PARTICLES = 1
+#else
 	MAXIMUM_GLOWS = 8,
 	MAXIMUM_GLOW_PARTICLES = 512
+#endif
 };
 
 enum glow_definition_flags

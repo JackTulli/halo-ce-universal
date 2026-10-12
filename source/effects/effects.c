@@ -1958,6 +1958,37 @@ static void effect_generate_particles(
 	else
 		event_fraction = 1.0f;
 
+	/* an explosion (a grenade's, a rocket's, a tank shell's: the effects
+	tools/n64/effects.py lists) is the N64's own flash, fireball and smoke,
+	made once, where the effect begins */
+	if (effect->event_index == 0 && last_event_fraction <= 0.0f && event_fraction > 0.0f &&
+		definition->locations.count > 0)
+	{
+		int kind = n64_explosion_kind(DATUM_INDEX_TO_ABSOLUTE_INDEX(effect->definition_index));
+
+		if (kind >= 0)
+		{
+			long location_datum_index = effect->location_datum_indices[0];
+			struct effect_location_datum *instance = effect_location_get_next_instance(effect, &location_datum_index, 0);
+
+			if (instance)
+			{
+				real_point3d position = instance->matrix.position;
+				float point[3];
+
+				if (instance->node_designator != NONE)
+				{
+					matrix4x3_transform_point(effect_get_node_matrix(effect, instance->node_designator),
+						&position, &position);
+				}
+				point[0] = position.x;
+				point[1] = position.y;
+				point[2] = position.z;
+				n64_explosion(point, kind);
+			}
+		}
+	}
+
 	for (emitter_index = 0;
 		emitter_index < emitter_count && emitter_index < MAXIMUM_EFFECT_EVENTS;
 		emitter_index++)

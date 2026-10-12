@@ -72,7 +72,12 @@ static struct light_volume_globals light_volume_globals = {0};
 void light_volumes_initialize(
 	void)
 {
+#ifdef HALO_N64
+	/* (no widgets are made on the N64, widgets.c) */
+	light_volume_globals.light_volume_data = game_state_data_new("light volumes", 1, 8);
+#else
 	light_volume_globals.light_volume_data = game_state_data_new("light volumes", 256, 8);
+#endif
 	if (!light_volume_globals.light_volume_data)
 	{
 		display_assert(

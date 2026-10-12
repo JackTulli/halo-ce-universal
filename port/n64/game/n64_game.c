@@ -245,6 +245,8 @@ static struct
 {
 	void *game_state;
 	void *tag_cache;
+	/* the game state's buffer, its GPU part (n64_game_state_trim) */
+	unsigned long game_state_size, game_state_gpu_size;
 } n64_memory;
 
 void physical_memory_allocate(
@@ -302,7 +304,43 @@ void *game_state_allocate_buffer(
 	if (!n64_memory.game_state)
 		n64_fatal("no memory for the game state");
 	memset(n64_memory.game_state, 0, cpu_size + gpu_size);
+	n64_memory.game_state_size = cpu_size + gpu_size;
+	n64_memory.game_state_gpu_size = gpu_size;
 	return n64_memory.game_state;
+}
+
+/* The buffer is HALO_PORT_GAME_STATE_CPU_SIZE, a ceiling; the game's
+allocations are all made before the first map locks it (game_state.c,
+HALO_N64), and the rest goes back to the heap here, once: the allocations
+are made from the buffer's start (the GPU's part, from its end, is none on
+the N64), and shrinking a block keeps it where it is. */
+#define N64_GAME_STATE_SLACK 256
+
+void n64_game_state_trim(
+	unsigned long used)
+{
+	static boolean trimmed = FALSE;
+	unsigned long size, before;
+	void *block;
+	char line[128];
+
+	if (trimmed || !n64_memory.game_state || n64_memory.game_state_gpu_size)
+		return;
+	trimmed = TRUE;
+	size = (used + N64_GAME_STATE_SLACK + 15) & ~15UL;
+	if (size >= n64_memory.game_state_size)
+		return;
+	before = n64_heap_free();
+	/* (libc's: the buffer is memalign's, and in the game's units realloc is
+	cseries.h's debug_realloc) */
+	block = (realloc)(n64_memory.game_state, size);
+	if (block != n64_memory.game_state)
+		n64_fatal("the game state moved when it was trimmed");
+	snprintf(line, sizeof(line), "n64: game state %lu KB of %lu KB used, %lu KB given back to the heap",
+		used / 1024, n64_memory.game_state_size / 1024, (n64_heap_free() - before) / 1024);
+	n64_log(line);
+	n64_memory.game_state_size = size;
+	return;
 }
 
 void game_state_free_buffer(
@@ -359,7 +397,9 @@ static void *n64_map_load(
 		return n64_map.image + n64_map.header.tag_header_offset;
 	if (n64_map.image)
 	{
-		free(n64_map.image);
+		/* (libc's: the image is memalign's, and in the game's units free is
+		cseries.h's debug_free) */
+		(free)(n64_map.image);
 		n64_map.image = NULL;
 	}
 
@@ -410,6 +450,27 @@ static void *n64_map_load(
 		n64_log(line);
 	}
 	return n64_map.image + n64_map.header.tag_header_offset;
+}
+
+/* main.c's main_menu_load: the map of the game that ended, once unloaded
+(game_unload), gives its memory to the menu */
+void n64_game_free_map(
+	void)
+{
+	if (n64_map.image)
+	{
+		/* (libc's free: see n64_map_load) */
+		(free)(n64_map.image);
+		n64_map.image = NULL;
+	}
+	n64_map.name[0] = 0;
+	n64_memory.tag_cache = NULL;
+	{
+		char line[64];
+
+		snprintf(line, sizeof(line), "n64: map freed, %lu KB of heap free", n64_heap_free() / 1024);
+		n64_log(line);
+	}
 }
 
 /* the loaded map's name ("wizard"), for the renderer's level geometry */
@@ -597,6 +658,10 @@ static struct
 	unsigned long long window_start;
 } n64_tick_profile;
 
+/* testing (port.json flag "debug_game_ticks=<n>"): each game ends after n
+ticks (its scores, then the menu) */
+static long n64_game_end_tick = -1;
+
 void n64_game_tick(
 	void)
 {
@@ -610,7 +675,11 @@ void n64_game_tick(
 		n64_tick_profile.window_start = n64_ticks64();
 		if (n64_debug_text("debug_stage_type", setting, sizeof(setting)))
 			n64_stage_type = atoi(setting);
+		if (n64_debug_text("debug_game_ticks", setting, sizeof(setting)))
+			n64_game_end_tick = atol(setting);
 	}
+	if (n64_game_end_tick > 0 && game_time_get() == n64_game_end_tick)
+		game_engine_end_game();
 	n64_profile_zone = n64_debug_flag("profile_tick");
 	n64_firefight_tick();
 	game_tick();

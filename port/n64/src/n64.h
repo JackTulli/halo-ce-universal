@@ -88,11 +88,46 @@ enum
 void n64_input_poll(void);
 void n64_input_get(int port, struct n64_pad *pad);
 
+/* each controller port's controls, chosen on the menu's CONTROLS page and
+read by xdk_input.c (all zero: the standard scheme, crouch held, look not
+inverted) */
+enum
+{
+	N64_SCHEME_STANDARD,      /* the stick looks, the C buttons move */
+	N64_SCHEME_BUMPER_JUMPER, /* the standard one, R jumping and A throwing grenades */
+	N64_SCHEME_GOLDENEYE,     /* the stick turns and walks, C left and right strafe, C up and down look */
+	N64_SCHEME_NORTH,         /* the stick walks and strafes, the C buttons look */
+	N64_SCHEME_COUNT
+};
+
+struct n64_controls
+{
+	unsigned char scheme;        /* N64_SCHEME_* */
+	unsigned char toggle_crouch; /* crouch toggled by its button, not held */
+	unsigned char inverted;      /* pushing up looks down */
+	unsigned char swap_fire;     /* fire on the grenade's button, grenades on Z */
+	/* look speeds, the stick's and the C buttons': the menu's 1-10 less 5
+	(all zero: 5), 1.25 times faster a step */
+	signed char stick_speed, c_speed;
+	/* (xdk_input.c's) the toggled crouch, and the buttons last read */
+	unsigned char crouched;
+	unsigned char pad;
+	unsigned short last_buttons;
+};
+
+extern struct n64_controls n64_controls[4];
+
+/* a local player's look speeds across and up and down (xdk_input.c; Halo's
+turning rates times them, source/game/player_control.c): the sensitivity of
+whichever turns that way in the player's scheme, the stick or the C buttons */
+void n64_look_speed(int local_player_index, float *yaw, float *pitch);
+
 /* ---------- the renderer (n64_render.c)
 
 A frame is n64_render_frame_begin, one n64_render_view per player's view,
 then n64_render_frame_end, which shows it. Positions are the game's world
-units; the views' rectangles are pixels of the 320x240 frame. */
+units; the views' rectangles are pixels of the screen: the game's 320x240,
+the menu's 640x480 (n64_render_set_menu_display). */
 
 struct n64_view
 {
@@ -166,6 +201,12 @@ loaded: 0 low, 1 medium, 2 high -- the first-person weapons and arms at
 void n64_render_set_view_model_quality(int quality);
 /* the FPS counter in the corner (off in the menu) */
 void n64_render_show_counter(int on);
+/* the menu's display, 640x480 interlaced (two buffers and a z-buffer of
+that size), or back to the game's 320x240: the old display's memory freed
+first, the game's buffers where they were before the menu */
+void n64_render_set_menu_display(int on);
+int n64_render_screen_width(void);
+int n64_render_screen_height(void);
 
 /* ---------- sound (n64_sound.c): the main menu's music, the game's
 sounds (port/n64/game/n64_sound_game.c) */
@@ -254,6 +295,21 @@ void n64_particles_load(const char *map_name);
 until the next call */
 const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
 void n64_particle_spawn(const struct n64_particle_spawn *spawn);
+/* explosions: the N64's own flash, fireball and smoke for the effects the
+converter marks (tools/n64/effects.py EXPLOSIONS), started by the effect
+code (source/effects/effects.c, HALO_N64) where the effect begins */
+enum
+{
+	N64_EXPLOSION_FRAG,
+	N64_EXPLOSION_PLASMA,
+	N64_EXPLOSION_ROCKET,
+	N64_EXPLOSION_SHELL,
+	N64_EXPLOSION_NEEDLER,
+	N64_EXPLOSION_KINDS
+};
+/* the kind of explosion an effect is (by its tag index), or -1 */
+int n64_explosion_kind(int effect_tag_index);
+void n64_explosion(const float position[3], int kind);
 void n64_particles_update(float dt);
 /* the menu's setting: none made when off */
 void n64_particles_set_enabled(int on);
@@ -338,6 +394,10 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1);
 void n64_hud_end(void);
 /* the views this frame (more views: each one's HUD code runs less often) */
 void n64_hud_set_view_count(int count);
+/* the HUD's inset from each view's edges in pixels, for a television's
+overscan (Settings: HUD INSET; port.json flag "debug_hud_inset=<pixels>") */
+void n64_hud_set_inset(int pixels);
+int n64_hud_inset(void);
 void n64_hud_quad(const struct n64_hud_quad *quad);
 void n64_hud_text(int x, int y, unsigned long color, const char *text);
 /* a motion sensor blip: centre in pixels, position and size in pixels */

@@ -4,15 +4,22 @@ N64_MENU.C
 The N64's own menu, split screen multiplayer only, over the scene behind
 Halo's main menu (tools/n64/ui.py): the space sky and the ring, seen from
 the menu's "multiplayer" camera point, slowly drifting. Halo's fonts and
-pictures (the logo, the maps' and the game types').
+pictures (the logo, the maps' and the game types'). The menu runs at 640x480
+interlaced (n64_render_set_menu_display; the game at 320x240), the size
+Halo's menus were made for: text and pictures at their own size.
 
-The title offers MULTIPLAYER and SETTINGS. Multiplayer is the game's
+The title offers MULTIPLAYER, FIREFIGHT, CONTROLS and SETTINGS. Controls:
+each controller chooses its own scheme, crouch held or toggled, look
+inverted or not, fire and grenades swapped or not, and the stick's and the
+C buttons' look speeds, on its own panel (n64_controls, xdk_input.c). Multiplayer is the game's
 setup: the players join with A on their controller (B leaves, Z changes
 team), any of them chooses the game type, the map and the score to win;
 START (or A on "START GAME") plays. Settings: particles on or off, chunky
 mode (the game drawn
 half as wide, its pixels twice as wide: n64_render_set_chunky), the view
-models' quality (n64_render_set_view_model_quality). After a
+models' quality (n64_render_set_view_model_quality), the HUD's inset from
+the screen's edges for a television's overscan (n64_hud_set_inset), the FPS
+counter (off unless turned on). After a
 game, its results first. n64_menu_run returns the choices; the
 game side (port/n64/game/n64_game.c) makes the game.
 */
@@ -21,6 +28,7 @@ game side (port/n64/game/n64_game.c) makes the game.
 #include <math.h>
 #include <malloc.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "n64.h"
@@ -96,36 +104,82 @@ int n64_menu_map_from_folder(const char *folder)
 #define TEXT_BRIGHT 0xFFFFFFFFu
 #define TEXT_DIM 0xC05880B0u
 
+/* the map's or the game type's picture on the screen (one of each is kept:
+the one before is freed once the RDP is done with it) */
+struct shown_picture
+{
+	sprite_t *sprite;
+	int number;
+};
+
 static struct
 {
 	int loaded;
 	struct n64_font *large, *small;
 	sprite_t *logo;
-	sprite_t *map_pictures[16], *type_pictures[8];
+	struct shown_picture map_picture, type_picture;
 	/* the settings (particles: on unless turned off) */
 	int chunky;
 	int no_particles;
 	/* 0 low, 1 medium, 2 high */
 	int view_model;
+	/* pixels, HUD_INSET_STEP at a time up to HUD_INSET_MAXIMUM */
+	int hud_inset;
+	int fps_counter;
+	/* the CONTROLS page: each controller's chosen row (CONTROL_*), and the
+	controller whose row the help line explains */
+	int control_row[4];
+	int control_pad;
 	/* the scene */
 	int sky_model, ring_model;
 	float ring[13];
-	float camera[10];
+	/* the ui scenario's camera points: position, forward, up, horizontal
+	field of view */
+	char point_names[16][32];
+	float points[16][10];
+	int point_count;
 	float frame;
 } menu;
 
-static sprite_t *picture(sprite_t **cache, const char *kind, int number)
+/* the title's camera, as Halo's: the ui scenario's script ring_loop sets
+the camera to uicam, then to point_2 ... point_11 in turn, round and round,
+each with a 400-tick transition (13 s: whole seconds) and the next one 200
+ticks (6.7 s) later, so that the camera never quite arrives; Halo's observer
+glides it (camera/observer.c: from where it is, with its velocity and
+acceleration, a quintic to rest at the point in the time left, planned again
+every frame). In real time, whatever the frame rate */
+static const char *const camera_path[] = {
+	"uicam", "point_2", "point_3", "point_4", "point_5", "point_6",
+	"point_7", "point_8", "point_9", "point_10", "point_11",
+};
+#define CAMERA_PATH_LENGTH ((int)(sizeof(camera_path) / sizeof(camera_path[0])))
+#define CAMERA_INTERVAL (200.f / 30.f)
+#define CAMERA_TRANSITION 13.f
+
+static struct
+{
+	int started;
+	unsigned long long last_ticks;
+	float time;
+	float position[3], velocity[3], acceleration[3];
+	float forward[3], up[3], spin_velocity[3], spin_acceleration[3];
+	float field_of_view;
+} camera;
+
+static sprite_t *picture(struct shown_picture *shown, const char *kind, int number)
 {
 	char path[48];
 
 	if (number < 0 || number >= 16)
 		return NULL;
-	if (!cache[number])
-	{
-		snprintf(path, sizeof(path), "rom:/ui/%s%d.sprite", kind, number);
-		cache[number] = sprite_load(path);
-	}
-	return cache[number];
+	if (shown->sprite && shown->number == number)
+		return shown->sprite;
+	if (shown->sprite)
+		rdpq_call_deferred((void (*)(void *))sprite_free, shown->sprite);
+	snprintf(path, sizeof(path), "rom:/ui/%s%d.sprite", kind, number);
+	shown->sprite = sprite_load(path);
+	shown->number = number;
+	return shown->sprite;
 }
 
 static void load_scene(void)
@@ -143,16 +197,15 @@ static void load_scene(void)
 		menu.ring_model = (header[6] << 8) | header[7];
 		fread(menu.ring, 4, 13, file);
 		fread(&count, 4, 1, file);
-		/* the "multiplayer" camera point: the menu's own place in Halo */
-		for (uint32_t i = 0; i < count; i++)
+		/* the camera points (the title's camera goes from one to the next) */
+		menu.point_count = 0;
+		for (uint32_t i = 0; i < count && menu.point_count < 16; i++)
 		{
-			char name[32];
-			float point[10];
-
-			if (fread(name, 1, 32, file) != 32 || fread(point, 4, 10, file) != 10)
+			if (fread(menu.point_names[menu.point_count], 1, 32, file) != 32 ||
+				fread(menu.points[menu.point_count], 4, 10, file) != 10)
 				break;
-			if (i == 0 || !strcmp(name, "multiplayer"))
-				memcpy(menu.camera, point, sizeof(point));
+			menu.point_names[menu.point_count][31] = 0;
+			menu.point_count++;
 		}
 	}
 	fclose(file);
@@ -187,50 +240,199 @@ static void menu_unload(void)
 	if (menu.logo)
 		sprite_free(menu.logo);
 	menu.logo = NULL;
-	for (int i = 0; i < 16; i++)
-	{
-		if (menu.map_pictures[i])
-			sprite_free(menu.map_pictures[i]);
-		menu.map_pictures[i] = NULL;
-	}
-	for (int i = 0; i < 8; i++)
-	{
-		if (menu.type_pictures[i])
-			sprite_free(menu.type_pictures[i]);
-		menu.type_pictures[i] = NULL;
-	}
+	if (menu.map_picture.sprite)
+		sprite_free(menu.map_picture.sprite);
+	if (menu.type_picture.sprite)
+		sprite_free(menu.type_picture.sprite);
+	menu.map_picture.sprite = menu.type_picture.sprite = NULL;
 	menu.loaded = 0;
 	n64_render_load_scene(NULL);
 }
 
 /* ---------- drawing */
 
+static const float *camera_point(const char *name)
+{
+	for (int i = 0; i < menu.point_count; i++)
+	{
+		if (!strcmp(menu.point_names[i], name))
+			return menu.points[i];
+	}
+	return menu.point_count ? menu.points[0] : NULL;
+}
+
+/* one value's step toward its target (observer.c's polynomial): the
+displacement to go, the velocity and acceleration (updated), the time left
+and the step's; returns how far to move */
+static float glide(float displacement, float *velocity, float *acceleration, float remaining, float dt)
+{
+	float i1, i2, i3, i4, i5, v, a, b, c, r, r2, delta;
+
+	if (remaining <= dt || remaining <= 0.f)
+	{
+		*velocity = *acceleration = 0.f;
+		return displacement;
+	}
+	i1 = 1.f / remaining;
+	i2 = i1 * i1;
+	i3 = i2 * i1;
+	i4 = i3 * i1;
+	i5 = i4 * i1;
+	/* (Halo's velocity runs against the time left) */
+	v = -*velocity;
+	a = *acceleration * i3 * 0.5f - (v * i4 * 3.f + displacement * i5 * 6.f);
+	b = v * i3 * 7.f + displacement * i4 * 15.f - *acceleration * i2;
+	c = *acceleration * i1 * 0.5f - (v * i2 * 4.f + displacement * i3 * 10.f);
+	r = remaining - dt;
+	r2 = r * r;
+	delta = a * r2 * r2 * r + b * r2 * r2 + c * r2 * r + displacement;
+	*velocity = -(5.f * a * r2 * r2 + 4.f * b * r2 * r + 3.f * c * r2);
+	*acceleration = 20.f * a * r2 * r + 12.f * b * r2 + 6.f * c * r;
+	return delta;
+}
+
+static void cross(const float *a, const float *b, float *out)
+{
+	out[0] = a[1] * b[2] - a[2] * b[1];
+	out[1] = a[2] * b[0] - a[0] * b[2];
+	out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static void normalize(float *v)
+{
+	float length = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+
+	if (length > 1e-6f)
+	{
+		v[0] /= length;
+		v[1] /= length;
+		v[2] /= length;
+	}
+}
+
+/* v turned about the unit axis by the angle (Rodrigues) */
+static void rotate(float *v, const float *axis, float angle)
+{
+	float k_v[3], s = sinf(angle), c = cosf(angle), dot = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+
+	cross(axis, v, k_v);
+	for (int i = 0; i < 3; i++)
+		v[i] = v[i] * c + k_v[i] * s + axis[i] * dot * (1.f - c);
+}
+
+/* the rotation (axis times angle) from the frame forward, up to the point's */
+static void rotation_to(const float *forward, const float *up, const float *point, float *out)
+{
+	float left[3], target_left[3], m[3][3];
+	const float *target_forward = point + 3, *target_up = point + 6;
+	float angle, s;
+
+	cross(up, forward, left);
+	cross(target_up, target_forward, target_left);
+	/* target frame times the current one's transpose (frames as columns:
+	forward, left, up) */
+	for (int i = 0; i < 3; i++)
+	{
+		for (int j = 0; j < 3; j++)
+			m[i][j] = target_forward[i] * forward[j] + target_left[i] * left[j] + target_up[i] * up[j];
+	}
+	angle = acosf(fmaxf(-1.f, fminf(1.f, (m[0][0] + m[1][1] + m[2][2] - 1.f) * 0.5f)));
+	s = sinf(angle);
+	if (angle < 1e-4f || s < 1e-4f)
+	{
+		out[0] = out[1] = out[2] = 0.f;
+		return;
+	}
+	out[0] = (m[2][1] - m[1][2]) / (2.f * s) * angle;
+	out[1] = (m[0][2] - m[2][0]) / (2.f * s) * angle;
+	out[2] = (m[1][0] - m[0][1]) / (2.f * s) * angle;
+}
+
+static void update_camera(void)
+{
+	unsigned long long now = get_ticks();
+	const float *point;
+	float dt, since, remaining, turn[3], step[3], angle;
+	int command;
+
+	if (!menu.point_count)
+		return;
+	if (!camera.started)
+	{
+		/* (testing, port.json flag "debug_title_time=<seconds>": the path
+		from there, the camera at that command's point) */
+		char text[16];
+		float start = n64_debug_text("debug_title_time", text, sizeof(text)) ? (float)atof(text) : 0.f;
+
+		point = camera_point(camera_path[(int)(start / CAMERA_INTERVAL) % CAMERA_PATH_LENGTH]);
+		memset(&camera, 0, sizeof(camera));
+		memcpy(camera.position, point, sizeof(camera.position));
+		memcpy(camera.forward, point + 3, sizeof(camera.forward));
+		memcpy(camera.up, point + 6, sizeof(camera.up));
+		camera.field_of_view = point[9];
+		camera.time = start;
+		camera.last_ticks = now;
+		camera.started = 1;
+	}
+	dt = (float)(now - camera.last_ticks) / (float)TICKS_PER_SECOND;
+	camera.last_ticks = now;
+	/* (a long stall, a game in between: no leap) */
+	dt = fminf(fmaxf(dt, 0.f), 0.1f);
+	camera.time += dt;
+	command = (int)(camera.time / CAMERA_INTERVAL);
+	since = camera.time - command * CAMERA_INTERVAL;
+	remaining = CAMERA_TRANSITION - since;
+	point = camera_point(camera_path[command % CAMERA_PATH_LENGTH]);
+	for (int k = 0; k < 3; k++)
+		camera.position[k] += glide(point[k] - camera.position[k], &camera.velocity[k], &camera.acceleration[k],
+			remaining, dt);
+	/* the orientation: the rotation still to go, glided as a vector */
+	rotation_to(camera.forward, camera.up, point, turn);
+	for (int k = 0; k < 3; k++)
+		step[k] = glide(turn[k], &camera.spin_velocity[k], &camera.spin_acceleration[k], remaining, dt);
+	angle = sqrtf(step[0] * step[0] + step[1] * step[1] + step[2] * step[2]);
+	if (angle > 1e-6f)
+	{
+		float axis[3] = {step[0] / angle, step[1] / angle, step[2] / angle};
+		float left[3];
+
+		rotate(camera.forward, axis, angle);
+		rotate(camera.up, axis, angle);
+		/* (kept square) */
+		normalize(camera.forward);
+		cross(camera.up, camera.forward, left);
+		cross(camera.forward, left, camera.up);
+		normalize(camera.up);
+	}
+	if (point[9] > 0.1f)
+		camera.field_of_view = point[9];
+}
+
 static void draw_scene(void)
 {
 	struct n64_view view;
-	float t = menu.frame * 0.004f;
-	/* a slow drift about the camera point */
-	float yaw = sinf(t) * 0.06f, pitch = sinf(t * 0.7f) * 0.03f;
-	float *c = menu.camera;
-	float forward[3] = {c[3], c[4], c[5]}, up[3] = {c[6], c[7], c[8]};
-	float left[3] = {up[1] * forward[2] - up[2] * forward[1], up[2] * forward[0] - up[0] * forward[2],
-		up[0] * forward[1] - up[1] * forward[0]};
+	float c[3];
 
+	update_camera();
+	memcpy(c, camera.position, sizeof(c));
 	memset(&view, 0, sizeof(view));
 	for (int k = 0; k < 3; k++)
 	{
-		view.position[k] = c[k];
-		view.forward[k] = forward[k] + left[k] * yaw + up[k] * pitch;
-		view.up[k] = up[k];
+		view.position[k] = camera.position[k];
+		view.forward[k] = camera.forward[k];
+		view.up[k] = camera.up[k];
 	}
 	/* the camera point's field of view is horizontal */
-	view.vertical_field_of_view = c[9] > 0.1f ? 2.f * atanf(tanf(c[9] * 0.5f) * 0.75f) : 0.9f;
+	view.vertical_field_of_view = camera.field_of_view > 0.1f ?
+		2.f * atanf(tanf(camera.field_of_view * 0.5f) * 0.75f) : 0.9f;
 	view.z_near = 0.02f;
 	view.z_far = 200.f;
+	/* the whole screen (the menu's 640x480; 320x240 for the loading frame
+	once the game's display is back) */
 	view.x0 = 0;
 	view.y0 = 0;
-	view.x1 = 320;
-	view.y1 = 240;
+	view.x1 = (short)n64_render_screen_width();
+	view.y1 = (short)n64_render_screen_height();
 	view.local_player_index = 0;
 	view.visible_clusters = NULL;
 	n64_render_view(&view);
@@ -262,6 +464,21 @@ static void draw_scene(void)
 	n64_render_flush();
 }
 
+/* The menu's screens are laid out on its 640x480 interlaced screen
+(n64_render_set_menu_display), the size Halo's fonts and pictures were made
+for (the Xbox's menus): text at its own size. What matters stays inside
+what every television shows, ~5% in from the edges; lines are two pixels
+thick (a one-pixel line is in one field of the two and flickers on an
+interlaced television). */
+#define SCREEN_W 640
+#define SCREEN_H 480
+#define SAFE_LEFT 32
+#define SAFE_RIGHT (SCREEN_W - 32)
+#define SAFE_BOTTOM (SCREEN_H - 24)
+#define LINE 2
+#define FRAME_COLOR 0xFF8CC0FFu
+#define CHOSEN_COLOR 0xA0306CB8u
+
 static void panel(int x0, int y0, int x1, int y1, unsigned long argb)
 {
 	rdpq_sync_pipe();
@@ -272,12 +489,20 @@ static void panel(int x0, int y0, int x1, int y1, unsigned long argb)
 	rdpq_fill_rectangle(x0, y0, x1, y1);
 }
 
+/* a frame's four sides (not overlapping: they are blended) */
 static void frame_line(int x0, int y0, int x1, int y1, unsigned long argb)
 {
-	panel(x0, y0, x1, y0 + 1, argb);
-	panel(x0, y1 - 1, x1, y1, argb);
-	panel(x0, y0, x0 + 1, y1, argb);
-	panel(x1 - 1, y0, x1, y1, argb);
+	panel(x0, y0, x1, y0 + LINE, argb);
+	panel(x0, y1 - LINE, x1, y1, argb);
+	panel(x0, y0 + LINE, x0 + LINE, y1 - LINE, argb);
+	panel(x1 - LINE, y0 + LINE, x1, y1 - LINE, argb);
+}
+
+/* the chosen row's box */
+static void chosen(int x0, int y0, int x1, int y1)
+{
+	panel(x0, y0, x1, y1, CHOSEN_COLOR);
+	frame_line(x0, y0, x1, y1, FRAME_COLOR);
 }
 
 static void blit(sprite_t *sprite, int x, int y, float scale)
@@ -290,7 +515,8 @@ static void blit(sprite_t *sprite, int x, int y, float scale)
 	rdpq_sync_pipe();
 	rdpq_set_mode_standard();
 	rdpq_mode_alphacompare(1);
-	rdpq_mode_filter(FILTER_BILINEAR);
+	/* (at its own size texel for pixel: filtering would only blur it) */
+	rdpq_mode_filter(scale == 1.f ? FILTER_POINT : FILTER_BILINEAR);
 	if (sprite_get_format(sprite) == FMT_RGBA16 || sprite_get_format(sprite) == FMT_RGBA32)
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	rdpq_tex_blit(&surface, x, y, &(rdpq_blitparms_t){ .scale_x = scale, .scale_y = scale });
@@ -299,6 +525,30 @@ static void blit(sprite_t *sprite, int x, int y, float scale)
 static void text_centered(struct n64_font *font, int center, int y, unsigned long color, const char *text)
 {
 	n64_text_draw(font, center - n64_text_width(font, text) / 2, y, color, text);
+}
+
+static void text_right(struct n64_font *font, int right, int y, unsigned long color, const char *text)
+{
+	n64_text_draw(font, right - n64_text_width(font, text), y, color, text);
+}
+
+/* the chosen item's text, pulsing */
+static unsigned long pulsing(void)
+{
+	int pulse = (int)(200 + 55 * sinf(menu.frame * 0.1f));
+
+	return ((unsigned long)pulse << 24) | (TEXT_BRIGHT & 0xFFFFFF);
+}
+
+/* a page's darkened backdrop, its title (and a note on the right) over a
+rule */
+static void page(const char *title, const char *note)
+{
+	panel(0, 0, SCREEN_W, SCREEN_H, 0x40000818);
+	n64_text_draw(menu.large, SAFE_LEFT + 8, 60, TEXT_BRIGHT, title);
+	if (note)
+		text_right(menu.small, SAFE_RIGHT - 8, 60, TEXT_DIM, note);
+	panel(SAFE_LEFT, 68, SAFE_RIGHT, 68 + LINE, 0xC08CC0FF);
 }
 
 /* ---------- input: any controller, with the stick's repeats */
@@ -389,55 +639,191 @@ static void read_pads(void)
 
 /* ---------- the screens */
 
-enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS };
+enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_START, ROW_COUNT };
-enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_SETTINGS, TITLE_COUNT };
+enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT };
+enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
+	CONTROL_COUNT };
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_BACK, SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK,
+	SETTING_COUNT };
+#define HUD_INSET_STEP 4
+#define HUD_INSET_MAXIMUM 20
 
-/* a choice in a list: brighter, framed and pulsing when chosen */
+/* a choice in a list: brighter, framed and pulsing when chosen (y its
+baseline) */
 static void list_item(int center, int y, int width, int selected, const char *text)
 {
-	int pulse = (int)(200 + 55 * sinf(menu.frame * 0.1f));
+	if (selected)
+		chosen(center - width / 2, y - 22, center + width / 2, y + 10);
+	text_centered(menu.large, center, y, selected ? pulsing() : TEXT_COLOR, text);
+}
+
+/* a setting: its name on the left, its value on the right (between arrows
+when chosen) */
+static void setting_row(int x0, int x1, int y, int selected, struct n64_font *font, const char *label,
+	const char *value)
+{
+	char arrows[48];
 
 	if (selected)
 	{
-		panel(center - width / 2, y - 16, center + width / 2, y + 6, 0xA0306CB8);
-		frame_line(center - width / 2, y - 16, center + width / 2, y + 6, 0xFF8CC0FF);
+		chosen(x0, y - 22, x1, y + 10);
+		snprintf(arrows, sizeof(arrows), "<  %s  >", value);
+		value = arrows;
 	}
-	text_centered(menu.large, center, y, selected ? ((unsigned long)pulse << 24) | (TEXT_BRIGHT & 0xFFFFFF) : TEXT_COLOR,
-		text);
+	n64_text_draw(font, x0 + 14, y, selected ? TEXT_BRIGHT : TEXT_COLOR, label);
+	text_right(font, x1 - 14, y, selected ? pulsing() : TEXT_COLOR, value);
 }
 
 static void draw_title(int item)
 {
-	static const char *items[TITLE_COUNT] = {"MULTIPLAYER", "FIREFIGHT", "SETTINGS"};
+	static const char *items[TITLE_COUNT] = {"MULTIPLAYER", "FIREFIGHT", "CONTROLS", "SETTINGS"};
 
-	blit(menu.logo, 32, 22, 1.f);
+	/* Halo's logo (with its drawing's lines) across the top, centred */
+	if (menu.logo)
+		blit(menu.logo, (SCREEN_W - menu.logo->width) / 2, 30, 1.f);
 	for (int i = 0; i < TITLE_COUNT; i++)
-		list_item(160, 146 + i * 26, 150, i == item, items[i]);
-	text_centered(menu.small, 160, 228, TEXT_DIM, "SPLIT SCREEN  -  UP TO 4 PLAYERS");
+		list_item(SCREEN_W / 2, 306 + i * 36, 280, i == item, items[i]);
+	text_centered(menu.small, SCREEN_W / 2, 450, TEXT_DIM, "SPLIT SCREEN   -   UP TO 4 PLAYERS");
+}
+
+/* the CONTROLS page: a panel for each controller (two by two), its own rows
+chosen and changed with its own buttons; each row says what it is */
+static void draw_controls(void)
+{
+	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH"};
+	static const char *const labels[CONTROL_COUNT] = {
+		"SCHEME", "CROUCH", "LOOK", "FIRE BUTTON", "STICK SPEED", "C BUTTON SPEED",
+	};
+	static const char *const scheme_help[N64_SCHEME_COUNT] = {
+		"THE STICK LOOKS, THE C BUTTONS MOVE",
+		"STANDARD, BUT R JUMPS AND A THROWS GRENADES",
+		"THE STICK WALKS AND TURNS, C LEFT AND RIGHT STRAFE",
+		"THE STICK WALKS AND STRAFES, THE C BUTTONS LOOK",
+	};
+	const struct n64_controls *chosen_controls = &n64_controls[menu.control_pad & 3];
+	const char *help;
+	char text[24], help_text[48];
+
+	page("CONTROLS", "B  BACK");
+	for (int p = 0; p < 4; p++)
+	{
+		const struct n64_controls *controls = &n64_controls[p];
+		int x = SAFE_LEFT + (p & 1) * 292, y = 84 + (p >> 1) * 176, w = 284, h = 166, center = x + w / 2;
+		int connected = joypad_is_connected(p);
+		/* (fire on the grenade's button when swapped) */
+		const char *fire = !controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" : "R";
+
+		panel(x, y, x + w, y + h, connected ? 0xA0102040 : 0x60000000);
+		frame_line(x, y, x + w, y + h, connected ? FRAME_COLOR : 0x806080A0);
+		snprintf(text, sizeof(text), "PLAYER %d", p + 1);
+		text_centered(menu.large, center, y + 28, connected ? TEXT_BRIGHT : TEXT_DIM, text);
+		if (!connected)
+		{
+			text_centered(menu.small, center, y + 96, TEXT_DIM, "NO CONTROLLER");
+			continue;
+		}
+		panel(x + 14, y + 38, x + w - 14, y + 38 + LINE, 0x808CC0FF);
+		for (int row = 0; row < CONTROL_COUNT; row++)
+		{
+			int row_y = y + 62 + row * 19, selected = menu.control_row[p] == row;
+			const char *value = text;
+
+			switch (row)
+			{
+			case CONTROL_SCHEME: value = schemes[controls->scheme]; break;
+			case CONTROL_CROUCH: value = controls->toggle_crouch ? "TOGGLE" : "HOLD"; break;
+			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
+			case CONTROL_FIRE: value = fire; break;
+			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
+			default: snprintf(text, sizeof(text), "%d", 5 + controls->c_speed); break;
+			}
+			if (selected)
+			{
+				char arrows[32];
+
+				chosen(x + 6, row_y - 15, x + w - 6, row_y + 5);
+				snprintf(arrows, sizeof(arrows), "<  %s  >", value);
+				n64_text_draw(menu.small, x + 14, row_y, TEXT_BRIGHT, labels[row]);
+				text_right(menu.small, x + w - 14, row_y, TEXT_BRIGHT, arrows);
+			}
+			else
+			{
+				n64_text_draw(menu.small, x + 14, row_y, TEXT_DIM, labels[row]);
+				text_right(menu.small, x + w - 14, row_y, TEXT_COLOR, value);
+			}
+		}
+	}
+	/* what the last controller to move chose */
+	switch (menu.control_row[menu.control_pad & 3])
+	{
+	case CONTROL_SCHEME:
+		help = scheme_help[chosen_controls->scheme];
+		break;
+	case CONTROL_CROUCH:
+		help = chosen_controls->toggle_crouch ? "D-PAD DOWN CROUCHES OR STANDS" : "HOLD D-PAD DOWN TO CROUCH";
+		break;
+	case CONTROL_LOOK:
+		help = chosen_controls->inverted ? "PUSH UP TO LOOK DOWN" : "PUSH UP TO LOOK UP";
+		break;
+	case CONTROL_FIRE:
+		snprintf(help_text, sizeof(help_text), "%s FIRES, %s THROWS GRENADES",
+			!chosen_controls->swap_fire ? "Z" : chosen_controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" : "R",
+			chosen_controls->swap_fire ? "Z" : chosen_controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" : "R");
+		help = help_text;
+		break;
+	case CONTROL_STICK_SPEED:
+		help = "HOW FAST THE STICK TURNS YOU (1-10)";
+		break;
+	default:
+		help = "HOW FAST THE C BUTTONS TURN YOU (1-10)";
+		break;
+	}
+	snprintf(text, sizeof(text), "PLAYER %d:", (menu.control_pad & 3) + 1);
+	{
+		int width = n64_text_width(menu.small, text) + 8 + n64_text_width(menu.small, help);
+		int x = (SCREEN_W - width) / 2;
+
+		n64_text_draw(menu.small, x, 448, TEXT_DIM, text);
+		n64_text_draw(menu.small, x + n64_text_width(menu.small, text) + 8, 448, TEXT_COLOR, help);
+	}
 }
 
 static void draw_settings(int item)
 {
+	/* what the chosen row does, under the list */
+	static const char *const help[SETTING_COUNT][2] = {
+		{"THE GAME'S 3D DRAWN HALF AS WIDE, EACH PIXEL", "DOUBLED ACROSS (THE HUD STAYS SHARP)"},
+		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
+		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES", ""},
+		{"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
+		{"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
+		{"BACK TO THE TITLE", ""},
+	};
 	char value[32];
 
-	panel(0, 0, 320, 240, 0x40000818);
-	n64_text_draw(menu.large, 14, 26, TEXT_BRIGHT, "SETTINGS");
-	panel(12, 32, 308, 33, 0xC08CC0FF);
-	snprintf(value, sizeof(value), "CHUNKY MODE: %s", menu.chunky ? "ON" : "OFF");
-	list_item(160, 76, 220, item == SETTING_CHUNKY, value);
-	text_centered(menu.small, 160, 100, TEXT_COLOR, "THE 3D DRAWN HALF AS WIDE, EACH");
-	text_centered(menu.small, 160, 114, TEXT_COLOR, "PIXEL DOUBLED (THE HUD STAYS SHARP)");
-	snprintf(value, sizeof(value), "PARTICLES: %s", menu.no_particles ? "OFF" : "ON");
-	list_item(160, 136, 220, item == SETTING_PARTICLES, value);
-	snprintf(value, sizeof(value), "VIEW MODEL: %s",
+	page("SETTINGS", NULL);
+	setting_row(112, 528, 118, item == SETTING_CHUNKY, menu.large, "CHUNKY MODE", menu.chunky ? "ON" : "OFF");
+	setting_row(112, 528, 156, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
+	setting_row(112, 528, 194, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
 		menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
-	list_item(160, 162, 220, item == SETTING_VIEW_MODEL, value);
-	text_centered(menu.small, 160, 182, TEXT_COLOR, "YOUR GUN AND ARMS: MORE TRIANGLES");
-	list_item(160, 208, 120, item == SETTING_BACK, "BACK");
-	n64_text_draw(menu.small, 14, 232, TEXT_DIM, "A/LEFT/RIGHT CHANGE   B BACK");
+	if (menu.hud_inset)
+		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
+	else
+		snprintf(value, sizeof(value), "OFF");
+	setting_row(112, 528, 232, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
+	setting_row(112, 528, 270, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
+	list_item(SCREEN_W / 2, 318, 180, item == SETTING_BACK, "BACK");
+	panel(112, 352, 528, 404, 0x80102040);
+	frame_line(112, 352, 528, 404, 0x806080A0);
+	for (int line = 0; line < 2; line++)
+	{
+		if (help[item][line][0])
+			text_centered(menu.small, SCREEN_W / 2, (help[item][1][0] ? 374 : 383) + line * 18, TEXT_COLOR,
+				help[item][line]);
+	}
+	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A, LEFT, RIGHT  CHANGE        B  BACK");
 }
 
 static void draw_setup(const struct n64_menu_choice *c, int row, int score_index)
@@ -448,28 +834,29 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 	players one team) */
 	int teams = !c->firefight && n64_menu_game_teams(c->game_type);
 
-	panel(0, 0, 320, 240, 0x40000818);
-	n64_text_draw(menu.large, 14, 26, TEXT_BRIGHT, c->firefight ? "FIREFIGHT" : "MULTIPLAYER");
-	n64_text_draw(menu.small, 222, 26, TEXT_DIM, "SPLIT SCREEN");
-	panel(12, 32, 308, 33, 0xC08CC0FF);
-	/* the rows: a label on the left, its value on the right */
+	page(c->firefight ? "FIREFIGHT" : "MULTIPLAYER", "SPLIT SCREEN");
+	/* the rows on the left: what it is above, its value below */
 	for (int r = 0; r < ROW_COUNT; r++)
 	{
-		int y = 40 + r * 26;
+		int x0 = SAFE_LEFT, x1 = 336, y = 84 + r * 56;
 		int selected = r == row;
 
 		if (c->firefight && r == ROW_SCORE)
 			continue;
-		panel(12, y, 206, y + 22, selected ? 0xA0306CB8 : 0x80102040);
 		if (selected)
-			frame_line(12, y, 206, y + 22, 0xFF8CC0FF);
+			chosen(x0, y, x1, y + 48);
+		else
+		{
+			panel(x0, y, x1, y + 48, 0x80102040);
+			frame_line(x0, y, x1, y + 48, 0x606080A0);
+		}
 		if (r == ROW_START)
 		{
-			text_centered(menu.large, 109, y + 17, c->player_count ? (selected ? TEXT_BRIGHT : TEXT_COLOR) : TEXT_DIM,
-				labels[r]);
+			text_centered(menu.large, (x0 + x1) / 2, y + 31,
+				c->player_count ? (selected ? pulsing() : TEXT_COLOR) : TEXT_DIM, labels[r]);
 			continue;
 		}
-		n64_text_draw(menu.small, 18, y + 15, selected ? TEXT_COLOR : TEXT_DIM,
+		n64_text_draw(menu.small, x0 + 14, y + 18, selected ? TEXT_COLOR : TEXT_DIM,
 			c->firefight && r == ROW_GAME_TYPE ? "DIFFICULTY" : labels[r]);
 		if (r == ROW_GAME_TYPE && c->firefight)
 			snprintf(value, sizeof(value), "%s", difficulties[c->difficulty & 3]);
@@ -480,35 +867,32 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 		else
 			snprintf(value, sizeof(value), "%d %s", game_types[c->game_type].scores[score_index],
 				game_types[c->game_type].unit);
+		text_centered(menu.large, (x0 + x1) / 2, y + 40, selected ? TEXT_BRIGHT : TEXT_COLOR, value);
 		if (selected)
 		{
-			char arrows[56];
-
-			snprintf(arrows, sizeof(arrows), "< %s >", value);
-			n64_text_draw(menu.small, 200 - n64_text_width(menu.small, arrows), y + 15, TEXT_BRIGHT, arrows);
+			n64_text_draw(menu.large, x0 + 14, y + 40, pulsing(), "<");
+			text_right(menu.large, x1 - 14, y + 40, pulsing(), ">");
 		}
-		else
-			n64_text_draw(menu.small, 200 - n64_text_width(menu.small, value), y + 15, TEXT_COLOR, value);
 	}
-	/* the map's and the game type's pictures */
-	panel(212, 40, 312, 92, 0xC0000000);
-	blit(picture(menu.map_pictures, "map", maps[c->map].picture), 212, 41, 100.f / 128.f);
-	frame_line(212, 40, 312, 92, 0xFF8CC0FF);
+	/* the map's picture (Halo's, 256x128) and the game type's */
+	panel(352, 84, SAFE_RIGHT, 212, 0xC0000000);
+	blit(picture(&menu.map_picture, "map", maps[c->map].picture), 352, 84, 1.f);
+	frame_line(350, 82, SAFE_RIGHT + 2, 214, FRAME_COLOR);
 	if (c->firefight)
 	{
-		text_centered(menu.small, 262, 112, TEXT_COLOR, "COVENANT IN WAVES");
-		text_centered(menu.small, 262, 126, TEXT_DIM, "SHARED LIVES");
+		text_centered(menu.large, 480, 256, TEXT_COLOR, "COVENANT IN WAVES");
+		text_centered(menu.small, 480, 282, TEXT_DIM, "SHARED LIVES");
 	}
 	else
 	{
-		panel(229, 100, 295, 134, 0xC0000000);
-		blit(picture(menu.type_pictures, "gametype", game_types[c->game_type].picture), 230, 101, 0.5f);
-		frame_line(229, 100, 295, 134, 0xFF8CC0FF);
+		panel(384, 226, 576, 322, 0xC0000000);
+		blit(picture(&menu.type_picture, "gametype", game_types[c->game_type].picture), 384, 226, 1.f);
+		frame_line(382, 224, 578, 324, FRAME_COLOR);
 	}
 	/* the players */
 	for (int p = 0; p < 4; p++)
 	{
-		int x = 12 + p * 75, y = 148;
+		int x = SAFE_LEFT + p * 146, y = 338, w = 138, h = 92, center = x + w / 2;
 		int slot = -1;
 
 		for (int i = 0; i < c->player_count; i++)
@@ -516,43 +900,57 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 			if (c->ports[i] == p)
 				slot = i;
 		}
-		panel(x, y, x + 71, y + 58, slot >= 0 ? 0xA0102040 : 0x60000000);
-		frame_line(x, y, x + 71, y + 58, slot >= 0 ? 0xFF8CC0FF : 0x806080A0);
+		panel(x, y, x + w, y + h, slot >= 0 ? 0xA0102040 : 0x60000000);
+		frame_line(x, y, x + w, y + h, slot >= 0 ? FRAME_COLOR : 0x806080A0);
 		if (slot < 0)
 		{
-			text_centered(menu.small, x + 36, y + 26, joypad_is_connected(p) ? TEXT_COLOR : TEXT_DIM,
-				joypad_is_connected(p) ? "PRESS A" : "NO PAD");
-			text_centered(menu.small, x + 36, y + 40, TEXT_DIM, joypad_is_connected(p) ? "TO JOIN" : "");
+			if (joypad_is_connected(p))
+			{
+				text_centered(menu.large, center, y + 44, TEXT_COLOR, "PRESS A");
+				text_centered(menu.small, center, y + 66, TEXT_DIM, "TO JOIN");
+			}
+			else
+				text_centered(menu.small, center, y + 52, TEXT_DIM, "NO CONTROLLER");
 			continue;
 		}
 		snprintf(value, sizeof(value), "PLAYER %d", p + 1);
-		text_centered(menu.small, x + 36, y + 16, TEXT_BRIGHT, value);
-		panel(x + 8, y + 22, x + 63, y + 36, 0xFF000000 | (teams ? team_rgb[c->teams[slot]] : player_rgb[slot & 3]));
+		text_centered(menu.large, center, y + 26, TEXT_BRIGHT, value);
+		panel(x + 12, y + 36, x + w - 12, y + 62, 0xFF000000 | (teams ? team_rgb[c->teams[slot]] : player_rgb[slot & 3]));
 		if (teams)
-			text_centered(menu.small, x + 36, y + 33, TEXT_BRIGHT, c->teams[slot] ? "BLUE" : "RED");
-		text_centered(menu.small, x + 36, y + 52, TEXT_DIM, teams ? "Z: TEAM" : "B: LEAVE");
+			text_centered(menu.small, center, y + 55, TEXT_BRIGHT, c->teams[slot] ? "BLUE TEAM" : "RED TEAM");
+		text_centered(menu.small, center, y + 82, TEXT_DIM, teams ? "Z  TEAM" : "B  LEAVE");
 	}
-	text_centered(menu.small, 160, 226, TEXT_DIM, "A JOIN    B LEAVE    Z TEAM    START PLAY");
+	text_centered(menu.small, SCREEN_W / 2, 452, TEXT_DIM, "A  JOIN        B  LEAVE        Z  TEAM        START  PLAY");
 }
 
 static void draw_results(const char *const *lines, int count)
 {
-	panel(40, 40, 280, 200, 0xC0001028);
-	frame_line(40, 40, 280, 200, 0xFF8CC0FF);
-	text_centered(menu.large, 160, 66, TEXT_BRIGHT, "GAME OVER");
+	panel(112, 92, 528, 388, 0xC0001028);
+	frame_line(112, 92, 528, 388, FRAME_COLOR);
+	text_centered(menu.large, SCREEN_W / 2, 136, TEXT_BRIGHT, "GAME OVER");
+	panel(152, 150, 488, 150 + LINE, 0x808CC0FF);
 	for (int i = 0; i < count && i < 6; i++)
-		text_centered(menu.small, 160, 92 + i * 16, i == 0 ? TEXT_BRIGHT : TEXT_COLOR, lines[i]);
-	text_centered(menu.small, 160, 192, TEXT_DIM, "PRESS A");
+	{
+		if (i == 0)
+			text_centered(menu.large, SCREEN_W / 2, 186, TEXT_BRIGHT, lines[i]);
+		else
+			text_centered(menu.small, SCREEN_W / 2, 200 + i * 26, TEXT_COLOR, lines[i]);
+	}
+	text_centered(menu.small, SCREEN_W / 2, 370, TEXT_DIM, "PRESS A");
 }
 
+/* the loading screen: on the menu's screen, and once more on the game's
+320x240 one (shown while the map loads) */
 static void draw_loading(const struct n64_menu_choice *c)
 {
 	char text[64];
+	int width = n64_render_screen_width(), middle = n64_render_screen_height() / 2;
+	int high = width >= SCREEN_W;
 
-	panel(0, 96, 320, 144, 0xC0000818);
 	snprintf(text, sizeof(text), "%s ON %s", c->firefight ? "FIREFIGHT" : game_types[c->game_type].name, maps[c->map].name);
-	text_centered(menu.large, 160, 118, TEXT_BRIGHT, "LOADING");
-	text_centered(menu.small, 160, 136, TEXT_COLOR, text);
+	panel(0, middle - (high ? 40 : 24), width, middle + (high ? 40 : 24), 0xC0000818);
+	text_centered(menu.large, width / 2, middle - (high ? 4 : 2), TEXT_BRIGHT, "LOADING");
+	text_centered(menu.small, width / 2, middle + (high ? 24 : 16), TEXT_COLOR, text);
 }
 
 /* ---------- the menu */
@@ -563,6 +961,9 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 	int screen = result_count > 0 ? SCREEN_RESULTS : (c->player_count ? SCREEN_SETUP : SCREEN_TITLE);
 	int row = ROW_GAME_TYPE, item = TITLE_MULTIPLAYER, setting = SETTING_CHUNKY;
 
+	/* the menu at 640x480 interlaced (the game's display given back at the
+	start of a game) */
+	n64_render_set_menu_display(1);
 	menu_load();
 	/* the menu itself always at full width */
 	n64_render_set_chunky(0);
@@ -601,6 +1002,12 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				{
 					screen = SCREEN_SETTINGS;
 					setting = SETTING_CHUNKY;
+					continue;
+				}
+				if (item == TITLE_CONTROLS)
+				{
+					screen = SCREEN_CONTROLS;
+					menu.control_pad = p;
 					continue;
 				}
 				c->firefight = item == TITLE_FIREFIGHT;
@@ -643,7 +1050,54 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.view_model = (menu.view_model + 2) % 3;
 				else if (setting == SETTING_VIEW_MODEL && (pad->right || pad->pressed.a))
 					menu.view_model = (menu.view_model + 1) % 3;
+				if (setting == SETTING_HUD_INSET && pad->left)
+					menu.hud_inset = (menu.hud_inset + HUD_INSET_MAXIMUM) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
+				else if (setting == SETTING_HUD_INSET && (pad->right || pad->pressed.a))
+					menu.hud_inset = (menu.hud_inset + HUD_INSET_STEP) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
+				if (setting == SETTING_COUNTER && (pad->left || pad->right || pad->pressed.a))
+					menu.fps_counter = !menu.fps_counter;
 				if (pad->pressed.b || pad->pressed.start || (setting == SETTING_BACK && pad->pressed.a))
+					screen = SCREEN_TITLE;
+			}
+		}
+		else if (screen == SCREEN_CONTROLS)
+		{
+			for (int p = 0; p < 4 && screen == SCREEN_CONTROLS; p++)
+			{
+				struct pad *pad = &pads[p];
+				struct n64_controls *controls = &n64_controls[p];
+				int *row = &menu.control_row[p];
+				int step = pad->left ? -1 : (pad->right || pad->pressed.a) ? 1 : 0;
+
+				if (pad->up || pad->down || step)
+					menu.control_pad = p;
+				if (pad->up)
+					*row = (*row + CONTROL_COUNT - 1) % CONTROL_COUNT;
+				if (pad->down)
+					*row = (*row + 1) % CONTROL_COUNT;
+				if (step && *row == CONTROL_SCHEME)
+					controls->scheme = (controls->scheme + N64_SCHEME_COUNT + step) % N64_SCHEME_COUNT;
+				else if (step && *row == CONTROL_CROUCH)
+					controls->toggle_crouch = !controls->toggle_crouch;
+				else if (step && *row == CONTROL_LOOK)
+					controls->inverted = !controls->inverted;
+				else if (step && *row == CONTROL_FIRE)
+					controls->swap_fire = !controls->swap_fire;
+				else if (step && (*row == CONTROL_STICK_SPEED || *row == CONTROL_C_SPEED))
+				{
+					/* 1-10 (kept less 5): left and right step, A goes round */
+					signed char *speed = *row == CONTROL_STICK_SPEED ? &controls->stick_speed : &controls->c_speed;
+					int level = 5 + *speed;
+
+					if (pad->left)
+						level = level > 1 ? level - 1 : 1;
+					else if (pad->right)
+						level = level < 10 ? level + 1 : 10;
+					else
+						level = level % 10 + 1;
+					*speed = (signed char)(level - 5);
+				}
+				if (pad->pressed.b || pad->pressed.start)
 					screen = SCREEN_TITLE;
 			}
 		}
@@ -730,6 +1184,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			draw_title(item);
 		else if (screen == SCREEN_SETTINGS)
 			draw_settings(setting);
+		else if (screen == SCREEN_CONTROLS)
+			draw_controls();
 		else if (start)
 			draw_loading(c);
 		else
@@ -737,11 +1193,25 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		n64_render_frame_end();
 		if (start)
 		{
+			/* the game's 320x240 display back (its buffers where they were
+			before the menu), the loading screen on it while the map loads */
+			n64_render_set_menu_display(0);
+			n64_render_frame_begin();
+			draw_scene();
+			draw_loading(c);
+			n64_render_frame_end();
 			/* the game in chunky mode or not from its first frame */
 			n64_render_set_chunky(menu.chunky);
 			n64_particles_set_enabled(!menu.no_particles);
 			n64_render_set_view_model_quality(menu.view_model);
-			n64_render_show_counter(1);
+			n64_hud_set_inset(menu.hud_inset);
+			n64_render_show_counter(menu.fps_counter);
+			/* everyone starts standing */
+			for (int p = 0; p < 4; p++)
+			{
+				n64_controls[p].crouched = 0;
+				n64_controls[p].last_buttons = 0;
+			}
 			n64_render_set_clear_color(0x60708C);
 			menu_unload();
 			n64_music_stop();

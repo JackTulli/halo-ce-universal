@@ -22,6 +22,7 @@ meters' textures in fixed slots.
 #include <malloc.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "n64.h"
@@ -73,7 +74,12 @@ static struct
 	int tmem_s0, tmem_t0, tmem_s1, tmem_t1;
 	/* statistics: quads drawn by the fast path, uploads it skipped */
 	unsigned long fast_quads, skipped_uploads;
-} hud;
+	/* the texture filter set: point sampling for the quads drawn at their
+	sprite's own size, bilinear for the rest */
+	int point;
+	/* n64_hud_inset; -1 before it is first asked for */
+	int inset;
+} hud = {.inset = -1};
 
 static struct meter_entry
 {
@@ -191,6 +197,24 @@ void n64_hud_set_view_count(int count)
 	hud.view_count = count;
 }
 
+void n64_hud_set_inset(int pixels)
+{
+	hud.inset = pixels < 0 ? 0 : pixels;
+}
+
+int n64_hud_inset(void)
+{
+	if (hud.inset < 0)
+	{
+		char text[16];
+
+		hud.inset = n64_debug_text("debug_hud_inset", text, sizeof(text)) ? atoi(text) : 0;
+		if (hud.inset < 0)
+			hud.inset = 0;
+	}
+	return hud.inset;
+}
+
 int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 {
 	n64_render_hud_phase();
@@ -263,7 +287,7 @@ static void set_mode(int mode)
 		return;
 	rdpq_sync_pipe();
 	rdpq_set_mode_standard();
-	rdpq_mode_filter(FILTER_BILINEAR);
+	rdpq_mode_filter(hud.point ? FILTER_POINT : FILTER_BILINEAR);
 	switch (mode)
 	{
 	case _mode_over:
@@ -287,6 +311,22 @@ static void set_mode(int mode)
 		break;
 	}
 	hud.mode = mode;
+}
+
+/* point sampling for a quad drawn at its sprite's own size: the HUD's pixels
+as they are (bilinear filtering at 1:1 blurred them by half a texel and mixed
+in the transparent texels around each shape: dark fringes); bilinear for a
+scaled or rotated one */
+static void set_filter(int point)
+{
+	if (hud.point == point)
+		return;
+	hud.point = point;
+	if (hud.mode != _mode_none)
+	{
+		rdpq_sync_pipe();
+		rdpq_mode_filter(point ? FILTER_POINT : FILTER_BILINEAR);
+	}
 }
 
 /* a colour Halo adds (colour * texture + framebuffer * (1 - alpha * texture
@@ -318,7 +358,13 @@ static void set_quad_color(unsigned long argb)
 it (n64.h), in RGBA16. Halo adds it to the framebuffer times the tint's
 alpha (full texels) or the background's (empty ones): a meter keeping half
 or more of the framebuffer is drawn partly over it, the rest opaque; an
-empty part keeping half or more is cut out, as is the outside of the shape */
+empty part keeping half or more is cut out, as is the outside of the shape.
+RGBA16 has one bit of alpha, and Halo's shape is the meter's opacity as well
+as its outline (the shield's ~0.4-0.7): a texel of at least half the meter's
+own strongest is drawn, at least three quarters as bright as that, the rest
+cut out (Halo's colour times the shape, opaque, drew the faint edges as dark
+rims) but coloured all the same, for the bilinear filtering of a scaled
+meter */
 static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprite, int s0, int t0, int width, int height)
 {
 	struct meter_entry *entry, *oldest = &meters[0];
@@ -326,6 +372,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 	unsigned minimum_alpha = quad->minimum_color >> 24, maximum_alpha = quad->flash_color >> 24;
 	unsigned scale = channel(quad->tint_color, 0);
 	unsigned empty_alpha = quad->background_color >> 24;
+	unsigned strongest = 0;
 	uint16_t empty;
 
 	meter_clock++;
@@ -376,19 +423,25 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 	for (int y = 0; y < height; y++)
 	{
 		const uint8_t *in = (const uint8_t *)source.buffer + (t0 + y) * source.stride + s0 * 2;
+
+		for (int x = 0; x < width; x++)
+			strongest = in[x * 2 + 1] > strongest ? in[x * 2 + 1] : strongest;
+	}
+	for (int y = 0; y < height; y++)
+	{
+		const uint8_t *in = (const uint8_t *)source.buffer + (t0 + y) * source.stride + s0 * 2;
 		uint16_t *out = (uint16_t *)((uint8_t *)entry->surface.buffer + y * entry->surface.stride);
 
 		for (int x = 0; x < width; x++)
 		{
 			unsigned order = in[x * 2], shape = in[x * 2 + 1];
+			int covered = shape && shape * 2 >= strongest;
+			unsigned k = (shape * 4 >= strongest * 3 ? shape : strongest * 3 / 4) * scale / 255;
 
-			if (!shape)
-				out[x] = 0;
-			else if (order >= maximum_alpha)
+			if (covered && order >= maximum_alpha)
 				out[x] = empty;
 			else
 			{
-				unsigned k = shape * scale / 255;
 				unsigned r = (channel(quad->minimum_color, 16) * (255 - order) + channel(quad->maximum_color, 16) * order) / 255;
 				unsigned g = (channel(quad->minimum_color, 8) * (255 - order) + channel(quad->maximum_color, 8) * order) / 255;
 				unsigned b = (channel(quad->minimum_color, 0) * (255 - order) + channel(quad->maximum_color, 0) * order) / 255;
@@ -402,7 +455,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 				r = r * k / 255;
 				g = g * k / 255;
 				b = b * k / 255;
-				out[x] = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | 1;
+				out[x] = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (covered && order < maximum_alpha);
 			}
 		}
 	}
@@ -514,6 +567,8 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 		int flip_x = quad->s[0] > quad->s[2], flip_y = quad->t[0] > quad->t[2];
 		int row_bytes = (TEX_FORMAT_PIX2BYTES(surface_get_format(&surface), width) + 7) & ~7;
 
+		set_filter(fabsf(scale_x - 1.f) < 0.02f && fabsf(scale_y - 1.f) < 0.02f);
+
 		/* a rectangle of the sprite that fits TMEM, unflipped: one upload
 		(none when the last quad's is still there) and one scaled rectangle
 		-- rdpq_tex_blit planned its strips on the CPU for every quad */
@@ -547,6 +602,7 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 	else if (!quad->meter)
 	{
 		hud.tmem_pixels = NULL;
+		set_filter(0);
 		draw_rotated(quad, &surface);
 	}
 	hud.quad_ticks += TICKS_READ() - start;
@@ -586,6 +642,7 @@ void n64_hud_blip(float x, float y, float size, unsigned long color)
 	if (!(color & 0xF0F0F0) || !hud.blip.buffer)
 		return;
 	set_mode(_mode_blip);
+	set_filter(0);
 	rdpq_set_prim_color(over_color(color & 0xFFFFFF));
 	rdpq_tex_blit(&hud.blip, x - size * 0.5f, y - size * 0.5f, &(rdpq_blitparms_t){
 		.scale_x = scale, .scale_y = scale,

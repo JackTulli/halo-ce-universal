@@ -76,6 +76,14 @@ enum
 	MAXIMUM_AIM_ASSIST_OBJECTS= 2048
 };
 
+#ifdef HALO_N64
+/* the N64's stronger aim assist (unit_get_aim_assist_parameters): the
+weapons' cones wider, their reach longer (player_control.c makes the aim
+stick harder too) */
+#define N64_AIM_ASSIST_ANGLE_SCALE 1.75f
+#define N64_AIM_ASSIST_DISTANCE_SCALE 1.25f
+#endif
+
 /* ---------- macros */
 
 /* ---------- structures */
@@ -207,6 +215,17 @@ static boolean unit_get_aim_assist_parameters(
 				parameters->magnetism_distance= weapon_definition->weapon.aim_assist_parameters.magnetism_distance*magnification;
 				parameters->deviation_angle= MAX(weapon_definition->weapon.aim_assist_parameters.deviation_angle,
 					weapon_definition->weapon.aim_assist_parameters.autoaim_angle)*inverse_magnification;
+#ifdef HALO_N64
+				/* the N64's controls are coarser than the Xbox's two sticks (one
+				stick; C buttons on or off): bullets bend toward targets, and
+				the aim sticks to them, in wider cones and further away; the
+				bullets may bend as far as the wider cone */
+				parameters->autoaim_angle*= N64_AIM_ASSIST_ANGLE_SCALE;
+				parameters->magnetism_angle*= N64_AIM_ASSIST_ANGLE_SCALE;
+				parameters->autoaim_distance*= N64_AIM_ASSIST_DISTANCE_SCALE;
+				parameters->magnetism_distance*= N64_AIM_ASSIST_DISTANCE_SCALE;
+				parameters->deviation_angle= MAX(parameters->deviation_angle, parameters->autoaim_angle);
+#endif
 
 				return TRUE;
 			}
