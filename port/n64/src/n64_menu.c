@@ -67,6 +67,10 @@ static const struct
 } game_types[] = {
 	{"slayer", "SLAYER", 0, 2, "KILLS", {5, 10, 15, 25, 50}, 2},
 	{"team_slayer", "TEAM SLAYER", 1, 2, "KILLS", {10, 25, 50, 75, 100}, 2},
+	/* (slayer with everyone starting with a pistol and an assault rifle:
+	port/n64/game/n64_game.c) */
+	{"slayer_pro", "SLAYER PRO", 0, 2, "KILLS", {5, 10, 15, 25, 50}, 2},
+	{"team_slayer_pro", "TEAM SLAYER PRO", 1, 2, "KILLS", {10, 25, 50, 75, 100}, 2},
 	{"ctf", "CAPTURE THE FLAG", 1, 0, "FLAGS", {1, 3, 5, 7, 10}, 1},
 	{"king", "KING OF THE HILL", 0, 1, "MINUTES", {1, 2, 3, 5, 10}, 1},
 	{"team_king", "TEAM KING", 1, 1, "MINUTES", {1, 2, 3, 5, 10}, 1},
@@ -641,9 +645,9 @@ static void read_pads(void)
 
 enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_BOTS, ROW_START, ROW_COUNT };
-/* bots (port/n64/game/n64_bots.c): with the players, at most this many in
-a game (each biped costs ~2.7 ms of a tick) */
-#define MAXIMUM_GAME_PLAYERS 8
+/* bots (port/n64/game/n64_bots.c): at most this many, whatever the
+players (each biped costs ~2.7 ms of a tick: many will be slow) */
+#define MAXIMUM_BOTS 8
 enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT };
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
 	CONTROL_COUNT };
@@ -869,11 +873,8 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 			snprintf(value, sizeof(value), "%s", maps[c->map].name);
 		else if (r == ROW_BOTS)
 		{
-			int bots = c->bots < MAXIMUM_GAME_PLAYERS - (c->player_count > 1 ? c->player_count : 1) ?
-				c->bots : MAXIMUM_GAME_PLAYERS - (c->player_count > 1 ? c->player_count : 1);
-
-			if (bots > 0)
-				snprintf(value, sizeof(value), "%d  %s", bots, difficulties[c->bot_skill & 3]);
+			if (c->bots > 0)
+				snprintf(value, sizeof(value), "%d  %s", c->bots, difficulties[c->bot_skill & 3]);
 			else
 				snprintf(value, sizeof(value), "NONE");
 		}
@@ -1184,8 +1185,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					else if (row == ROW_SCORE)
 						score_index = (score_index + 5 + step) % 5;
 					else if (row == ROW_BOTS)
-						c->bots = c->bots + step < 0 ? 0 : c->bots + step > MAXIMUM_GAME_PLAYERS - 1 ?
-							MAXIMUM_GAME_PLAYERS - 1 : c->bots + step;
+						c->bots = c->bots + step < 0 ? 0 : c->bots + step > MAXIMUM_BOTS ?
+							MAXIMUM_BOTS : c->bots + step;
 				}
 				if (pad->pressed.start || (pad->pressed.a && row == ROW_START && slot >= 0))
 					start = c->player_count > 0;

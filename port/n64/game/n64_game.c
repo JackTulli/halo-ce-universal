@@ -31,6 +31,7 @@ units (it sees the game's headers):
 #include "items/weapons.h"
 #include "game/game_engine.h"
 #include "text/unicode.h"
+#include "tag_files/tag_groups.h"
 
 #include "../src/n64.h"
 #include "errors.h"
@@ -61,6 +62,8 @@ int n64_firefight_results(char lines[][64], int maximum);
 
 /* what the menu chose (or the test game) */
 static struct n64_menu_choice n64_choice = { .bot_skill = 1 };
+/* a Pro variant: everyone starts with a pistol and an assault rifle */
+static int n64_pro_weapons;
 
 /* the game's variant, players and map from the choice */
 static void n64_game_start(
@@ -73,8 +76,17 @@ static void n64_game_start(
 
 	/* Firefight: team slayer, every player on the red team, no score to
 	reach; the waves are n64_firefight.c's */
-	variant = *game_engine_get_variant_by_name(&temporary_variant,
-		n64_choice.firefight ? "team_slayer" : n64_menu_game_variant(n64_choice.game_type));
+	{
+		/* (a Pro variant: its plain one, everyone starting with a pistol
+		and an assault rifle -- n64_game_pro_weapons) */
+		char variant_name[32];
+		char const *name = n64_choice.firefight ? "team_slayer" : n64_menu_game_variant(n64_choice.game_type);
+		int length = (int)strlen(name);
+
+		n64_pro_weapons = length > 4 && !strcmp(name + length - 4, "_pro");
+		snprintf(variant_name, sizeof(variant_name), "%.*s", n64_pro_weapons ? length - 4 : length, name);
+		variant = *game_engine_get_variant_by_name(&temporary_variant, variant_name);
+	}
 	if (n64_choice.firefight)
 		variant.universal_variant.score_to_win = 9999;
 	else if (n64_choice.score > 0)
@@ -88,8 +100,8 @@ static void n64_game_start(
 	else
 	{
 		n64_firefight_stop();
-		/* (the players and bots at most 8: each biped ~2.7 ms of a tick) */
-		n64_bots_begin(PIN(n64_choice.bots, 0, 8 - n64_choice.player_count), n64_choice.bot_skill,
+		/* (up to 8, whatever the players: each biped ~2.7 ms of a tick) */
+		n64_bots_begin(PIN(n64_choice.bots, 0, 8), n64_choice.bot_skill,
 			n64_menu_game_teams(n64_choice.game_type));
 	}
 	player_spawn_count = (short)n64_choice.player_count;
@@ -247,6 +259,37 @@ void n64_game_menu(
 	n64_result_count = 0;
 	n64_menu_run(&n64_choice, n64_result_lines, count);
 	n64_game_start();
+}
+
+/* game_engine_postspawn_player_update's (game_engine.c, HALO_N64): in a
+Pro variant a new unit gets a pistol (in hand) and an assault rifle instead
+of the map's starting weapons; FALSE otherwise */
+boolean n64_game_pro_weapons(
+	long unit_index)
+{
+	static char const *const names[2] = { "weapons\\pistol\\pistol", "weapons\\assault rifle\\assault rifle" };
+	boolean first = TRUE;
+	short i;
+
+	if (!n64_pro_weapons || unit_index == NONE)
+		return FALSE;
+	for (i = 0; i < 2; i++)
+	{
+		long definition_index = tag_loaded('weap', names[i]);
+		struct object_placement_data placement_data;
+		long weapon_index;
+
+		if (definition_index == NONE)
+			continue;
+		object_placement_data_new(&placement_data, definition_index, NONE);
+		weapon_index = object_new(&placement_data);
+		if (weapon_index != NONE)
+		{
+			unit_add_weapon_to_inventory(unit_index, weapon_index, first ? 2 : 0);
+			first = FALSE;
+		}
+	}
+	return TRUE;
 }
 
 /* main.c's create_local_players: the index-th player's controller port,

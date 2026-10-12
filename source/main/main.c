@@ -2284,10 +2284,20 @@ static void main_update_time_unthrottled(
 		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
 		if (main_globals.connection == _game_connection_local)
 		{
+#ifdef HALO_N64
+			/* the Xbox kept above 15 frames a second, and a slower frame
+			ran two ticks at most: the N64 below 15 (three or four views,
+			Firefight, bots) slowed the whole game down with it. A frame
+			may run up to 7 ticks now (game_time_update's own limit for a
+			local game): the game keeps to real time down to ~4 frames a
+			second */
+			seconds_elapsed = CEILING(seconds_elapsed, 0.25f);
+#else
 			if (debug_force_frame_rate_update)
 				seconds_elapsed = CEILING(seconds_elapsed, 0.03333333507180214f);
 			else
 				seconds_elapsed = CEILING(seconds_elapsed, 0.06666667014360428f);
+#endif
 		}
 	}
 
@@ -2529,10 +2539,20 @@ static void main_update_time(
 		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
 		if (main_globals.connection == _game_connection_local)
 		{
+#ifdef HALO_N64
+			/* the Xbox kept above 15 frames a second, and a slower frame
+			ran two ticks at most: the N64 below 15 (three or four views,
+			Firefight, bots) slowed the whole game down with it. A frame
+			may run up to 7 ticks now (game_time_update's own limit for a
+			local game): the game keeps to real time down to ~4 frames a
+			second */
+			seconds_elapsed = CEILING(seconds_elapsed, 0.25f);
+#else
 			if (debug_force_frame_rate_update)
 				seconds_elapsed = CEILING(seconds_elapsed, 0.03333333507180214f);
 			else
 				seconds_elapsed = CEILING(seconds_elapsed, 0.06666667014360428f);
+#endif
 		}
 	}
 

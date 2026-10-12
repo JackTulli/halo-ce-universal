@@ -141,6 +141,18 @@ game's speed (game seconds a second) and the stack's depth.
 
 ## State (October 2026)
 
+12 October: the game keeps to real time below 15 frames a second. The
+Xbox's main_update_time let a frame run two ticks at most (it never fell
+below 15), so on the N64 three or four views, Firefight and bots slowed
+the whole game down; HALO_N64 lets a frame run up to 7 (game_time_update's
+limit for a local game): real time down to ~4 frames a second, fewer frames
+where a tick is dear. With three or four views every biped's pose (the
+players' too) is made every other tick, staggered (objects.c; a living
+biped's camera is its sight position, not a node's). SLAYER PRO and TEAM
+SLAYER PRO: slayer with everyone starting with a pistol (in hand) and an
+assault rifle (n64_game.c `n64_game_pro_weapons`, called from
+game_engine_postspawn_player_update). Up to 8 bots whatever the players.
+
 12 October, an optimisation round without runs (the user tests the
 builds), from the 9 October measurements: idle objects -- an item lying at
 rest, an empty vehicle at rest, scenery that does not animate -- are

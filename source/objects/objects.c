@@ -3745,7 +3745,14 @@ static boolean n64_far_ai_biped(
 {
 	struct unit_datum *unit = (struct unit_datum *)object;
 	short local_player_index;
+	extern int n64_view_total;
 
+	/* with three or four views, every biped's pose (the players' too) every
+	other tick, staggered: a quarter-screen view hides it, and the bipeds were
+	most of a 4-player tick (a living biped's camera is its sight position,
+	not a node's) */
+	if (n64_view_total >= 3 && object->object.parent_object_index == NONE)
+		return ((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1) != 0;
 	/* (a player on a controller: always; a bot -- a player with none,
 	port/n64/game/n64_bots.c -- as an AI) */
 	if ((unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index != NONE) ||

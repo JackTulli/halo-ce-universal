@@ -329,9 +329,14 @@ void n64_render_set_view_model_quality(int quality)
 	view_model_quality = quality < 0 ? 0 : quality > 2 ? 2 : quality;
 }
 
+/* the game's views (objects.c: with three or four, every biped's pose
+every other tick) */
+int n64_view_total;
+
 void n64_render_set_view_count(int count)
 {
 	renderer.view_total = count;
+	n64_view_total = count;
 	n64_particles_set_view_count(count);
 }
 

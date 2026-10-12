@@ -7805,6 +7805,15 @@ void game_engine_postspawn_player_update(
 			fragmentation_grenade_count;
 		long starting_plasma_grenade_count = 0;
 
+#ifdef HALO_N64
+		/* (a Pro variant: a pistol and an assault rifle instead, port/n64/
+		game/n64_game.c) */
+		extern boolean n64_game_pro_weapons(long unit_index);
+
+		if (n64_game_pro_weapons(unit_index))
+			;
+		else
+#endif
 		if (!TEST_FLAG(global_variant.universal_variant.flags, 5))
 		{
 			handle_custom_starting_equipment(
