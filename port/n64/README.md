@@ -173,6 +173,21 @@ their pauses between bursts are half as long again, with 7 or 8 twice
 the Covenant think every third tick with five or more up or three or four
 players (every second), turning as fast a tick.
 
+12 October: the settings are kept (the user's ask): the SETTINGS page and
+each controller's CONTROLS in the cartridge's EEPROM (the ROM's header now
+declares a 4 kbit one: ed64romconfig --savetype eeprom4k, header byte 0x3F
+0x1E; ares keeps it in a save file). A 48-byte record (n64_menu.c
+settings_pack: "H64S", version 1, each value, a checksum) read when the menu
+first runs (settings_load; a missing or damaged one leaves the defaults,
+each value range-checked) and written when the SETTINGS or CONTROLS page is
+left and when a game starts, only if it changed (settings_save). The game
+setup (type, map, score, bots) is not kept. And CHUNKY MODE became 3D
+RESOLUTION: STANDARD, MEDIUM (new: the 3D drawn at four fifths of each
+view's width, 256 of 320, and widened by a quarter in place, point sampled)
+or CHUNKY (half, as before; n64_render_set_chunky takes the level,
+chunky_width, stretch_view widens by the ratio, particles squash by
+n64_particle_view.chunky_scale).
+
 12 October: Settings ANIMATIONS FULL RATE / HALF RATE (the user's ask).
 Half: a parentless biped's, vehicle's, scenery's or device's pose (node
 matrices, and a biped's function values) is made on its every other tick

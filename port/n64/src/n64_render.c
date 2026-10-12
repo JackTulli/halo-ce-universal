@@ -295,8 +295,9 @@ static struct
 	int fps_frames;
 	int fps;
 	int hide_counter;
-	/* chunky mode: as asked (n64_render_set_chunky), and in this frame;
-	whether the current view's half-width picture is still to be widened */
+	/* chunky mode's level (0 off, 1 medium, 2 chunky): as asked
+	(n64_render_set_chunky), and in this frame; whether the current view's
+	narrower picture is still to be widened */
 	int want_chunky, chunky;
 	int unstretched;
 	/* the current view's width over its height */
@@ -374,9 +375,17 @@ static void apply_fog(void)
 	rdpq_set_fog_color(renderer.fog_color);
 }
 
-void n64_render_set_chunky(int on)
+/* 0 the whole width, 1 medium (the 3D at four fifths of the view's width:
+256 of 320, then widened), 2 chunky (half, each pixel doubled) */
+void n64_render_set_chunky(int level)
 {
-	renderer.want_chunky = on != 0;
+	renderer.want_chunky = level < 0 ? 0 : level > 2 ? 2 : level;
+}
+
+/* the width the current level draws a view's 3D at */
+static int chunky_width(int width)
+{
+	return renderer.chunky == 2 ? width / 2 : renderer.chunky == 1 ? width * 4 / 5 : width;
 }
 
 void n64_render_show_counter(int on)
@@ -386,21 +395,28 @@ void n64_render_show_counter(int on)
 
 /* chunky mode: a view's 3D is drawn into the left half of its rectangle,
 then each of its pixels doubled across the whole rectangle, before its HUD
-(drawn at full width). The RDP widens it in place, in strips from the right:
-a strip's pixels land at or right of where they are read, over strips
-already widened */
+(drawn at full width); medium, into its left four fifths (256 of 320), then
+widened by a quarter (point sampled: a column in four shown twice). The RDP
+widens it in place, in strips from the right: a strip's pixels land at or
+right of where they are read, over strips already widened */
 static void stretch_view(void)
 {
 	const short *rect;
 	surface_t picture;
 	int x0, y0, x1, y1, half;
+	float widen;
 
 	if (!renderer.unstretched)
 		return;
 	renderer.unstretched = 0;
 	rect = renderer.rects[renderer.view_count - 1];
 	x0 = rect[0], y0 = rect[1], x1 = rect[2], y1 = rect[3];
-	half = (x1 - x0) / 2;
+	/* the width drawn, and how much wider it is shown (chunky 2, medium
+	1.25): each strip still lands at or right of where it was read */
+	half = chunky_width(x1 - x0);
+	if (half <= 0)
+		return;
+	widen = renderer.chunky == 2 ? 2.f : (float)(x1 - x0) / (float)half;
 	/* the RDP's writes of the 3D reach memory before it reads them back
 	(the pipeline drained; a full sync would also stall the RSP) */
 	rdpq_sync_pipe();
@@ -413,8 +429,8 @@ static void stretch_view(void)
 		int width = s - x0 < 32 ? s - x0 : 32;
 
 		s -= width;
-		rdpq_tex_blit(&picture, x0 + 2 * (s - x0), y0, &(rdpq_blitparms_t){
-			.s0 = s, .t0 = y0, .width = width, .height = y1 - y0, .scale_x = 2.f,
+		rdpq_tex_blit(&picture, x0 + widen * (s - x0), y0, &(rdpq_blitparms_t){
+			.s0 = s, .t0 = y0, .width = width, .height = y1 - y0, .scale_x = widen,
 		});
 	}
 	renderer.current_texture = -2;
@@ -1464,9 +1480,8 @@ void n64_render_view(const struct n64_view *view)
 			view->forward[0], view->forward[1], view->forward[2], view->up[0], view->up[1], view->up[2],
 			view->vertical_field_of_view, view->x0, view->y0, view->x1, view->y1);
 	}
-	t3d_viewport_set_area(viewport, view->x0, view->y0, renderer.chunky ? (view->x1 - view->x0) / 2 : view->x1 - view->x0,
-		view->y1 - view->y0);
-	renderer.unstretched = renderer.chunky;
+	t3d_viewport_set_area(viewport, view->x0, view->y0, chunky_width(view->x1 - view->x0), view->y1 - view->y0);
+	renderer.unstretched = renderer.chunky != 0;
 	/* the view's shape on the screen (in chunky mode drawn half as wide) */
 	renderer.aspect = (float)(view->x1 - view->x0) / (float)(view->y1 - view->y0) * display_pixel_aspect();
 	/* (the far plane stays the game's: tiny3d does not clip at it, so big
@@ -1639,6 +1654,8 @@ static void draw_particles(int first_person)
 	view.local_player = renderer.local_player;
 	view.first_person = first_person;
 	view.chunky = renderer.unstretched;
+	view.chunky_scale = renderer.unstretched ?
+		(float)chunky_width(rect[2] - rect[0]) / (float)(rect[2] - rect[0]) : 1.f;
 	n64_particles_draw(&view);
 	/* (their mode and TMEM -- the whole of it, the palettes' half too --
 	are the models' no longer) */

@@ -14,15 +14,17 @@ inverted or not, fire and grenades swapped or not, and the stick's and the
 C buttons' look speeds, on its own panel (n64_controls, xdk_input.c). Multiplayer is the game's
 setup: the players join with A on their controller (B leaves, Z changes
 team), any of them chooses the game type, the map and the score to win;
-START (or A on "START GAME") plays. Settings: particles on or off, chunky
-mode (the game drawn
-half as wide, its pixels twice as wide: n64_render_set_chunky), the display
+START (or A on "START GAME") plays. Settings: particles on or off, the 3D's
+resolution (standard; medium, the game's 3D drawn at four fifths
+of the width and widened; chunky, half as wide, its pixels twice as wide:
+n64_render_set_chunky), the display
 (240p, or 480i where the map leaves the memory: n64_render_set_480i), the
 anamorphic widescreen picture (n64_render_set_anamorphic), the view
 models' quality (n64_render_set_view_model_quality), the animation rate
 (full, or half: n64_half_animation_rate), the HUD's inset from
 the screen's edges for a television's overscan (n64_hud_set_inset), the FPS
-counter (off unless turned on). After a
+counter (off unless turned on); the settings and controls are kept in the
+cartridge's EEPROM (settings_load, settings_save). After a
 game, its results first. n64_menu_run returns the choices; the
 game side (port/n64/game/n64_game.c) makes the game.
 */
@@ -129,7 +131,8 @@ static struct
 	struct n64_font *large, *small;
 	sprite_t *logo;
 	struct shown_picture map_picture, type_picture;
-	/* the settings (particles: on unless turned off) */
+	/* the settings (particles: on unless turned off); the 3D's width: 0
+	standard, 1 medium (256 of 320), 2 chunky (half) */
 	int chunky;
 	/* the game in 480i (n64_render_set_480i), the anamorphic picture */
 	int interlaced;
@@ -699,6 +702,113 @@ enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_VIEW_MODEL
 #define HUD_INSET_STEP 4
 #define HUD_INSET_MAXIMUM 20
 
+/* ---------- the settings kept: the SETTINGS page and each controller's
+CONTROLS, in the cartridge's EEPROM (4 kbit: the ROM's header asks for it,
+tools/n64_build.py ed64romconfig --savetype eeprom4k; ares keeps it in a
+save file). Read when the menu first runs; written when the SETTINGS or
+CONTROLS page is left and when a game starts, if anything changed. A
+missing or damaged record leaves the defaults. */
+
+#define SAVED_BYTES 48 /* six of the EEPROM's 8-byte blocks */
+#define SAVED_VERSION 1
+#define SAVED_CONTROLS 16 /* where the controllers' start, 6 bytes each */
+
+static unsigned char saved[SAVED_BYTES];
+static int saved_read, saved_present;
+
+static unsigned char saved_checksum(const unsigned char *bytes)
+{
+	unsigned sum = 0x5A;
+
+	for (int i = 0; i < SAVED_BYTES - 1; i++)
+		sum = sum * 31 + bytes[i];
+	return (unsigned char)(sum ^ (sum >> 8) ^ (sum >> 16));
+}
+
+static void settings_pack(unsigned char *bytes)
+{
+	memset(bytes, 0, SAVED_BYTES);
+	memcpy(bytes, "H64S", 4);
+	bytes[4] = SAVED_VERSION;
+	bytes[5] = (unsigned char)menu.chunky;
+	bytes[6] = (unsigned char)menu.half_animation;
+	bytes[7] = (unsigned char)menu.no_particles;
+	bytes[8] = (unsigned char)menu.view_model;
+	bytes[9] = (unsigned char)menu.interlaced;
+	bytes[10] = (unsigned char)menu.widescreen;
+	bytes[11] = (unsigned char)menu.hud_inset;
+	bytes[12] = (unsigned char)menu.fps_counter;
+	for (int p = 0; p < 4; p++)
+	{
+		unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
+
+		controls[0] = n64_controls[p].scheme;
+		controls[1] = n64_controls[p].toggle_crouch;
+		controls[2] = n64_controls[p].inverted;
+		controls[3] = n64_controls[p].swap_fire;
+		controls[4] = (unsigned char)n64_controls[p].stick_speed;
+		controls[5] = (unsigned char)n64_controls[p].c_speed;
+	}
+	bytes[SAVED_BYTES - 1] = saved_checksum(bytes);
+}
+
+/* the record's settings taken, each checked (out of range: its default) */
+static int settings_unpack(const unsigned char *bytes)
+{
+	if (memcmp(bytes, "H64S", 4) || bytes[4] != SAVED_VERSION || bytes[SAVED_BYTES - 1] != saved_checksum(bytes))
+		return 0;
+	menu.chunky = bytes[5] <= 2 ? bytes[5] : 0;
+	menu.half_animation = bytes[6] != 0;
+	menu.no_particles = bytes[7] != 0;
+	menu.view_model = bytes[8] <= 2 ? bytes[8] : 0;
+	menu.interlaced = bytes[9] != 0;
+	menu.widescreen = bytes[10] != 0;
+	menu.hud_inset = bytes[11] <= HUD_INSET_MAXIMUM && !(bytes[11] % HUD_INSET_STEP) ? bytes[11] : 0;
+	menu.fps_counter = bytes[12] != 0;
+	for (int p = 0; p < 4; p++)
+	{
+		const unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
+		signed char stick = (signed char)controls[4], c_speed = (signed char)controls[5];
+
+		n64_controls[p].scheme = controls[0] < N64_SCHEME_COUNT ? controls[0] : 0;
+		n64_controls[p].toggle_crouch = controls[1] != 0;
+		n64_controls[p].inverted = controls[2] != 0;
+		n64_controls[p].swap_fire = controls[3] != 0;
+		/* (the 1-10 levels less 5) */
+		n64_controls[p].stick_speed = stick >= -4 && stick <= 5 ? stick : 0;
+		n64_controls[p].c_speed = c_speed >= -4 && c_speed <= 5 ? c_speed : 0;
+	}
+	return 1;
+}
+
+static void settings_load(void)
+{
+	if (saved_read)
+		return;
+	saved_read = 1;
+	saved_present = eeprom_present() != EEPROM_NONE;
+	if (!saved_present)
+	{
+		debugf("n64: no EEPROM, the settings are not kept\n");
+		return;
+	}
+	eeprom_read_bytes(saved, 0, SAVED_BYTES);
+	debugf("n64: settings %s\n", settings_unpack(saved) ? "read" : "not kept yet (defaults)");
+}
+
+static void settings_save(void)
+{
+	unsigned char now[SAVED_BYTES];
+
+	if (!saved_present)
+		return;
+	settings_pack(now);
+	if (!memcmp(now, saved, SAVED_BYTES))
+		return;
+	eeprom_write_bytes(now, 0, SAVED_BYTES);
+	memcpy(saved, now, SAVED_BYTES);
+}
+
 /* a choice in a list: brighter, framed and pulsing when chosen (y its
 baseline) */
 static void list_item(int center, int y, int width, int selected, const char *text)
@@ -843,7 +953,7 @@ static void draw_settings(int item)
 {
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
-		{"THE GAME'S 3D DRAWN HALF AS WIDE, EACH PIXEL", "DOUBLED ACROSS (THE HUD STAYS SHARP)"},
+		{"MEDIUM: THE 3D DRAWN 256 ACROSS, WIDENED; CHUNKY:", "HALF AS WIDE, EACH PIXEL DOUBLED (HUD SHARP)"},
 		{"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
 		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES", ""},
@@ -856,7 +966,8 @@ static void draw_settings(int item)
 	char value[32];
 
 	page("SETTINGS", NULL);
-	setting_row(112, 528, 100, item == SETTING_CHUNKY, menu.large, "CHUNKY MODE", menu.chunky ? "ON" : "OFF");
+	setting_row(112, 528, 100, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
+		menu.chunky == 2 ? "CHUNKY" : menu.chunky == 1 ? "MEDIUM" : "STANDARD");
 	setting_row(112, 528, 128, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
 		menu.half_animation ? "HALF RATE" : "FULL RATE");
 	setting_row(112, 528, 156, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
@@ -1030,6 +1141,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 	start of a game) */
 	n64_render_set_menu_display(1);
 	menu_load();
+	settings_load();
 	/* the menu itself always at full width */
 	n64_render_set_chunky(0);
 	n64_render_show_counter(0);
@@ -1042,6 +1154,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 	for (;;)
 	{
 		int start = 0;
+		int previous_screen = screen;
 
 		menu.frame += 1.f;
 		read_pads();
@@ -1107,8 +1220,11 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					setting = (setting + SETTING_COUNT - 1) % SETTING_COUNT;
 				if (pad->down)
 					setting = (setting + 1) % SETTING_COUNT;
-				if (setting == SETTING_CHUNKY && (pad->left || pad->right || pad->pressed.a))
-					menu.chunky = !menu.chunky;
+				/* (standard, medium, chunky) */
+				if (setting == SETTING_CHUNKY && pad->left)
+					menu.chunky = (menu.chunky + 2) % 3;
+				else if (setting == SETTING_CHUNKY && (pad->right || pad->pressed.a))
+					menu.chunky = (menu.chunky + 1) % 3;
 				if (setting == SETTING_DISPLAY && (pad->left || pad->right || pad->pressed.a))
 					menu.interlaced = !menu.interlaced;
 				if (setting == SETTING_ANIMATIONS && (pad->left || pad->right || pad->pressed.a))
@@ -1253,6 +1369,9 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			c->colors[i] = c->firefight ? player_colors[i & 3] :
 				n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
 
+		/* (the settings kept when their page is left) */
+		if (screen != previous_screen && (previous_screen == SCREEN_SETTINGS || previous_screen == SCREEN_CONTROLS))
+			settings_save();
 		n64_render_frame_begin();
 		n64_render_set_anamorphic(menu.widescreen);
 		draw_scene();
@@ -1287,6 +1406,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_show_counter(menu.fps_counter);
 			n64_render_set_480i(menu.interlaced);
 			n64_half_animation_rate = menu.half_animation;
+			settings_save();
 			n64_render_set_anamorphic(menu.widescreen);
 			/* everyone starts standing */
 			for (int p = 0; p < 4; p++)

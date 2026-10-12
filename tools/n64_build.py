@@ -153,7 +153,7 @@ def main():
                     "$bin/mips64-elf-strip -s $in.stripped && "
                     "$bin/n64elfcompress -o $builddir -c 1 $in.stripped && "
                     "$bin/n64tool --toc --title \"HALO N64\" --output $out.tmp --align 256 $in.stripped $in.sym $extra && "
-                    "$bin/ed64romconfig --expansionpak required --regionfree $out.tmp && mv $out.tmp $out"),
+                    "$bin/ed64romconfig --expansionpak required --savetype eeprom4k --regionfree $out.tmp && mv $out.tmp $out"),
            description="N64 ROM $out")
     n.newline()
 

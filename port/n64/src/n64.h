@@ -200,7 +200,7 @@ void n64_render_flush(void);
 /* chunky mode (the menu's settings): from the next frame on, the views'
 3D is drawn half as wide and its pixels doubled across (the HUD and text
 stay at full width) */
-void n64_render_set_chunky(int on);
+void n64_render_set_chunky(int level); /* 0 off, 1 medium (4/5 width), 2 chunky (half) */
 /* the view models' quality (the menu's settings), for the next level
 loaded: 0 low, 1 medium, 2 high -- the first-person weapons and arms at
 1.25 or 2 times the triangles (levels/<map>-fp1.mdl, -fp2) */
@@ -307,6 +307,8 @@ struct n64_particle_view
 	float z_near, z_far; /* world units, this pass's */
 	float fog_start, fog_end; /* 0: no fog */
 	int local_player, first_person, chunky;
+	/* chunky's or medium's: the drawn width over the view's (1/2, 4/5) */
+	float chunky_scale;
 };
 
 /* the map's particles: rom:/fx/<map>.fx */

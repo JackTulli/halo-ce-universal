@@ -563,8 +563,8 @@ static void draw_particles(const struct n64_particle_view *view)
 		if (view->chunky)
 		{
 			/* (the view is drawn half as wide, then widened) */
-			d->x0 = view->x0 + (d->x0 - view->x0) * 0.5f;
-			d->x1 = view->x0 + (d->x1 - view->x0) * 0.5f;
+			d->x0 = view->x0 + (d->x0 - view->x0) * view->chunky_scale;
+			d->x1 = view->x0 + (d->x1 - view->x0) * view->chunky_scale;
 		}
 		d->z = z;
 		{
@@ -763,8 +763,8 @@ static void draw_explosions(const struct n64_particle_view *view)
 			p->depth = depth >= 1.f ? 0x7FFF : depth <= 0.f ? 0 : (uint16_t)(depth * 0x7FFF);
 			if (view->chunky)
 			{
-				p->x0 = view->x0 + (p->x0 - view->x0) * 0.5f;
-				p->x1 = view->x0 + (p->x1 - view->x0) * 0.5f;
+				p->x0 = view->x0 + (p->x0 - view->x0) * view->chunky_scale;
+				p->x1 = view->x0 + (p->x1 - view->x0) * view->chunky_scale;
 			}
 			p->z = z;
 			p->flip = (uint8_t)(hash2(part, 5, e->seed) * 4.f) & 3;
