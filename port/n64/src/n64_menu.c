@@ -640,7 +640,10 @@ static void read_pads(void)
 /* ---------- the screens */
 
 enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS };
-enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_START, ROW_COUNT };
+enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_BOTS, ROW_START, ROW_COUNT };
+/* bots (port/n64/game/n64_bots.c): with the players, at most this many in
+a game (each biped costs ~2.7 ms of a tick) */
+#define MAXIMUM_GAME_PLAYERS 8
 enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT };
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
 	CONTROL_COUNT };
@@ -828,7 +831,7 @@ static void draw_settings(int item)
 
 static void draw_setup(const struct n64_menu_choice *c, int row, int score_index)
 {
-	static const char *labels[ROW_COUNT] = {"GAME TYPE", "MAP", "SCORE TO WIN", "START GAME"};
+	static const char *labels[ROW_COUNT] = {"GAME TYPE", "MAP", "SCORE TO WIN", "BOTS        A  SKILL", "START GAME"};
 	char value[48];
 	/* (Firefight: the difficulty in the game type's row, no score; the
 	players one team) */
@@ -838,21 +841,21 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 	/* the rows on the left: what it is above, its value below */
 	for (int r = 0; r < ROW_COUNT; r++)
 	{
-		int x0 = SAFE_LEFT, x1 = 336, y = 84 + r * 56;
+		int x0 = SAFE_LEFT, x1 = 336, y = 80 + r * 50;
 		int selected = r == row;
 
-		if (c->firefight && r == ROW_SCORE)
+		if (c->firefight && (r == ROW_SCORE || r == ROW_BOTS))
 			continue;
 		if (selected)
-			chosen(x0, y, x1, y + 48);
+			chosen(x0, y, x1, y + 46);
 		else
 		{
-			panel(x0, y, x1, y + 48, 0x80102040);
-			frame_line(x0, y, x1, y + 48, 0x606080A0);
+			panel(x0, y, x1, y + 46, 0x80102040);
+			frame_line(x0, y, x1, y + 46, 0x606080A0);
 		}
 		if (r == ROW_START)
 		{
-			text_centered(menu.large, (x0 + x1) / 2, y + 31,
+			text_centered(menu.large, (x0 + x1) / 2, y + 30,
 				c->player_count ? (selected ? pulsing() : TEXT_COLOR) : TEXT_DIM, labels[r]);
 			continue;
 		}
@@ -864,14 +867,24 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 			snprintf(value, sizeof(value), "%s", game_types[c->game_type].name);
 		else if (r == ROW_MAP)
 			snprintf(value, sizeof(value), "%s", maps[c->map].name);
+		else if (r == ROW_BOTS)
+		{
+			int bots = c->bots < MAXIMUM_GAME_PLAYERS - (c->player_count > 1 ? c->player_count : 1) ?
+				c->bots : MAXIMUM_GAME_PLAYERS - (c->player_count > 1 ? c->player_count : 1);
+
+			if (bots > 0)
+				snprintf(value, sizeof(value), "%d  %s", bots, difficulties[c->bot_skill & 3]);
+			else
+				snprintf(value, sizeof(value), "NONE");
+		}
 		else
 			snprintf(value, sizeof(value), "%d %s", game_types[c->game_type].scores[score_index],
 				game_types[c->game_type].unit);
-		text_centered(menu.large, (x0 + x1) / 2, y + 40, selected ? TEXT_BRIGHT : TEXT_COLOR, value);
+		text_centered(menu.large, (x0 + x1) / 2, y + 38, selected ? TEXT_BRIGHT : TEXT_COLOR, value);
 		if (selected)
 		{
-			n64_text_draw(menu.large, x0 + 14, y + 40, pulsing(), "<");
-			text_right(menu.large, x1 - 14, y + 40, pulsing(), ">");
+			n64_text_draw(menu.large, x0 + 14, y + 38, pulsing(), "<");
+			text_right(menu.large, x1 - 14, y + 38, pulsing(), ">");
 		}
 	}
 	/* the map's picture (Halo's, 256x128) and the game type's */
@@ -925,18 +938,19 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 
 static void draw_results(const char *const *lines, int count)
 {
-	panel(112, 92, 528, 388, 0xC0001028);
-	frame_line(112, 92, 528, 388, FRAME_COLOR);
+	panel(112, 92, 528, 400, 0xC0001028);
+	frame_line(112, 92, 528, 400, FRAME_COLOR);
 	text_centered(menu.large, SCREEN_W / 2, 136, TEXT_BRIGHT, "GAME OVER");
 	panel(152, 150, 488, 150 + LINE, 0x808CC0FF);
-	for (int i = 0; i < count && i < 6; i++)
+	/* (the winner, then each player and bot: up to eight) */
+	for (int i = 0; i < count && i < 9; i++)
 	{
 		if (i == 0)
 			text_centered(menu.large, SCREEN_W / 2, 186, TEXT_BRIGHT, lines[i]);
 		else
-			text_centered(menu.small, SCREEN_W / 2, 200 + i * 26, TEXT_COLOR, lines[i]);
+			text_centered(menu.small, SCREEN_W / 2, 200 + i * (count > 6 ? 20 : 26), TEXT_COLOR, lines[i]);
 	}
-	text_centered(menu.small, SCREEN_W / 2, 370, TEXT_DIM, "PRESS A");
+	text_centered(menu.small, SCREEN_W / 2, 388, TEXT_DIM, "PRESS A");
 }
 
 /* the loading screen: on the menu's screen, and once more on the game's
@@ -1143,14 +1157,17 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					}
 					if ((pad->pressed.z || pad->pressed.r) && !c->firefight)
 						c->teams[slot] ^= 1;
+					/* (A on the bots' row: their skill) */
+					if (pad->pressed.a && row == ROW_BOTS && !c->firefight)
+						c->bot_skill = (c->bot_skill + 1) & 3;
 				}
 				if (pad->up)
 					row = (row + ROW_COUNT - 1) % ROW_COUNT;
 				if (pad->down)
 					row = (row + 1) % ROW_COUNT;
-				/* (Firefight has no score row) */
-				if (c->firefight && row == ROW_SCORE)
-					row = pad->up ? ROW_MAP : ROW_START;
+				/* (Firefight has no score or bots rows) */
+				while (c->firefight && (row == ROW_SCORE || row == ROW_BOTS))
+					row = (row + (pad->up ? ROW_COUNT - 1 : 1)) % ROW_COUNT;
 				if (pad->left || pad->right)
 				{
 					int step = pad->right ? 1 : -1;
@@ -1166,6 +1183,9 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 						c->map = (c->map + MAP_COUNT + step) % MAP_COUNT;
 					else if (row == ROW_SCORE)
 						score_index = (score_index + 5 + step) % 5;
+					else if (row == ROW_BOTS)
+						c->bots = c->bots + step < 0 ? 0 : c->bots + step > MAXIMUM_GAME_PLAYERS - 1 ?
+							MAXIMUM_GAME_PLAYERS - 1 : c->bots + step;
 				}
 				if (pad->pressed.start || (pad->pressed.a && row == ROW_START && slot >= 0))
 					start = c->player_count > 0;

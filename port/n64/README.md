@@ -141,6 +141,28 @@ game's speed (game seconds a second) and the stack's depth.
 
 ## State (October 2026)
 
+12 October: bots in multiplayer (`port/n64/game/n64_bots.c`; the setup's
+BOTS row: left/right how many, A their skill; players and bots at most 8).
+A bot is a player of the game like the ones on the controllers --
+`player_new` on a machine of its own (a machine holds four), spawned by the
+game engine in the player biped, scored, respawned, on a team -- whose
+action (stick, aim, buttons) comes from here: `update_client_dequeue`
+(HALO_N64) hands each tick's actions to `n64_bots_actions`, and
+`players_update_before_game` applies them as it does a controller's, so the
+action button picks weapons up, swaps them and gets out of vehicles, and
+the rules are the players' own. The fighting is the Firefight Covenant's:
+the nearest enemy (another team's player in a team game), Halo's paths
+while out of sight, the weapon's range and strafing in sight, bursts (held
+for automatic weapons, pressed shot by shot for the rest, explosives never
+up close), aim error by skill, grenades, melee, unsticking; a better weapon
+lying near is picked up when no fight is in sight; reload and swap when
+empty. No shot without a clear line (teammates block it). Objectives (flag,
+hill, ball, race) are not played: bots fight. Team games now keep the team
+each player chose (the menu's Z): the game engine dealt teams out in turn
+(`game_engine_player_added`, HALO_N64). Flags: `debug_bots=<n>`,
+`debug_bot_skill=<0-3>`, `debug_game_type=<n>`. Built, not tested by me
+(the user tests the builds).
+
 11 October: the menu runs at 640x480 interlaced, the game at 320x240 as
 before. `n64_render_set_menu_display` (`n64_render.c`) closes libdragon's
 display and opens the other: the menu's is two 640x480 16-bit buffers shown

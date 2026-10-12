@@ -348,6 +348,10 @@ struct n64_menu_choice
 	the map, the difficulty (0 easy to 3 legendary) */
 	int firefight;
 	int difficulty;
+	/* multiplayer's bots (port/n64/game/n64_bots.c): how many, their
+	skill (0 easy to 3 legendary) */
+	int bots;
+	int bot_skill;
 };
 
 /* runs the menu until a game is chosen (after a game, its results first:

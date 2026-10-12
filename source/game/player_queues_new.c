@@ -737,6 +737,14 @@ boolean update_client_dequeue(
 			0x1E8,
 			(NONE == actions[queue_index].desired_zoom_level) || (actions[queue_index].desired_zoom_level>=0));
 	}
+#ifdef HALO_N64
+	/* the bots' actions, as a controller's would be (port/n64/game/n64_bots.c) */
+	{
+		extern void n64_bots_actions(struct player_action *actions);
+
+		n64_bots_actions(actions);
+	}
+#endif
 	update_client_globals.next_update_number_to_dequeue += 1;
 
 	return TRUE;

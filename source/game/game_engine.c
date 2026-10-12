@@ -6462,6 +6462,12 @@ void game_engine_player_added(
 
 		if (global_variant.universal_variant.teams)
 		{
+#ifdef HALO_N64
+			/* the team the N64's menu chose (main.c create_local_players),
+			or n64_bots.c its bots': not dealt out in turn */
+			player->team_index =
+				(signed char)(player->network_player_data.team_index & 1);
+#else
 			if (global_network_game_client_get())
 			{
 				player->team_index =
@@ -6475,6 +6481,7 @@ void game_engine_player_added(
 					(signed char)*next_team_index;
 				*next_team_index = (*next_team_index + 1) % 2;
 			}
+#endif
 		}
 		else
 		{

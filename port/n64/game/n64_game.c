@@ -46,6 +46,9 @@ extern short player_spawn_count;
 /* ---------- Firefight (n64_firefight.c) */
 
 void n64_firefight_begin(int difficulty, int player_count);
+void n64_bots_begin(int count, int skill, int teams);
+void n64_bots_stop(void);
+int n64_bot_number(long player_index);
 void n64_firefight_stop(void);
 int n64_firefight_active(void);
 void n64_firefight_tick(void);
@@ -57,7 +60,7 @@ int n64_firefight_results(char lines[][64], int maximum);
 #define N64_TEST_PLAYER_COUNT 2
 
 /* what the menu chose (or the test game) */
-static struct n64_menu_choice n64_choice;
+static struct n64_menu_choice n64_choice = { .bot_skill = 1 };
 
 /* the game's variant, players and map from the choice */
 static void n64_game_start(
@@ -78,9 +81,17 @@ static void n64_game_start(
 		variant.universal_variant.score_to_win = n64_choice.score;
 	game_set_game_variant(&variant);
 	if (n64_choice.firefight)
+	{
 		n64_firefight_begin(n64_choice.difficulty, n64_choice.player_count);
+		n64_bots_stop();
+	}
 	else
+	{
 		n64_firefight_stop();
+		/* (the players and bots at most 8: each biped ~2.7 ms of a tick) */
+		n64_bots_begin(PIN(n64_choice.bots, 0, 8 - n64_choice.player_count), n64_choice.bot_skill,
+			n64_menu_game_teams(n64_choice.game_type));
+	}
 	player_spawn_count = (short)n64_choice.player_count;
 	snprintf(map_name, sizeof(map_name), "levels\\test\\%s\\%s", folder, folder);
 	main_set_map_name(map_name);
@@ -101,9 +112,9 @@ static void n64_game_start(
 				n64_gamepad_ports[i++] = port;
 		}
 	}
-	snprintf(line, sizeof(line), "n64: %s on %s, %d players, score %d",
+	snprintf(line, sizeof(line), "n64: %s on %s, %d players, %d bots, score %d",
 		n64_choice.firefight ? "firefight" : n64_menu_game_variant(n64_choice.game_type),
-		map_name, n64_choice.player_count, n64_choice.score);
+		map_name, n64_choice.player_count, n64_choice.firefight ? 0 : n64_choice.bots, n64_choice.score);
 	n64_log(line);
 }
 
@@ -134,6 +145,12 @@ void n64_game_setup(
 	/* (port.json flag "debug_players=<1-4>": another count) */
 	n64_choice.player_count = n64_debug_text("debug_players", name, sizeof(name)) ? PIN(atoi(name), 1, 4) :
 		N64_TEST_PLAYER_COUNT;
+	/* (port.json flags "debug_bots=<n>", "debug_bot_skill=<0-3>") */
+	n64_choice.bots = n64_debug_text("debug_bots", name, sizeof(name)) ? PIN(atoi(name), 0, 12) : 0;
+	n64_choice.bot_skill = n64_debug_text("debug_bot_skill", name, sizeof(name)) ? PIN(atoi(name), 0, 3) : 1;
+	/* (port.json flag "debug_game_type=<n>": the menu's game type) */
+	if (n64_debug_text("debug_game_type", name, sizeof(name)))
+		n64_choice.game_type = atoi(name);
 	for (i = 0; i < 4; i++)
 	{
 		static short const colors[4] = {2, 3, 6, 5};
@@ -147,8 +164,10 @@ void n64_game_setup(
 
 /* ---------- the menu's games (main.c's main_menu_load, HALO_N64) */
 
-static char n64_result_text[6][64];
-static char const *n64_result_lines[6];
+#define N64_RESULT_LINES 9
+
+static char n64_result_text[N64_RESULT_LINES][64];
+static char const *n64_result_lines[N64_RESULT_LINES];
 static int n64_result_count;
 
 static void n64_ascii(
@@ -184,20 +203,26 @@ void n64_game_results(
 	if (!game_engine)
 		return;
 	data_iterator_new(&iterator, player_data);
-	while ((player = data_iterator_next(&iterator)) != NULL && count < 6)
+	while ((player = data_iterator_next(&iterator)) != NULL && count < N64_RESULT_LINES)
 	{
 		long player_index = iterator.datum_index;
 		int port = player->local_player_index >= 0 && player->local_player_index < 4 ?
 			n64_choice.ports[player->local_player_index] : 0;
+		int bot = n64_bot_number(player_index);
+		char who[16];
 		wchar_t score[32];
 		char score_text[32];
 
+		if (bot >= 0)
+			snprintf(who, sizeof(who), "BOT %d", bot + 1);
+		else
+			snprintf(who, sizeof(who), "PLAYER %d", port + 1);
 		csmemset(score, 0, sizeof(score));
 		if (game_engine->format_player_score)
 			game_engine->format_player_score(player_index, score);
 		n64_ascii(score_text, sizeof(score_text), score);
-		snprintf(n64_result_text[count], sizeof(n64_result_text[count]), "PLAYER %d   %s   (%d KILLS, %d DEATHS)",
-			port + 1, score_text, player->statistics.kills[0], player->statistics.deaths);
+		snprintf(n64_result_text[count], sizeof(n64_result_text[count]), "%s   %s   (%d KILLS, %d DEATHS)",
+			who, score_text, player->statistics.kills[0], player->statistics.deaths);
 		n64_result_lines[count] = n64_result_text[count];
 		count++;
 		if (game_engine_did_player_win(player_index) == TRUE && !winner[0])
@@ -205,7 +230,7 @@ void n64_game_results(
 			if (n64_menu_game_teams(n64_choice.game_type))
 				snprintf(winner, sizeof(winner), "%s TEAM WINS", player->team_index ? "BLUE" : "RED");
 			else
-				snprintf(winner, sizeof(winner), "PLAYER %d WINS", port + 1);
+				snprintf(winner, sizeof(winner), "%s WINS", who);
 		}
 	}
 	snprintf(n64_result_text[0], sizeof(n64_result_text[0]), "%s", winner[0] ? winner : "TIE GAME");

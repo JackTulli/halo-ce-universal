@@ -854,6 +854,14 @@ static void create_local_players(
 				gamepad_index,
 				player);
 		}
+#ifdef HALO_N64
+		/* the menu's bots, players with no controller (n64_bots.c) */
+		{
+			extern void n64_bots_create_players(void);
+
+			n64_bots_create_players();
+		}
+#endif
 	}
 
 	return;
