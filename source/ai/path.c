@@ -155,6 +155,23 @@ symbols in this file:
 /* ---------- headers */
 
 #include "ai/path.h"
+
+#ifdef HALO_N64
+/* the distance still to go counts this much more than the way come
+(weighted A*): the bots' and Covenant's searches reach their goal opening
+far fewer surfaces around an obstacle, for a way at most this much longer
+than the shortest before smoothing straightens it */
+#define PATH_HEURISTIC_WEIGHT 1.5f
+#else
+#define PATH_HEURISTIC_WEIGHT 1.0f
+#endif
+
+#ifdef HALO_N64
+/* a search in parts (path_state_find_continue): the surfaces it may still
+open this call (-1: no limit), and whether it stopped for that */
+static short n64_traverse_budget = -1;
+static boolean n64_traverse_paused;
+#endif
 #include "ai/ai_debug.h"
 #include "ai/ai_profile.h"
 #include "ai/path_structure_bsp.h"
@@ -350,7 +367,15 @@ void path_state_new(
 	struct path_state *state,
 	struct path_debug_storage *debug)
 {
+#ifdef HALO_N64
+	/* the header only: a node's fields are all written when it is taken
+	(path_state_begin, path_state_traverse), the heap is read below its
+	count and the hash table is cleared by path_state_reset -- clearing the
+	whole 47 KB for every search was ~2.5 ms of cache line fills */
+	csmemset(state, 0, offsetof(struct path_state, node_list));
+#else
 	csmemset(state, 0, sizeof(*state));
+#endif
 	state->structure = global_structure_bsp_get();
 	state->input = *input;
 	state->debug = debug;
@@ -680,11 +705,11 @@ short path_node_from_hash_table(
 	short node_index;
 	short slot;
 
-	slot = (short)((surface_index & 0x1FF) << 3);
+	slot = (short)((surface_index & PATH_HASH_KEY_MASK) << 3);
 	do
 	{
 		node_index = state->hash_table[slot];
-		slot = (short)((slot + 1) & 0xFFF);
+		slot = (short)((slot + 1) & PATH_HASH_TABLE_MASK);
 	}
 	while (node_index != NONE &&
 		state->node_list[node_index].surface_index != surface_index);
@@ -1087,7 +1112,7 @@ static boolean path_state_begin(
 				&destination->point);
 
 			distance_to_destination = square_root(distance_squared);
-			quantized_cost_estimate = (long)(distance_to_destination / PATH_COST_ESTIMATE_GRANULARITY);
+			quantized_cost_estimate = (long)(PATH_HEURISTIC_WEIGHT * distance_to_destination / PATH_COST_ESTIMATE_GRANULARITY);
 			if (quantized_cost_estimate >= SHORT_MAX)
 			{
 				error(
@@ -1133,10 +1158,12 @@ static boolean path_state_begin(
 			initial_node->closest_approach_to_attractor = REAL_MAX;
 			initial_node->path_distance_from_origin = 0.0f;
 			initial_node->cumulative_cost = 0.0f;
-			initial_node->total_cost_estimate = distance_to_destination;
+			initial_node->total_cost_estimate = PATH_HEURISTIC_WEIGHT * distance_to_destination;
 			initial_node->quantized_cost_estimate = (short)quantized_cost_estimate;
 			initial_node->depth = 0;
+#ifndef HALO_N64
 			initial_node->last_render_id = NONE;
+#endif
 
 			bsp = TAG_BLOCK_GET_ELEMENT(
 				&state->structure->collision_bsp,
@@ -1152,7 +1179,7 @@ static boolean path_state_begin(
 				state->closest_distance = distance_to_destination;
 				state->closest_node_index = node_index;
 				state->closest_point = state->input.start_point;
-				state->closest_cost_estimate = distance_to_destination;
+				state->closest_cost_estimate = PATH_HEURISTIC_WEIGHT * distance_to_destination;
 			}
 
 			state->hash_table[
@@ -1441,12 +1468,33 @@ static boolean path_state_traverse(
 
 	while (TRUE)
 	{
-		short cheapest_node_index = path_heap_pop_cheapest_node(state);
+		short cheapest_node_index;
 		struct path_node *cheapest_node;
 		struct collision_bsp const *bsp;
 		short edge_count;
 		short edge_index;
 
+#ifdef HALO_N64
+		/* (a search in parts: this call's share used up) */
+		if (n64_traverse_budget >= 0)
+		{
+			if (n64_traverse_budget == 0)
+			{
+				n64_traverse_paused = TRUE;
+				break;
+			}
+			n64_traverse_budget--;
+		}
+		/* the node list full and the destination none of its nodes: no node
+		can be added, so the search can't reach it -- it ends here, at the
+		closest node so far, instead of emptying the heap (~13 ms) */
+		if (state->node_count >= PATH_NODE_LIST_SIZE && state->destination_valid &&
+			path_node_from_hash_table(state, state->destination.surface_index) == NONE)
+		{
+			break;
+		}
+#endif
+		cheapest_node_index = path_heap_pop_cheapest_node(state);
 		if (cheapest_node_index == NONE)
 		{
 			if (state->debug &&
@@ -1576,7 +1624,7 @@ static boolean path_state_traverse(
 			if (state->destination_valid)
 			{
 				distance_to_destination = distance3d(&entry_point, &state->destination.point);
-				total_cost_estimate += distance_to_destination;
+				total_cost_estimate += PATH_HEURISTIC_WEIGHT * distance_to_destination;
 			}
 
 			match_assert(
@@ -1624,9 +1672,13 @@ static boolean path_state_traverse(
 
 								if (heap_location == NONE)
 								{
+#ifndef HALO_N64
+									/* (weighted, the N64's search finds these often:
+									no message formatted each time) */
 									error(
 										_error_silent,
 										"path_state_" "traverse: found a 'better' path to a closed node");
+#endif
 								}
 								else
 								{
@@ -1687,8 +1739,10 @@ static boolean path_state_traverse(
 			new_node->total_cost_estimate = total_cost_estimate;
 			new_node->quantized_cost_estimate = (short)quantized_cost_estimate;
 			new_node->depth = cheapest_node->depth + 1;
+#ifndef HALO_N64
 			new_node->last_render_id = NONE;
 			new_node->closest_distance_to_attractor = REAL_MAX;
+#endif
 
 			{
 				struct collision_bsp const *bsp = TAG_BLOCK_GET_ELEMENT(
@@ -1737,8 +1791,10 @@ static boolean path_state_traverse(
 						&state->destination.point,
 						&closest_point);
 				}
+#ifndef HALO_N64
 				new_node->closest_distance_to_attractor = closest_distance;
 				new_node->closest_point_to_attractor = closest_point;
+#endif
 
 				if (closest_distance < state->closest_distance)
 				{
@@ -1751,6 +1807,10 @@ static boolean path_state_traverse(
 		}
 	}
 
+#ifdef HALO_N64
+	if (n64_traverse_paused)
+		return FALSE;
+#endif
 	if (state->destination_valid)
 	{
 		result = state->closest_distance <= state->destination.target_radius;
@@ -1762,6 +1822,39 @@ static boolean path_state_traverse(
 
 	return result;
 }
+
+#ifdef HALO_N64
+/* A search in parts (the N64's bots and Covenant: one search was several
+milliseconds of a single tick): begun -- FALSE if the start can't be
+pathfound from, the search over -- then carried on, at most budget
+surfaces opened a call, until path_state_find_continue says it is over
+(TRUE; *found as path_state_find's answer). The state is the search's
+alone meanwhile; path_state_build_path after, as after path_state_find. */
+boolean path_state_find_begin(
+	struct path_state *state)
+{
+	path_state_reset(state);
+	return path_state_begin(state);
+}
+
+boolean path_state_find_continue(
+	struct path_state *state,
+	short budget,
+	boolean *found)
+{
+	boolean result;
+
+	n64_traverse_budget = budget;
+	n64_traverse_paused = FALSE;
+	result = path_state_traverse(state);
+	n64_traverse_budget = -1;
+	if (n64_traverse_paused)
+		return FALSE;
+	if (found)
+		*found = result;
+	return TRUE;
+}
+#endif
 
 boolean path_state_find(
 	struct path_state *state)

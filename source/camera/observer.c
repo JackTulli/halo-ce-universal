@@ -1104,8 +1104,16 @@ static void observer_check_penetration(
 		real last_miss_t = first_t;
 		real last_hit_t = best_t;
 		short iteration;
+#ifdef HALO_N64
+		/* (a ray each: 4 halvings place the camera within 1/16 of the
+		probe's offset, ~1% of its distance -- 10 were ~15 rays a frame for
+		each player in a vehicle or dead, the camera near the ground) */
+		short const iterations = 4;
+#else
+		short const iterations = 10;
+#endif
 
-		for (iteration = 0; iteration < 10; iteration++)
+		for (iteration = 0; iteration < iterations; iteration++)
 		{
 			real middle = (upper + lower)*0.5f;
 			real collision_t;

@@ -65,6 +65,8 @@ static struct
 		unsigned short generation;
 		/* as last set */
 		float volume, pan, pitch;
+		/* the bank's file its wav is, and looped or not (n64_voice_play) */
+		int file, loop;
 	} voices[VOICE_COUNT];
 	/* how many voices were started, stolen (statistics); the CPU's time
 feeding the mixer, starting voices (counter ticks) */
@@ -294,22 +296,59 @@ long n64_voice_play(int file, float volume, float pan, float pitch, int priority
 	}
 	slot = channel - FIRST_VOICE;
 	unsigned long start = TICKS_READ();
-	if (sound.voices[slot].wav)
+	loop = loop != 0;
+	if (sound.voices[slot].wav && mixer_ch_playing(channel))
+		sound.stolen++;
+	mixer_ch_stop(channel);
+	/* The same sound again (a gun's every shot, footsteps, impacts): its
+	file still loaded in this voice or another that has stopped is taken
+	as it is -- the other voice gets this one's in exchange, its old
+	handles made stale -- instead of closed and loaded again from the
+	cartridge (two DMAs, an allocation and the codec's setup a sound) */
 	{
-		if (mixer_ch_playing(channel))
-			sound.stolen++;
-		mixer_ch_stop(channel);
-		wav64_close(sound.voices[slot].wav);
-		sound.voices[slot].wav = NULL;
+		int reuse = -1;
+
+		for (int i = 0; i < VOICE_COUNT; i++)
+		{
+			if (sound.voices[i].wav && sound.voices[i].file == file && sound.voices[i].loop == loop &&
+				(i == slot || !mixer_ch_playing(FIRST_VOICE + i)))
+			{
+				reuse = i;
+				if (i == slot)
+					break;
+			}
+		}
+		if (reuse >= 0 && reuse != slot)
+		{
+			wav64_t *wav = sound.voices[slot].wav;
+			int old_file = sound.voices[slot].file, old_loop = sound.voices[slot].loop;
+
+			mixer_ch_stop(FIRST_VOICE + reuse);
+			sound.voices[slot].wav = sound.voices[reuse].wav;
+			sound.voices[reuse].wav = wav;
+			sound.voices[reuse].file = old_file;
+			sound.voices[reuse].loop = old_loop;
+			sound.voices[reuse].generation++;
+		}
+		if (reuse < 0 && sound.voices[slot].wav)
+		{
+			wav64_close(sound.voices[slot].wav);
+			sound.voices[slot].wav = NULL;
+		}
 	}
 	unsigned long opened = TICKS_READ();
 	sound.close_ticks += opened - start;
-	lseek(sound.bank, (off_t)sound.offsets[file], SEEK_SET);
-	sound.voices[slot].wav = wav64_loadfd(sound.bank, "sfx",
-		&(wav64_loadparms_t){ .streaming_mode = WAV64_STREAMING_FULL });
 	if (!sound.voices[slot].wav)
-		return -1;
-	wav64_set_loop(sound.voices[slot].wav, loop != 0);
+	{
+		lseek(sound.bank, (off_t)sound.offsets[file], SEEK_SET);
+		sound.voices[slot].wav = wav64_loadfd(sound.bank, "sfx",
+			&(wav64_loadparms_t){ .streaming_mode = WAV64_STREAMING_FULL });
+		if (!sound.voices[slot].wav)
+			return -1;
+		sound.voices[slot].file = file;
+		sound.voices[slot].loop = loop;
+		wav64_set_loop(sound.voices[slot].wav, loop);
+	}
 	wav64_play(sound.voices[slot].wav, channel);
 	mixer_ch_set_priority(channel, priority);
 	voice_pitch(slot, pitch);

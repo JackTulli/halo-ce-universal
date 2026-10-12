@@ -488,6 +488,32 @@ void path_smooth(
 			collision_edge_index = NONE;
 			collision_active = FALSE;
 
+#ifdef HALO_N64
+			/* what the scan below ends with is the first step of the blocked
+			run reaching the last step (and its edge), or none if the last is
+			clear: found from the end, stopping at the first clear step --
+			the same answer for one test where the path is clear, not one for
+			every step left (a pill test walks the surfaces between) */
+			for (i = raw_step_count - 1; i >= step_index; i--)
+			{
+				if (!structure_test_pill2d(
+					state->structure,
+					state->input.ignore_broken_surfaces,
+					&current_position,
+					current_surface_index,
+					(real_point2d const *)&raw_steps[i].point,
+					raw_steps[i].surface_index,
+					0.3f,
+					FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+					&collision_result))
+				{
+					break;
+				}
+				collision_edge_index = collision_result.edge_index;
+				collision_step_index = i;
+				collision_active = TRUE;
+			}
+#else
 			for (i = step_index; i < raw_step_count; i++)
 			{
 				if (structure_test_pill2d(
@@ -515,6 +541,7 @@ void path_smooth(
 					collision_active = FALSE;
 				}
 			}
+#endif
 
 			if (!collision_active || collision_edge_index == NONE)
 				break;

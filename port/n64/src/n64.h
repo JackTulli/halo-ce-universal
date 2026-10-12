@@ -425,6 +425,10 @@ void n64_hud_end(void);
 void n64_hud_set_view_count(int count);
 /* the views' HUD recordings dropped (the display changed size) */
 void n64_hud_forget_recordings(void);
+/* room on the heap for count blocks of size bytes at once, models dropped
+from the cache for it; 0 if it can't be made (n64_render.c; not while
+recording a block) */
+int n64_render_make_room(unsigned long size, int count);
 /* the HUD's inset from each view's edges in pixels, for a television's
 overscan (Settings: HUD INSET; port.json flag "debug_hud_inset=<pixels>") */
 void n64_hud_set_inset(int pixels);

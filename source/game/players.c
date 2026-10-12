@@ -3883,6 +3883,16 @@ void players_update_after_game(
 			}
 		}
 
+#ifdef HALO_N64
+		{
+			/* a bot's (port/n64/game/n64_bots.c) only before a tick it
+			thinks: an object search around it each tick, for 8 bots */
+			extern boolean n64_bots_examine_turn(long player_index);
+
+			if (!n64_bots_examine_turn(iterator.datum_index))
+				continue;
+		}
+#endif
 		player_reset_action_result(iterator.datum_index);
 		player_examine_nearby_objects(iterator.datum_index);
 	}

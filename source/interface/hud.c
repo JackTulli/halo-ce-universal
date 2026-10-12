@@ -320,6 +320,12 @@ void hud_update(
 	hud_update_unit();
 	hud_update_nav_points();
 	hud_messaging_globals_update();
+#ifdef HALO_N64
+	/* the motion sensor's history and scan, once a tick (hud_draw_screen
+	asks too, but only at the HUD's recordings: motion_sensor_tick) */
+	if (!game_time_get_paused() && local_player_count() > 0)
+		motion_sensor_tick();
+#endif
 	if (game_engine_force_single_screen())
 	{
 		for (local_player_index = 0;

@@ -2349,7 +2349,19 @@ static void trigger_create_projectiles(
 						real_point3d camera_position;
 
 						unit_get_camera_position(owner_object_index, &camera_position);
+#ifdef HALO_N64
+						{
+							/* (objects.c: the shooter left out, a shot's
+							pellets one test) */
+							extern void n64_force_projectile_inside_bsp(long object_index,
+								real_point3d const *known_good_point, long shooter_index, boolean first_of_shot);
+
+							n64_force_projectile_inside_bsp(projectile_object_index, &camera_position,
+								owner_object_index, projectile_index == 0);
+						}
+#else
 						object_force_inside_bsp(projectile_object_index, &camera_position);
+#endif
 					}
 					if (target_object_index!=NONE)
 					{

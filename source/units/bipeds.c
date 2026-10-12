@@ -1928,6 +1928,30 @@ static void biped_update_dead(
 		biped->biped.limp_body_current_relaxation_iterations <
 			biped->biped.limp_body_max_relaxation_iterations)
 	{
+#ifdef HALO_N64
+		/* a body settling onto the ground is ~72 rays a tick for 20 ticks,
+		and kills come several at once with bots: a body no view drew
+		lately stays as it fell, its settling done; in view, one body
+		settles a tick, the others wait their turn */
+		{
+			extern boolean n64_object_recently_seen(long object_index);
+			static long settled_time = NONE;
+
+			if (!n64_object_recently_seen(biped_index))
+			{
+				biped->biped.limp_body_current_relaxation_iterations =
+					biped->biped.limp_body_max_relaxation_iterations;
+				animation->crouching = FALSE;
+				return;
+			}
+			if (settled_time == game_time_get())
+			{
+				animation->crouching = FALSE;
+				return;
+			}
+			settled_time = game_time_get();
+		}
+#endif
 		if (!debug_biped_limp_body_disable)
 			biped_limp_noodle_relax_nodes_onto_environment(biped_index);
 		biped_verify_object_vectors(biped_index, "post-limp-noodle");

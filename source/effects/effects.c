@@ -757,6 +757,104 @@ void effect_delete(
 	return;
 }
 
+#ifdef HALO_N64
+/* Effects no one could see or hear -- a bot's shots and their impacts
+across the map, 8-20 thousand cycles each to make: an effect made of
+nothing but sounds, particles, decals and lights (no objects, no damage)
+is not made where it starts farther from every local player's camera than
+its sounds carry and the views show anything (the fog's end), with a
+margin for what flies off it. What it would have shown and played was each
+player's alone: the game plays the same. */
+#define N64_EFFECT_REACHES 256
+#define N64_EFFECT_MARGIN 6.f
+
+static struct
+{
+	long definition_index;
+	long map_generation; /* (game.c's: the definitions are a map's) */
+	real reach; /* < 0: it does more than show and sound */
+} n64_effect_reaches[N64_EFFECT_REACHES];
+
+static real n64_effect_reach(
+	long definition_index)
+{
+	extern long n64_map_generation;
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(definition_index) & (N64_EFFECT_REACHES - 1));
+	struct effect_definition *definition;
+	real reach = 0.f;
+	short event_index, part_index;
+
+	if (n64_effect_reaches[slot].definition_index == definition_index &&
+		n64_effect_reaches[slot].map_generation == n64_map_generation + 1)
+	{
+		return n64_effect_reaches[slot].reach;
+	}
+	definition = effect_definition_get(definition_index);
+	for (event_index = 0; event_index < definition->events.count && reach >= 0.f; event_index++)
+	{
+		struct effect_event_definition *event = TAG_BLOCK_GET_ELEMENT(
+			&definition->events, event_index, struct effect_event_definition);
+
+		for (part_index = 0; part_index < event->parts.count && reach >= 0.f; part_index++)
+		{
+			struct effect_part_definition *part = TAG_BLOCK_GET_ELEMENT(
+				&event->parts, part_index, struct effect_part_definition);
+
+			if (part->reference.index == NONE)
+				continue;
+			switch (part->runtime_base_class_tag)
+			{
+			case SOUND_DEFINITION_TAG:
+				reach = MAX(reach, sound_definition_get_maximum_distance(part->reference.index));
+				break;
+			case PARTICLE_SYSTEM_DEFINITION_TAG:
+			case DECAL_GROUP_TAG:
+			case LIGHT_DEFINITION_TAG:
+				break;
+			default:
+				reach = -1.f;
+				break;
+			}
+		}
+	}
+	n64_effect_reaches[slot].definition_index = definition_index;
+	n64_effect_reaches[slot].map_generation = n64_map_generation + 1;
+	n64_effect_reaches[slot].reach = reach;
+	return reach;
+}
+
+static boolean n64_effect_out_of_reach(
+	long definition_index,
+	real_point3d const *point)
+{
+	extern float n64_render_visible_range(void);
+	real reach, range;
+	short local_player_index;
+
+	/* (no effect -- a surface a shot hit that has none: NONE -- or a tag
+	that isn't one, for effect_allocate to refuse as it always has) */
+	if (definition_index == NONE || game_in_editor() ||
+		tag_get_group_tag(definition_index) != EFFECT_DEFINITION_TAG)
+	{
+		return FALSE;
+	}
+	reach = n64_effect_reach(definition_index);
+	if (reach < 0.f || local_player_count() <= 0)
+		return FALSE;
+	range = MAX(reach, n64_render_visible_range()) + N64_EFFECT_MARGIN;
+	for (local_player_index = local_player_get_next(NONE); local_player_index != NONE;
+		local_player_index = local_player_get_next(local_player_index))
+	{
+		real_point3d const *eye = &observer_get_camera(local_player_index)->position;
+		real dx = eye->x - point->x, dy = eye->y - point->y, dz = eye->z - point->z;
+
+		if (dx * dx + dy * dy + dz * dz <= range * range)
+			return FALSE;
+	}
+	return TRUE;
+}
+#endif
+
 long effect_new_attached_from_markers(
 	long definition_index,
 	long owner_object_index,
@@ -800,6 +898,10 @@ long effect_new_attached_from_markers(
 		scale_b>=0.f && scale_b<=1.f,
 		csprintf(temporary, "scale_b %f not in [0,1]", scale_b));
 
+#ifdef HALO_N64
+	if (n64_effect_out_of_reach(definition_index, &object_get(object_index)->object.bounding_sphere_center))
+		return NONE;
+#endif
 	effect_index = effect_allocate(definition_index, owner_object_index, TRUE);
 	if (effect_index != NONE)
 	{
@@ -895,6 +997,10 @@ long effect_new_unattached_from_markers(
 		scale_b>=0.f && scale_b<=1.f,
 		csprintf(temporary, "scale_b %f not in [0,1]", scale_b));
 
+#ifdef HALO_N64
+	if (n64_effect_out_of_reach(definition_index, marker_points))
+		return NONE;
+#endif
 	effect_index = effect_allocate(
 		definition_index,
 		owner_object_index,
@@ -961,6 +1067,13 @@ long effect_new_from_object(
 		scale_b>=0.f && scale_b<=1.f,
 		csprintf(temporary, "scale_b %f not in [0,1]", scale_b));
 
+#ifdef HALO_N64
+	if (force_local_player_index == NONE &&
+		n64_effect_out_of_reach(definition_index, &object_get(object_index)->object.bounding_sphere_center))
+	{
+		return NONE;
+	}
+#endif
 	effect_index = effect_allocate(definition_index, owner_object_index, TRUE);
 	if (effect_index != NONE)
 	{

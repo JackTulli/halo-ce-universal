@@ -538,12 +538,25 @@ boolean aim_assist(
 	short ignore_team_index,
 	struct aim_assist_target *target)
 {
+#ifdef HALO_N64
+	/* (the leaf looked up once: it walks the BSP, each frame for each
+	player) */
+	long leaf_index= scenario_leaf_index_from_point(position);
+
+	if (leaf_index!=NONE)
+	{
+		short cluster_index= TAG_BLOCK_GET_ELEMENT(
+			&global_structure_bsp_get()->leaves,
+			leaf_index & LONG_MAX,
+			struct structure_leaf)->cluster_index;
+#else
 	if (scenario_leaf_index_from_point(position)!=NONE)
 	{
 		short cluster_index= TAG_BLOCK_GET_ELEMENT(
 			&global_structure_bsp_get()->leaves,
 			scenario_leaf_index_from_point(position) & LONG_MAX,
 			struct structure_leaf)->cluster_index;
+#endif
 
 		if (cluster_index!=NONE)
 		{
@@ -554,10 +567,26 @@ boolean aim_assist(
 			if (target_count>0)
 			{
 				short target_index;
+#ifdef HALO_N64
+				struct structure_bsp *bsp= global_structure_bsp_get();
+				boolean pvs_valid= bsp->cluster_data.size>0 && cluster_index>=0 && cluster_index<bsp->clusters.count;
+#endif
 
 				qsort(targets, target_count, sizeof(struct aim_assist_target), compare_targets);
 				for (target_index= 0; target_index<target_count; ++target_index)
 				{
+#ifdef HALO_N64
+					/* (a target in a cluster the eye's can't see -- the PVS
+					only over-reports -- needs no ray) */
+					short target_cluster= object_get(object_get_ultimate_parent(
+						targets[target_index].object_index))->object.location.cluster_index;
+
+					if (pvs_valid && target_cluster>=0 && target_cluster<bsp->clusters.count &&
+						!scenario_test_pvs(cluster_index, target_cluster))
+					{
+						continue;
+					}
+#endif
 					if (aim_assist_clear_line_of_sight(position, &targets[target_index].position,
 						ignore_object_index, targets[target_index].object_index))
 					{

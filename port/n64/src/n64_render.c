@@ -145,7 +145,19 @@ static struct
 	/* each material's render mode and texture, recorded once without fog
 	and once with (set_material) */
 	rspq_block_t **material_blocks[2];
+	/* a big cluster's batches in groups near one another, each tested
+	before its batches (build_level_groups); by cluster, its first group
+	and their count (0: its batches tested one by one) */
+	struct level_group *groups;
+	uint16_t *group_batches;
+	uint16_t *cluster_first_group, *cluster_group_count;
 } level;
+
+struct level_group
+{
+	float minimum[3], maximum[3];
+	uint16_t first, count; /* in level.group_batches */
+};
 
 /* ---------- the models file (tools/n64/models.py) */
 
@@ -229,7 +241,13 @@ static struct
 	struct model_record **by_tag;
 	int tag_count;
 	unsigned long reads, texture_reads;
+	/* by batch: the batches alike from it on (RUN_LENGTH) and whether a run
+	starts there (RUN_HEAD) -- see mark_batch_runs */
+	uint8_t *runs;
 } models;
+
+#define RUN_HEAD 0x80
+#define RUN_LENGTH 0x7F
 
 #define SEGMENT_NODE_MATRICES T3D_SEGMENT_1
 
@@ -509,6 +527,14 @@ void n64_render_set_menu_display(int on)
 		heap.free / 1024);
 }
 
+/* how far the game's views show anything: the fog's end where there is
+fog, else the far plane (n64_render_game.c's 200) -- effects.c leaves out
+what no view could show */
+float n64_render_visible_range(void)
+{
+	return renderer.fog ? renderer.fog_end : 200.f;
+}
+
 int n64_render_screen_width(void)
 {
 	return screen_width;
@@ -769,6 +795,67 @@ static void drop_all_models(void)
 		drop_model(i);
 }
 
+/* whether count blocks of size bytes can be had at once */
+static int heap_has_room(unsigned long size, int count)
+{
+	void *blocks[8];
+	int have = 0, room;
+
+	count = count < 8 ? count : 8;
+	while (have < count && (blocks[have] = malloc(size)) != NULL)
+		have++;
+	room = have == count;
+	while (have > 0)
+		free(blocks[--have]);
+	return room;
+}
+
+/* the most of the model cache n64_render_make_room drops in one call */
+#define MAKE_ROOM_LIMIT (160 * 1024)
+
+/* room on the heap for something the HUD is about to allocate (its
+recording), count blocks of size bytes to be had at once. The model cache
+fills the heap down to its margin, and what comes after it (the HUD's
+recordings and uploads, its sprites, the bots' paths) could use that up: the
+HUD ran out of memory recording (__rdpq_block_next_buffer). Short of room,
+the models drawn longest ago are dropped (none drawn in the frames still in
+flight: their memory comes back once the RSP is done with them), up to
+MAKE_ROOM_LIMIT of them a call; 0 if that isn't enough. Not while recording
+a block (rspq_wait) */
+int n64_render_make_room(unsigned long size, int count)
+{
+	unsigned long dropped = 0;
+
+	while (!heap_has_room(size, count))
+	{
+		unsigned long round = 0;
+
+		if (!models.header || !models.loaded)
+			return 0;
+		/* (a round's models, then one wait for the RSP) */
+		while (round < size && dropped + round < MAKE_ROOM_LIMIT)
+		{
+			int oldest = -1;
+
+			for (int i = 0; i < models.header->model_count; i++)
+			{
+				if (models.loaded[i].data && models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index &&
+					(oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn))
+					oldest = i;
+			}
+			if (oldest < 0)
+				break;
+			round += models.models[oldest].vertex_bytes + models.models[oldest].index_bytes;
+			drop_model(oldest);
+		}
+		if (!round)
+			return 0;
+		dropped += round;
+		rspq_wait();
+	}
+	return 1;
+}
+
 /* the render modes of model batches, recorded once each: textured (the
 doubling is in the texture), shaded by the baked sky light, one RDP cycle;
 glows unlit and cut out; untextured; textured and cut out where the
@@ -925,26 +1012,102 @@ static int load_model(int index)
 	for (int b = 0; b < model->far_first + model->far_count; b++)
 	{
 		struct model_batch *batch = &models.batches[model->first_batch + b];
-		uint8_t *index = loaded->data + model->vertex_bytes + batch->index_offset;
 		sprite_t *sprite = acquire_texture(batch->texture);
+		int run = models.runs[model->first_batch + b];
 
+		/* (a run's batches all in its first's block: the rest have none,
+		mark_batch_runs) */
+		if (!(run & RUN_HEAD))
+			continue;
 		record_model_modes();
 		loaded->setups[b] = record_setup(debug_untextured ? NULL : sprite, batch->flags);
 		rspq_block_begin();
-		for (int g = 0; g < batch->segment_count; g++)
+		for (int k = 0; k < (run & RUN_LENGTH) && b + k < model->far_first + model->far_count; k++)
 		{
-			struct model_segment *segment = &models.segments[batch->first_segment + g];
+			struct model_batch *part = batch + k;
+			uint8_t *index = loaded->data + model->vertex_bytes + part->index_offset;
 
-			t3d_matrix_push(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))));
-			t3d_vert_load((T3DVertPacked *)loaded->data + segment->vertex_pair_offset, segment->slot, segment->count);
-			t3d_matrix_pop(1);
+			for (int g = 0; g < part->segment_count; g++)
+			{
+				struct model_segment *segment = &models.segments[part->first_segment + g];
+
+				t3d_matrix_push(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))));
+				t3d_vert_load((T3DVertPacked *)loaded->data + segment->vertex_pair_offset, segment->slot, segment->count);
+				t3d_matrix_pop(1);
+			}
+			for (int t = 0; t < part->triangle_count; t++, index += 3)
+				t3d_tri_draw(index[0], index[1], index[2]);
+			t3d_tri_sync();
 		}
-		for (int t = 0; t < batch->triangle_count; t++, index += 3)
-			t3d_tri_draw(index[0], index[1], index[2]);
-		t3d_tri_sync();
 		loaded->blocks[b] = rspq_block_end();
 	}
 	return 1;
+}
+
+/* The converter splits a part of a model into several batches where it
+outgrows the vertex cache (tools/n64/models.py): the same texture and
+flags one after another. Each was queued, sorted, set up and called on
+its own; a run of them is recorded as one block (the same commands one
+after the other) and drawn as one. Runs end where a geometry (a region's
+permutation) or a model's far version starts or ends, so that a range of
+batches is always whole runs: from a range's first batch, each run's
+length leads to the next run's first. */
+static void mark_batch_runs(void)
+{
+	int count = models.header->batch_count;
+	uint8_t *edge = calloc(count + 1, 1);
+
+	free(models.runs);
+	models.runs = malloc(count ? count : 1);
+	if (!edge || !models.runs)
+	{
+		/* (no runs: each batch its own) */
+		for (int b = 0; models.runs && b < count; b++)
+			models.runs[b] = RUN_HEAD | 1;
+		free(edge);
+		return;
+	}
+	for (int g = 0; g < models.header->geometry_count; g++)
+	{
+		struct geometry_record *geometry = &models.geometries[g];
+
+		if (geometry->first_batch < count)
+			edge[geometry->first_batch] = 1;
+		if (geometry->first_batch + geometry->batch_count <= count)
+			edge[geometry->first_batch + geometry->batch_count] = 1;
+	}
+	for (int m = 0; m < models.header->model_count; m++)
+	{
+		struct model_record *model = &models.models[m];
+		int marks[3] = {model->first_batch, model->first_batch + model->far_first,
+			model->first_batch + model->far_first + model->far_count};
+
+		for (int i = 0; i < 3; i++)
+		{
+			if (marks[i] <= count)
+				edge[marks[i]] = 1;
+		}
+	}
+	/* the length from each batch to its run's end, from the last back */
+	for (int b = count - 1; b >= 0; b--)
+	{
+		struct model_batch *batch = &models.batches[b], *next = batch + 1;
+		int length = 1;
+
+		if (b + 1 < count && !edge[b + 1] && next->texture == batch->texture && next->flags == batch->flags &&
+			(models.runs[b + 1] & RUN_LENGTH) < RUN_LENGTH)
+		{
+			length = (models.runs[b + 1] & RUN_LENGTH) + 1;
+		}
+		models.runs[b] = (uint8_t)length;
+	}
+	/* a run's first: a range's first, or where the length didn't go on */
+	for (int b = 0; b < count; b++)
+	{
+		if (b == 0 || edge[b] || (models.runs[b - 1] & RUN_LENGTH) != (models.runs[b] & RUN_LENGTH) + 1)
+			models.runs[b] |= RUN_HEAD;
+	}
+	free(edge);
 }
 
 static void load_models(const char *map_name)
@@ -963,6 +1126,7 @@ static void load_models(const char *map_name)
 		free(models.texture_size);
 		free(models.loaded);
 		free(models.by_tag);
+		free(models.runs);
 		free(models.data);
 		memset(&models, 0, sizeof(models));
 	}
@@ -1008,6 +1172,7 @@ static void load_models(const char *map_name)
 	models.by_tag = calloc(models.tag_count, sizeof(struct model_record *));
 	for (int i = 0; i < models.header->model_count; i++)
 		models.by_tag[models.models[i].tag_index] = &models.models[i];
+	mark_batch_runs();
 	debugf("n64: %d models, %ld KB of tables\n", models.header->model_count, (long)header.vertices_offset / 1024);
 }
 
@@ -1028,6 +1193,10 @@ void n64_render_unload_level(void)
 		free(level.visible);
 		free(level.sorted);
 		free(level.material_starts);
+		free(level.groups);
+		free(level.group_batches);
+		free(level.cluster_first_group);
+		free(level.cluster_group_count);
 		for (int i = 0; i < level.header->texture_count; i++)
 		{
 			if (level.sprites[i])
@@ -1037,6 +1206,112 @@ void n64_render_unload_level(void)
 		free(level.data);
 		memset(&level, 0, sizeof(level));
 	}
+}
+
+/* Level clusters are the BSP's: a map of one cluster (Hang 'em High,
+Longest, Prisoner: 140-470 batches) or a few big ones had each batch
+tested against each view's frustum and fog, every frame. A cluster of more
+than GROUPED_CLUSTER batches is split here, by halves along its longest
+side, into groups of at most GROUP_BATCHES lying near one another, each
+with its bounds: draw_level tests a group first, then its batches only if
+it is partly in view. A box out of view or past the fog holds nothing in
+view; one wholly inside holds batches wholly inside: the batches drawn are
+the same (and their order comes from the material sort after). */
+#define GROUPED_CLUSTER 32
+#define GROUP_BATCHES 16
+
+static int group_axis;
+
+static int compare_batch_centers(const void *a, const void *b)
+{
+	const struct level_batch *x = &level.batches[*(const uint16_t *)a], *y = &level.batches[*(const uint16_t *)b];
+
+	return (x->minimum[group_axis] + x->maximum[group_axis]) - (y->minimum[group_axis] + y->maximum[group_axis]);
+}
+
+static void split_level_group(uint16_t *list, int count, int *group_count, int maximum_groups)
+{
+	int low[3] = {INT16_MAX, INT16_MAX, INT16_MAX}, high[3] = {INT16_MIN, INT16_MIN, INT16_MIN};
+
+	for (int i = 0; i < count; i++)
+	{
+		const struct level_batch *batch = &level.batches[list[i]];
+
+		for (int k = 0; k < 3; k++)
+		{
+			int center = batch->minimum[k] + batch->maximum[k];
+
+			low[k] = center < low[k] ? center : low[k];
+			high[k] = center > high[k] ? center : high[k];
+		}
+	}
+	if (count > GROUP_BATCHES && *group_count + 2 <= maximum_groups)
+	{
+		int spread[3] = {high[0] - low[0], high[1] - low[1], high[2] - low[2]};
+
+		group_axis = spread[0] >= spread[1] && spread[0] >= spread[2] ? 0 : spread[1] >= spread[2] ? 1 : 2;
+		qsort(list, count, sizeof(list[0]), compare_batch_centers);
+		split_level_group(list, count / 2, group_count, maximum_groups);
+		split_level_group(list + count / 2, count - count / 2, group_count, maximum_groups);
+		return;
+	}
+	{
+		struct level_group *group = &level.groups[(*group_count)++];
+
+		group->first = (uint16_t)(list - level.group_batches);
+		group->count = (uint16_t)count;
+		for (int k = 0; k < 3; k++)
+		{
+			group->minimum[k] = 1e9f;
+			group->maximum[k] = -1e9f;
+		}
+		for (int i = 0; i < count; i++)
+		{
+			const struct level_batch *batch = &level.batches[list[i]];
+
+			for (int k = 0; k < 3; k++)
+			{
+				group->minimum[k] = n64_min_f(group->minimum[k], batch->minimum[k] * (1.f / WORLD_SCALE));
+				group->maximum[k] = n64_max_f(group->maximum[k], batch->maximum[k] * (1.f / WORLD_SCALE));
+			}
+		}
+	}
+}
+
+static void build_level_groups(void)
+{
+	int batch_count = level.header->batch_count, cluster_count = level.header->cluster_count;
+	int maximum_groups = batch_count / 4 + cluster_count + 1, group_count = 0;
+
+	level.groups = malloc(maximum_groups * sizeof(struct level_group));
+	level.group_batches = malloc((batch_count ? batch_count : 1) * sizeof(uint16_t));
+	level.cluster_first_group = calloc(cluster_count ? cluster_count : 1, sizeof(uint16_t));
+	level.cluster_group_count = calloc(cluster_count ? cluster_count : 1, sizeof(uint16_t));
+	if (!level.groups || !level.group_batches || !level.cluster_first_group || !level.cluster_group_count)
+	{
+		/* (no groups: every batch tested, as before) */
+		free(level.groups);
+		free(level.group_batches);
+		free(level.cluster_first_group);
+		free(level.cluster_group_count);
+		level.groups = NULL;
+		level.group_batches = level.cluster_first_group = level.cluster_group_count = NULL;
+		return;
+	}
+	for (int c = 0; c < cluster_count; c++)
+	{
+		struct level_cluster *cluster = &level.clusters[c];
+		int first_group = group_count;
+
+		if (cluster->batch_count <= GROUPED_CLUSTER || cluster->first_batch + cluster->batch_count > batch_count)
+			continue;
+		for (int i = 0; i < cluster->batch_count; i++)
+			level.group_batches[cluster->first_batch + i] = (uint16_t)(cluster->first_batch + i);
+		split_level_group(level.group_batches + cluster->first_batch, cluster->batch_count, &group_count, maximum_groups);
+		level.cluster_first_group[c] = (uint16_t)first_group;
+		level.cluster_group_count[c] = (uint16_t)(group_count - first_group);
+	}
+	debugf("n64: level batches in %d groups\n", group_count);
 }
 
 int n64_render_load_level(const char *map_name, int low)
@@ -1084,6 +1359,7 @@ int n64_render_load_level(const char *map_name, int low)
 	level.visible = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.sorted = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.material_starts = malloc((level.header->material_count + 1) * sizeof(uint16_t));
+	build_level_groups();
 	/* the strips' indices made into tiny3d's vertex cache addresses, once
 	(the RSP reads them by DMA: written back after) -- recorded blocks of
 	the triangles cost Sidewinder 275 KB, the indices ~40 */
@@ -1400,6 +1676,44 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 		{
 			for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
 				level.visible[visible_count++] = (uint16_t)b;
+			continue;
+		}
+		/* a big cluster partly in view: its groups first, then the
+		batches of those partly in view (build_level_groups) */
+		if (level.cluster_group_count && level.cluster_group_count[c])
+		{
+			int first_group = level.cluster_first_group[c];
+
+			for (int g = first_group; g < first_group + level.cluster_group_count[c]; g++)
+			{
+				struct level_group *group = &level.groups[g];
+				T3DVec3 group_minimum = {{group->minimum[0] * WORLD_SCALE, group->minimum[1] * WORLD_SCALE, group->minimum[2] * WORLD_SCALE}};
+				T3DVec3 group_maximum = {{group->maximum[0] * WORLD_SCALE, group->maximum[1] * WORLD_SCALE, group->maximum[2] * WORLD_SCALE}};
+				uint16_t *list = level.group_batches + group->first;
+
+				if (!t3d_frustum_vs_aabb(&viewport->viewFrustum, &group_minimum, &group_maximum) ||
+					beyond_fog(group->minimum[0], group->minimum[1], group->minimum[2],
+						group->maximum[0], group->maximum[1], group->maximum[2]))
+					continue;
+				if (frustum_contains(&viewport->viewFrustum, &group_minimum, &group_maximum) &&
+					within_fog(group->minimum[0], group->minimum[1], group->minimum[2],
+						group->maximum[0], group->maximum[1], group->maximum[2]))
+				{
+					for (int i = 0; i < group->count; i++)
+						level.visible[visible_count++] = list[i];
+					continue;
+				}
+				for (int i = 0; i < group->count; i++)
+				{
+					struct level_batch *batch = &level.batches[list[i]];
+
+					if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
+						!beyond_fog(batch->minimum[0] * (1.f / WORLD_SCALE), batch->minimum[1] * (1.f / WORLD_SCALE),
+							batch->minimum[2] * (1.f / WORLD_SCALE), batch->maximum[0] * (1.f / WORLD_SCALE),
+							batch->maximum[1] * (1.f / WORLD_SCALE), batch->maximum[2] * (1.f / WORLD_SCALE)))
+						level.visible[visible_count++] = list[i];
+				}
+			}
 			continue;
 		}
 		for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
@@ -1769,6 +2083,14 @@ static int queued_count;
 
 static void flush_draws(void);
 
+/* the batches drawn from a run's first batch (global index): its run */
+static inline int batch_run_length(int b)
+{
+	int length = models.runs ? models.runs[b] & RUN_LENGTH : 1;
+
+	return length ? length : 1;
+}
+
 static void queue_draw(int model_index, int b, unsigned long color, T3DMat4FP *matrices)
 {
 	struct model_record *model = &models.models[model_index];
@@ -1867,7 +2189,7 @@ static void flush_draws(void)
 		struct loaded_model *loaded = &models.loaded[draw->model];
 		struct model_batch *batch = &models.batches[model->first_batch + draw->batch];
 
-		if (!loaded->blocks)
+		if (!loaded->blocks || !loaded->blocks[draw->batch])
 			continue;
 		if (draw->matrices != current_matrices)
 		{
@@ -1894,30 +2216,36 @@ static void render_object(const struct n64_object *object)
 	if (!models.data || !renderer.viewport || object->model_tag_index < 0 ||
 		object->model_tag_index >= models.tag_count || !(model = models.by_tag[object->model_tag_index]))
 		return;
-	center = (T3DVec3){{object->center[0] * WORLD_SCALE, object->center[1] * WORLD_SCALE, object->center[2] * WORLD_SCALE}};
-	if (!t3d_frustum_vs_sphere(&renderer.viewport->viewFrustum, &center, object->radius * WORLD_SCALE + 8.0f))
-		return;
 	far = 0;
 	if (!renderer.first_person)
 	{
 		/* smaller than a pixel and a half across: not drawn; smaller than
-		FAR_PIXELS: its far version, if it has one */
+		FAR_PIXELS: its far version, if it has one -- its size in pixels,
+		2 r ppu / distance, compared squared (no square root or division,
+		for each object in each view) */
 		float dx = object->center[0] - renderer.eye[0], dy = object->center[1] - renderer.eye[1];
 		float dz = object->center[2] - renderer.eye[2];
-		float distance = sqrtf(dx * dx + dy * dy + dz * dz);
-		float pixels = distance > object->radius ? object->radius * 2.0f * renderer.pixels_per_unit / distance : 1e9f;
+		float distance_squared = dx * dx + dy * dy + dz * dz;
+		float radius = object->radius;
 
-		/* wholly past the fog's end */
-		if (renderer.fog && distance - object->radius > renderer.fog_end)
+		/* wholly past the fog's end (before the frustum: the cheaper test) */
+		if (renderer.fog && distance_squared > (renderer.fog_end + radius) * (renderer.fog_end + radius))
 			return;
+		if (distance_squared > radius * radius)
+		{
+			/* (a quarter of the screen: the far versions sooner) */
+			float size = radius * 2.0f * renderer.pixels_per_unit * (renderer.view_total > 2 ? 0.6f : 1.f);
+			float far_pixels = FAR_PIXELS * (screen_height * (1.f / 240.f));
 
-		/* (a quarter of the screen: the far versions sooner) */
-		if (renderer.view_total > 2)
-			pixels *= 0.6f;
-		if (pixels < 1.5f)
-			return;
-		far = model->far_count && pixels < FAR_PIXELS * (screen_height * (1.f / 240.f));
+			size *= size;
+			if (size < 1.5f * 1.5f * distance_squared)
+				return;
+			far = model->far_count && size < far_pixels * far_pixels * distance_squared;
+		}
 	}
+	center = (T3DVec3){{object->center[0] * WORLD_SCALE, object->center[1] * WORLD_SCALE, object->center[2] * WORLD_SCALE}};
+	if (!t3d_frustum_vs_sphere(&renderer.viewport->viewFrustum, &center, object->radius * WORLD_SCALE + 8.0f))
+		return;
 	object_in_view = 1;
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
@@ -1980,10 +2308,15 @@ converted_already:
 	renderer.objects++;
 	unsigned long color = ((unsigned long)object->tint[0] << 16) | ((unsigned long)object->tint[1] << 8) | object->tint[2];
 
+	/* (a run of batches alike drawn as one: its first's block holds them
+	all, mark_batch_runs) */
 	if (far)
 	{
-		for (int b = model->far_first; b < model->far_first + model->far_count; b++)
+		for (int b = model->far_first; b < model->far_first + model->far_count;
+			b += batch_run_length(model->first_batch + b))
+		{
 			queue_draw(model - models.models, b, color, matrices);
+		}
 		return;
 	}
 	for (int r = 0; r < model->region_count; r++)
@@ -2001,7 +2334,7 @@ converted_already:
 		if (geometry_index < 0)
 			continue;
 		geometry = &models.geometries[geometry_index];
-		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b++)
+		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b += batch_run_length(b))
 			queue_draw(model - models.models, b - model->first_batch, color, matrices);
 	}
 }

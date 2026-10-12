@@ -1199,6 +1199,26 @@ void object_placement_data_new(
 	return;
 }
 
+#ifdef HALO_N64
+/* A projectile with neither a model nor a collision model (bullets,
+pellets, plasma bolts) is in no cluster partition: nothing drawn, nothing
+to collide with, and its acceleration by area damage is 0 -- but each tick
+of its flight unlinked it from its cluster's list (a walk of that list) and
+found its clusters again (a portal walk). Its location, activation and
+flight are as they were. */
+static boolean n64_object_unpartitioned(
+	long object_index,
+	struct object_datum *object)
+{
+	struct object_definition *definition;
+
+	if (object_get_type(object_index) != _object_type_projectile)
+		return FALSE;
+	definition = object_definition_get(object->definition_index);
+	return definition->object.model.index == NONE && definition->object.collision_model.index == NONE;
+}
+#endif
+
 void object_disconnect_from_map(
 	long object_index)
 {
@@ -1214,6 +1234,9 @@ void object_disconnect_from_map(
 	}
 	else
 	{
+#ifdef HALO_N64
+		if (!n64_object_unpartitioned(object_index, object))
+#endif
 		cluster_partition_disconnect(
 			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
 				&collideable_object_cluster_partition :
@@ -1818,6 +1841,9 @@ void object_reconnect_to_map(
 
 		SET_FLAG(header->flags, _object_header_child_bit, FALSE);
 
+#ifdef HALO_N64
+		if (!n64_object_unpartitioned(object_index, object))
+#endif
 		cluster_partition_reconnect(
 			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
 				&collideable_object_cluster_partition :
@@ -3638,6 +3664,57 @@ boolean object_force_inside_bsp(
 }
 
 #ifdef HALO_N64
+/* object_force_inside_bsp for a player's (or bot's) shot: the eye to the
+muzzle, the shooter left out of the test (the ray starts inside its body:
+its collision model, a node at a time, was tested on every shot, and could
+only pull the shot back onto its own arm), and the pellets after a shot's
+first -- the same muzzle, the same eye -- given the first one's answer
+instead of a ray each (a shotgun's 15) */
+void n64_force_projectile_inside_bsp(
+	long object_index,
+	real_point3d const *known_good_point,
+	long shooter_index,
+	boolean first_of_shot)
+{
+	static boolean known, moved;
+	static real_point3d known_eye, known_origin, point;
+	static struct location location;
+	struct object_datum *object = object_get(object_index);
+	struct collision_result collision;
+
+	if (!first_of_shot && known &&
+		!csmemcmp(&known_eye, known_good_point, sizeof(real_point3d)) &&
+		!csmemcmp(&known_origin, &object->object.position, sizeof(real_point3d)))
+	{
+		if (moved)
+		{
+			object_translate(object_index, &point, &location);
+			object_compute_node_matrices(object_index);
+		}
+		return;
+	}
+	known = TRUE;
+	moved = FALSE;
+	known_eye = *known_good_point;
+	known_origin = object->object.position;
+	match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 2365, global_current_collision_user_depth < MAXIMUM_COLLISION_USER_STACK_DEPTH);
+	global_current_collision_users[global_current_collision_user_depth++] = 19;
+	if (collision_test_line(_collision_test_for_projectiles_flags, known_good_point, &object->object.position,
+			shooter_index == NONE ? NONE : object_get_ultimate_parent(shooter_index), &collision) ||
+		object->object.location.cluster_index==NONE)
+	{
+		if (collision.location.cluster_index!=NONE)
+		{
+			moved = TRUE;
+			point = collision.point;
+			location = collision.location;
+			object_translate(object_index, &point, &location);
+			object_compute_node_matrices(object_index);
+		}
+	}
+	--global_current_collision_user_depth;
+}
+
 /* An object whose node matrices cannot have changed keeps the ones it has:
 no parent, not a unit or projectile (their aiming, suspension and flight
 change them), its position, orientation and scale as they were, its
@@ -3896,6 +3973,103 @@ static boolean n64_object_unmoved(
 	last[slot].animation = animation->state;
 	return FALSE;
 }
+
+/* A biped whose pose n64_object_unmoved kept this tick (a bot's or far
+AI's off tick, 3-4 views, half rate): while its children are updated
+(object_update) their poses would come from its hand, unchanged -- so a
+child whose own place, node and animation frame are as they were when its
+pose was last made keeps it (a held weapon: 3-7 nodes and their
+animation, every tick), and the biped's IK (the hand put on the weapon's
+markers, by name) is not put on again over matrices that have it already
+(it crept, too). NONE: no kept pose being updated. */
+static long n64_kept_pose_parent = NONE;
+
+static struct
+{
+	long object_index;
+	long parent_object_index;
+	short parent_node_index;
+	real_point3d position;
+	real_vector3d forward, up;
+	real scale;
+	struct animation_state animation;
+	long time; /* the game time it was made */
+} n64_child_poses[64];
+
+/* whether a child's pose is still the one made last (its parent's pose
+kept); if not, it is made and noted (n64_child_pose_made) */
+static boolean n64_child_unmoved(
+	long object_index,
+	struct object_datum *object)
+{
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & 63);
+	struct object_animation_state const *animation = &object->object.animation;
+
+	return n64_kept_pose_parent != NONE &&
+		object->object.parent_object_index == n64_kept_pose_parent &&
+		n64_child_poses[slot].object_index == object_index &&
+		/* (made lately, while held: a weapon put away and drawn again is
+		made afresh) */
+		(unsigned long)(game_time_get() - n64_child_poses[slot].time) <= 8 &&
+		n64_child_poses[slot].parent_object_index == object->object.parent_object_index &&
+		n64_child_poses[slot].parent_node_index == object->object.parent_node_index &&
+		!animation->interpolation_frame_count &&
+		(animation->animation_graph_index == NONE ||
+			!TEST_FLAG(object->object.flags, _object_animates_automatically_bit)) &&
+		n64_same_words(&n64_child_poses[slot].position, &object->object.position, sizeof(real_point3d) / 4) &&
+		n64_same_words(&n64_child_poses[slot].forward, &object->object.forward, sizeof(real_vector3d) / 4) &&
+		n64_same_words(&n64_child_poses[slot].up, &object->object.up, sizeof(real_vector3d) / 4) &&
+		n64_child_poses[slot].scale == object->object.scale &&
+		(animation->animation_graph_index == NONE ||
+			(n64_child_poses[slot].animation.index == animation->state.index &&
+				n64_child_poses[slot].animation.frame_index == animation->state.frame_index));
+}
+
+static void n64_child_pose_made(
+	long object_index,
+	struct object_datum *object)
+{
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & 63);
+
+	n64_child_poses[slot].object_index = object_index;
+	n64_child_poses[slot].parent_object_index = object->object.parent_object_index;
+	n64_child_poses[slot].parent_node_index = object->object.parent_node_index;
+	n64_child_poses[slot].position = object->object.position;
+	n64_child_poses[slot].forward = object->object.forward;
+	n64_child_poses[slot].up = object->object.up;
+	n64_child_poses[slot].scale = object->object.scale;
+	n64_child_poses[slot].animation = object->object.animation.state;
+	n64_child_poses[slot].time = game_time_get();
+}
+
+/* whether objects' updates are timed by stage and type ("debug_stats") */
+static int n64_objects_timed(
+	void)
+{
+	extern int n64_debug_flag(char const *name);
+	static int timed = -1;
+
+	if (timed < 0)
+		timed = n64_debug_flag("debug_stats") != 0;
+	return timed;
+}
+
+/* an item in a unit's inventory but not in its hands: no parent, out of the
+map, hidden (unit_ready_desired_weapon puts it so). Its own update
+(weapon_update: heat, charge, ammunition) runs each tick; the rest of
+object_update -- its pose, function values, damage -- every fourth, as
+nothing draws it (it had all of it every tick: after any weapon change, a
+full object's update for each holstered weapon) */
+static boolean n64_object_holstered(
+	struct object_header_datum *header)
+{
+	struct object_datum *object = header->datum;
+
+	return TEST_FLAG(_object_mask_item, header->type) &&
+		object->object.parent_object_index == NONE &&
+		!TEST_FLAG(header->flags, _object_header_connected_to_map_bit) &&
+		TEST_FLAG(((struct item_datum *)object)->item.flags, _item_attached_to_unit_bit);
+}
 #endif
 
 static boolean object_update(
@@ -3906,6 +4080,10 @@ static boolean object_update(
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
 
 	boolean result = TRUE;
+#ifdef HALO_N64
+	/* (this object's pose kept this tick: object_update's N64 block) */
+	boolean n64_object_pose_kept = FALSE;
+#endif
 	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
 	{
 		if (TEST_FLAG(object->object.flags, _object_garbage_bit))
@@ -3925,36 +4103,46 @@ static boolean object_update(
 
 #ifdef HALO_N64
 		{
-			/* each stage timed (port/n64/game/n64_game.c logs the sums) */
+			/* each stage timed, with "debug_stats" (port/n64/game/n64_game.c
+			logs the sums): five clock reads an object a tick otherwise */
 			extern unsigned long n64_ticks(void);
 			extern unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
 			extern int n64_stage_type;
-			unsigned long *n64_equipment = object->object.type == n64_stage_type ? n64_equipment_stage_time : NULL;
-			unsigned long t0 = n64_ticks(), t1;
+			int const timed = n64_objects_timed();
+			unsigned long *n64_equipment = timed && object->object.type == n64_stage_type ? n64_equipment_stage_time : NULL;
+			unsigned long t0 = timed ? n64_ticks() : 0, t1;
+			boolean n64_skipped = FALSE;
+#define N64_STAGE(i) if (timed) { t1 = n64_ticks(); n64_object_stage_time[i] += t1 - t0; if (n64_equipment) n64_equipment[i] += t1 - t0; t0 = t1; }
 
 			object_type_update(object_index);
-			t1 = n64_ticks(); n64_object_stage_time[0] += t1 - t0; if (n64_equipment) n64_equipment[0] += t1 - t0; t0 = t1;
+			N64_STAGE(0)
 			if (object_definition->object.collision_model.index!=NONE)
 			{
 				object_damage_update(object_index);
 			}
 			object_type_export_function_values(object_index);
-			t1 = n64_ticks(); n64_object_stage_time[1] += t1 - t0; if (n64_equipment) n64_equipment[1] += t1 - t0; t0 = t1;
-			boolean n64_skipped = FALSE;
-
+			N64_STAGE(1)
 			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
 			{
-				n64_skipped = n64_object_unmoved(object_index, object, object_definition);
+				if (object->object.parent_object_index == NONE || TEST_FLAG(_object_mask_unit, object->object.type))
+					n64_skipped = n64_object_unmoved(object_index, object, object_definition);
+				else
+				{
+					/* (a child of a kept biped pose, unchanged itself; a rider -- a unit -- keeps its own rule above) */
+					n64_skipped = n64_child_unmoved(object_index, object);
+					if (!n64_skipped)
+						n64_child_pose_made(object_index, object);
+				}
 				if (!n64_skipped)
 					object_compute_node_matrices(object_index);
 			}
-			t1 = n64_ticks(); n64_object_stage_time[2] += t1 - t0; if (n64_equipment) n64_equipment[2] += t1 - t0; t0 = t1;
+			N64_STAGE(2)
 			/* (a far or unseen AI's biped: its function values on the ticks
 			its pose is made) */
 			if (!n64_skipped || object->object.type != _object_type_biped)
 				object_compute_function_values(object_index);
 			object_compute_change_colors(object_index);
-			t1 = n64_ticks(); n64_object_stage_time[3] += t1 - t0; if (n64_equipment) n64_equipment[3] += t1 - t0; t0 = t1;
+			N64_STAGE(3)
 			if (
 				TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&
 				(
@@ -3965,7 +4153,9 @@ static boolean object_update(
 			{
 				object_connect_lights(object_index, TRUE, TRUE);
 			}
-			t1 = n64_ticks(); n64_object_stage_time[4] += t1 - t0; if (n64_equipment) n64_equipment[4] += t1 - t0;
+			N64_STAGE(4)
+#undef N64_STAGE
+			n64_object_pose_kept = n64_skipped;
 		}
 #else
 		object_type_update(object_index);
@@ -3996,6 +4186,35 @@ static boolean object_update(
 		}
 
 #endif
+#ifdef HALO_N64
+		{
+			/* (a biped's kept pose: its children's poses kept where they are
+			unchanged, its IK not put on again -- n64_kept_pose_parent) */
+			long const kept_pose_parent = n64_kept_pose_parent;
+			boolean const pose_kept = object->object.type == _object_type_biped &&
+				object->object.parent_object_index == NONE &&
+				!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) &&
+				n64_object_pose_kept;
+
+			if (object->object.first_child_object_index!=NONE)
+			{
+				n64_kept_pose_parent = pose_kept ? object_index : NONE;
+				object_update(object->object.first_child_object_index);
+				n64_kept_pose_parent = kept_pose_parent;
+			}
+
+			if (object->object.parent_object_index!=NONE)
+			{
+				if (object->object.next_object_index!=NONE)
+				{
+					object_update(object->object.next_object_index);
+				}
+			}
+
+			if (!pose_kept)
+				object_postprocess_node_matrices(object_index);
+		}
+#else
 		// Update children (if we have any)
 		if (object->object.first_child_object_index!=NONE)
 		{
@@ -4011,6 +4230,7 @@ static boolean object_update(
 		}
 
 		object_postprocess_node_matrices(object_index);
+#endif
 	}
 
 	return result;
@@ -4532,8 +4752,11 @@ static boolean n64_object_idle(
 
 	if (object->object.parent_object_index != NONE)
 		return FALSE;
+	/* (a holstered weapon at rest -- picked up lying at rest -- was idle:
+	its heat cooled at a quarter speed; it has its own rule now,
+	n64_object_holstered) */
 	if (TEST_FLAG(_object_mask_item, header->type))
-		return TEST_FLAG(object->object.flags, _object_at_rest_bit);
+		return TEST_FLAG(object->object.flags, _object_at_rest_bit) && !n64_object_holstered(header);
 	if (header->type == _object_type_scenery)
 		return object->object.animation.animation_graph_index == NONE;
 	if (header->type == _object_type_vehicle && TEST_FLAG(object->object.flags, _object_at_rest_bit))
@@ -4641,14 +4864,26 @@ void objects_update(
 					)
 				{
 #ifdef HALO_N64
-					/* timed by type (port/n64/game/n64_game.c logs the sums) */
+					/* timed by type, with "debug_stats" (port/n64/game/n64_game.c
+					logs the sums) */
 					extern unsigned long n64_ticks(void);
 					extern unsigned long n64_object_type_time[16], n64_object_type_count[16];
-					unsigned long n64_start = n64_ticks();
+					int const timed = n64_objects_timed();
+					unsigned long n64_start = timed ? n64_ticks() : 0;
 
-					object_update(object_index);
-					n64_object_type_time[object_header->type & 15] += n64_ticks() - n64_start;
-					n64_object_type_count[object_header->type & 15]++;
+					/* a holstered weapon off its turn: its own update only */
+					if (((game_time_get() + i) & 3) && n64_object_holstered(object_header) &&
+						!TEST_FLAG(object_header->flags, _object_header_do_not_update_bit))
+					{
+						object_type_update(object_index);
+					}
+					else
+						object_update(object_index);
+					if (timed)
+					{
+						n64_object_type_time[object_header->type & 15] += n64_ticks() - n64_start;
+						n64_object_type_count[object_header->type & 15]++;
+					}
 #else
 					object_update(object_index);
 #endif

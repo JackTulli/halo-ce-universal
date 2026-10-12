@@ -40,7 +40,10 @@ a clear line (objects included) to the enemy.
 #include "units/units.h"
 #include "units/bipeds.h"
 #include "ai/path.h"
+#include "ai/path_structure_bsp.h"
 #include "ai/ai_debug.h"
+#include "scenario/scenario.h"
+#include "structures/structure_bsp_definitions.h"
 
 #include "../src/n64.h"
 
@@ -53,6 +56,14 @@ a clear line (objects included) to the enemy.
 #define MAXIMUM_BOTS 12
 /* a path is found again after this long, or when its target has moved */
 #define PATH_LIFETIME (5 * TICKS_PER_SECOND)
+/* a straight walk to the target is tested before a search, at most this
+many a tick among the bots; a bot whose straight walk was blocked searches
+for this long before testing one again */
+#define DIRECT_TESTS_PER_TICK 2
+#define DIRECT_PATH_RETRY_TICKS 30
+/* a search goes on over several ticks, opening at most this many surfaces
+a tick (~1 ms) */
+#define SEARCH_SURFACES_PER_TICK 40
 /* paths found at most every this many ticks, among all the bots (a search
 is the dearest thing a bot does) */
 #define TICKS_BETWEEN_PATHS 3
@@ -135,6 +146,7 @@ struct bot
 	short path_age;
 	struct path_result path;
 	real_point3d path_goal;
+	short direct_wait; /* > 0: no straight walk tested (plan_path) */
 };
 
 static struct
@@ -148,6 +160,12 @@ static struct
 	unsigned long random;
 	short paths_this_tick;
 	short path_cooldown;
+	short direct_tests_this_tick;
+	/* the search going on in parts: its bot + 1 (0: none), that bot's
+	unit when it began, where it goes */
+	short search_owner;
+	long search_unit;
+	real_point3d search_goal;
 	long weapon_definitions[NUMBER_OF_BOT_WEAPONS];
 	struct bot bots[MAXIMUM_BOTS];
 } bots;
@@ -218,16 +236,77 @@ static boolean line_of_sight(
 	real_point3d const *to,
 	long ignore_object_index)
 {
+	extern int n64_collision_any_hit;
 	struct collision_result collision;
 	real_vector3d vector;
+	boolean blocked;
 
 	vector.i = to->x - from->x;
 	vector.j = to->y - from->y;
 	vector.k = to->z - from->z;
-	return !collision_test_vector(
+	/* (only whether anything is in the way: with the level in the way its
+	objects aren't tested -- collisions.c) */
+	n64_collision_any_hit = 1;
+	blocked = collision_test_vector(
 		FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_structure_bit) |
 			FLAG(_collision_test_objects_bit) | _collision_test_objects_sight_blocking_flags,
 		from, &vector, ignore_object_index, &collision);
+	n64_collision_any_hit = 0;
+	return !blocked;
+}
+
+struct structure_bsp *global_structure_bsp_get(void);
+
+/* whether the level's potentially visible set lets the clusters of two
+objects (their ultimate parents') see each other: it only over-reports, so
+a pair it rules out has no line of sight and needs no ray (Halo's own AI
+asks it first too; also n64_firefight.c's) */
+boolean n64_ai_clusters_may_see(
+	long object_a,
+	long object_b)
+{
+	struct structure_bsp *bsp = global_structure_bsp_get();
+	short a = object_get(object_get_ultimate_parent(object_a))->object.location.cluster_index;
+	short b = object_get(object_get_ultimate_parent(object_b))->object.location.cluster_index;
+
+	if (!bsp || bsp->cluster_data.size <= 0 || a == NONE || b == NONE ||
+		a < 0 || b < 0 || a >= bsp->clusters.count || b >= bsp->clusters.count)
+	{
+		return TRUE;
+	}
+	return scenario_test_pvs(a, b);
+}
+
+/* a straight walk from one point to another over the level's surfaces --
+the pathfinder's own pill test, as its smoothing makes it -- as a path of
+one step, with no search; FALSE where the way is blocked (also
+n64_firefight.c's) */
+boolean n64_ai_direct_path(
+	real_point3d const *start,
+	long start_surface,
+	real_point3d const *goal,
+	long goal_surface,
+	struct path_result *path)
+{
+	struct path_collision_result collision;
+
+	if (structure_test_pill2d(global_structure_bsp_get(), FALSE,
+		(real_point2d const *)start, start_surface, (real_point2d const *)goal, goal_surface,
+		0.3f, 1 /* the end near a wall is all right */, &collision))
+	{
+		return FALSE;
+	}
+	csmemset(path, 0, sizeof(*path));
+	path->valid = TRUE;
+	path->endpoint.point = *goal;
+	path->endpoint.surface_index = goal_surface;
+	path->endpoint.target_radius = 0.f;
+	path->steps_finish_path = TRUE;
+	path->step_count = 1;
+	path->step_index = 0;
+	path->steps[0].surface_index = goal_surface;
+	path->steps[0].point = *goal;
+	return TRUE;
 }
 
 /* the bot weapons table's entry for a weapon object's definition, or NONE */
@@ -283,6 +362,7 @@ void n64_bots_stop(
 {
 	bots.active = FALSE;
 	bots.count = 0;
+	bots.search_owner = 0;
 	if (bots_path_state)
 	{
 		free(bots_path_state);
@@ -331,6 +411,24 @@ int n64_bot_number(
 			return i;
 	}
 	return -1;
+}
+
+/* players_update_after_game's (players.c, HALO_N64): whether a player's
+nearby objects are looked over this tick (what its action button would
+do, the items walked over): a bot's only before a tick it thinks -- it
+presses its buttons then -- the rest every tick. A tick's actions come at
+its start, so the tick before n64_bots_actions' (time + i) % interval */
+boolean n64_bots_examine_turn(
+	long player_index)
+{
+	int interval, number;
+
+	if (!bots.active || (interval = n64_bots_update_interval()) <= 1 ||
+		(number = n64_bot_number(player_index)) < 0)
+	{
+		return TRUE;
+	}
+	return (game_time_get() + 1 + number) % interval == 0;
 }
 
 /* main.c's create_local_players, after the players on the controllers:
@@ -438,6 +536,37 @@ static long nearest_enemy(
 	return best;
 }
 
+/* the search going on: this tick's part, and once it is over the path to
+its bot (a bot that died or changed bodies since gives it up); the next
+search may begin TICKS_BETWEEN_PATHS after */
+static void bots_search_step(
+	void)
+{
+	struct bot *bot;
+	boolean found;
+
+	if (!bots.search_owner || !bots_path_state)
+		return;
+	bot = &bots.bots[bots.search_owner - 1];
+	if (bot->unit_index != bots.search_unit || !unit_alive(bot->unit_index))
+	{
+		bots.search_owner = 0;
+		bots.path_cooldown = TICKS_BETWEEN_PATHS;
+		return;
+	}
+	if (!path_state_find_continue(bots_path_state, SEARCH_SURFACES_PER_TICK, &found))
+		return;
+	bots.search_owner = 0;
+	bots.path_cooldown = TICKS_BETWEEN_PATHS;
+	if (path_state_build_path(bots_path_state, &bot->path) && bot->path.step_count > 0)
+	{
+		bot->path_valid = TRUE;
+		bot->path.step_index = 0;
+		bot->path_age = 0;
+		bot->path_goal = bots.search_goal;
+	}
+}
+
 /* a path to the target, if this tick still has one to find: Halo's own
 over the collision BSP's surfaces; partial paths are kept */
 static void plan_path(
@@ -447,28 +576,60 @@ static void plan_path(
 	struct path_input input;
 	real_point3d start, goal;
 	long start_surface, goal_surface;
+	boolean search = !bots.paths_this_tick && bots.path_cooldown <= 0 && !bots.search_owner;
+	boolean direct = bot->direct_wait <= 0 && bots.direct_tests_this_tick < DIRECT_TESTS_PER_TICK;
 
-	if (bots.paths_this_tick || bots.path_cooldown > 0 || !bots_path_state)
+	/* (its own search still going on: it waits for that) */
+	if (!bots_path_state || (!search && !direct) || bots.search_owner == (short)(bot - bots.bots) + 1)
+		return;
+	start_surface = biped_find_pathfinding_surface_index(bot->unit_index, &start);
+	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
+	if (start_surface == NONE || goal_surface == NONE)
+	{
+		if (search)
+		{
+			bots.paths_this_tick++;
+			bots.path_cooldown = TICKS_BETWEEN_PATHS;
+			bot->path_age = 0;
+			bot->path_valid = FALSE;
+		}
+		return;
+	}
+	/* a straight walk there first: one test and no search where it's clear
+	(most of the open maps; the search's smoothing would make the same one
+	step of it), not counted against the searches */
+	if (direct)
+	{
+		bots.direct_tests_this_tick++;
+		if (n64_ai_direct_path(&start, start_surface, &goal, goal_surface, &bot->path))
+		{
+			bot->path_valid = TRUE;
+			bot->path_age = 0;
+			bot->path_goal = goal;
+			return;
+		}
+		bot->direct_wait = DIRECT_PATH_RETRY_TICKS;
+	}
+	if (!search)
 		return;
 	bots.paths_this_tick++;
 	bots.path_cooldown = TICKS_BETWEEN_PATHS;
 	bot->path_age = 0;
 	bot->path_valid = FALSE;
-	start_surface = biped_find_pathfinding_surface_index(bot->unit_index, &start);
-	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
-	if (start_surface == NONE || goal_surface == NONE)
-		return;
 	path_input_new(&input, 0.3f, FALSE, bot->unit_index);
 	path_input_set_start(&input, &start, start_surface);
+	/* (Halo's own bound for its AI's searches: a way much longer than the
+	straight line is not worth the search -- the closest point instead) */
+	path_input_set_search_bounds(&input, 2.5f * distance3d(&start, &goal) + 15.f);
 	path_state_new(&input, bots_path_state, NULL);
 	path_state_destination(bots_path_state, &goal, goal_surface, 40.f);
-	path_state_find(bots_path_state);
-	if (path_state_build_path(bots_path_state, &bot->path) && bot->path.step_count > 0)
-	{
-		bot->path_valid = TRUE;
-		bot->path.step_index = 0;
-		bot->path_goal = goal;
-	}
+	/* (in parts, bots_search_step; the next search waits for its end) */
+	if (!path_state_find_begin(bots_path_state))
+		return;
+	bots.search_owner = (short)(bot - bots.bots) + 1;
+	bots.search_unit = bot->unit_index;
+	bots.search_goal = goal;
+	bots_search_step();
 }
 
 /* the way along the path from here (horizontal, unit length); FALSE when
@@ -565,7 +726,7 @@ static long find_better_weapon(
 			break;
 		point = object_get(weapon_index)->object.position;
 		point.z += 0.15f;
-		if (line_of_sight(eye, &point, bot->unit_index))
+		if (n64_ai_clusters_may_see(bot->unit_index, weapon_index) && line_of_sight(eye, &point, bot->unit_index))
 			return weapon_index;
 	}
 	return NONE;
@@ -651,6 +812,7 @@ static void think(
 			bot->sight_timer = 10;
 			bot->target_visible =
 				horizontal_distance(&unit->object.position, &target_position) < SIGHT_RANGE &&
+				n64_ai_clusters_may_see(player->unit_index, bot->target_unit) &&
 				line_of_sight(&eye, &target_eye, player->unit_index);
 		}
 		if (bot->target_visible || (bot->last_seen.x == 0.f && bot->last_seen.y == 0.f))
@@ -662,6 +824,8 @@ static void think(
 		bot->target_visible = FALSE;
 
 	/* a better weapon lying near, while there is no fight in sight */
+	if (bot->direct_wait > 0)
+		bot->direct_wait -= step;
 	if (bot->given_up_timer > 0 && (bot->given_up_timer -= step) <= 0)
 	{
 		bot->given_up_timer = 0;
@@ -965,8 +1129,11 @@ void n64_bots_actions(
 		return;
 	resolve_weapons();
 	bots.paths_this_tick = 0;
+	bots.direct_tests_this_tick = 0;
 	if (bots.path_cooldown > 0)
 		bots.path_cooldown--;
+	/* (the search going on: this tick's part) */
+	bots_search_step();
 	for (i = 0; i < bots.created; i++)
 	{
 		struct bot *bot = &bots.bots[i];

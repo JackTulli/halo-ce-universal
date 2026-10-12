@@ -200,6 +200,11 @@ static void collision_fix_pill_nudge_collision(
 
 static struct collision_usage_times collision_usage_times;
 boolean debug_collision_skip_objects = FALSE;
+#ifdef HALO_N64
+/* set while a ray asks only whether anything is in the way (the bots' and
+Covenant's sight: n64_bots.c, n64_firefight.c) */
+int n64_collision_any_hit;
+#endif
 boolean debug_collision_skip_vectors = FALSE;
 
 /* ---------- public code */
@@ -529,6 +534,13 @@ boolean collision_test_vector(
 			}
 		}
 
+#ifdef HALO_N64
+		/* (a line of sight asks only whether anything is in the way: with
+		the level in the way, its objects need no test --
+		n64_collision_any_hit, set around the AI's sight rays) */
+		if (n64_collision_any_hit && hit)
+			test_objects = FALSE;
+#endif
 		if (test_objects && bsp_result.leaf_count > 0)
 		{
 			long leaf_index;
@@ -568,6 +580,14 @@ boolean collision_test_vector(
 						object_index != NONE;
 						object_index = cluster_get_next_collideable_object(&reference_index))
 					{
+#ifdef HALO_N64
+						/* (a type the ray doesn't test, by the object's header:
+						object_test_vector would take nothing of it, children
+						and all, and its datum -- read and marked -- is
+						three or four cache misses) */
+						if (!TEST_FLAG(flags, object_header_get(object_index)->type + _collision_test_objects_first_type_bit))
+							continue;
+#endif
 						if (object_mark_function(object_index) &&
 							object_test_vector(
 								object_index,
@@ -1829,6 +1849,16 @@ static boolean n64_pill_features_in_sphere(
 				object_index != NONE;
 				object_index = cluster_get_next_collideable_object(&reference_index))
 			{
+				/* (an item lying about -- a weapon, equipment, garbage: no
+				children -- of a type the pill doesn't collide with, by its
+				header, its datum not read or marked) */
+				struct object_header_datum const *header = object_header_get(object_index);
+
+				if (TEST_FLAG(_object_mask_item, header->type) &&
+					!TEST_FLAG(flags, header->type + _collision_test_objects_first_type_bit))
+				{
+					continue;
+				}
 				if (object_mark_function(object_index))
 				{
 					object_get_features_in_sphere(

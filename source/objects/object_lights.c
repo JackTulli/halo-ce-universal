@@ -720,6 +720,15 @@ long light_new(
 	struct point_light_definition *definition = light_definition_get(definition_index);
 	long light_index = NONE;
 
+#ifdef HALO_N64
+	/* (no light on the N64: its renderer draws none and nothing it builds
+	reads them -- the AI that asks is not built -- while the unattached ones
+	never expired, the pool full and each new one a marker lookup and a
+	cluster partition walk for nothing; NONE is a light not made, as when
+	the pool is full) */
+	(void)definition;
+	return NONE;
+#endif
 	if (TEST_FLAG(definition->flags, _light_definition_dynamic_bit)
 		|| definition->lens_flare.index != NONE)
 	{
@@ -757,6 +766,14 @@ long light_new_unattached(
 	real_vector3d const *direction,
 	real scale)
 {
+#ifdef HALO_N64
+	/* (no light on the N64: its renderer draws none and nothing it builds
+	reads them -- the AI that asks is not built -- while the unattached ones
+	never expired, the pool full and each new one a marker lookup and a
+	cluster partition walk for nothing; NONE is a light not made, as when
+	the pool is full) */
+	return NONE;
+#endif
 	long light_index = datum_new(light_data);
 
 	if (light_index != NONE)

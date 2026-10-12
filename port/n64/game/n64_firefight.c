@@ -153,6 +153,9 @@ struct covenant
 	short path_age;
 	struct path_result path;
 	real_point3d path_goal;
+	/* the game time a straight walk to the target may be tested again (it
+	was blocked: plan_path) */
+	long direct_after;
 	long target_player;
 	real_point3d last_seen;
 	real_point3d last_position;
@@ -190,8 +193,14 @@ static struct
 	} bodies[MAXIMUM_BODIES];
 	short body_count;
 	short enemy_count;
-	/* paths found this tick (one at most) */
+	/* paths found this tick (one at most), straight walks tested */
 	short paths_this_tick;
+	short direct_tests_this_tick;
+	/* the search going on in parts (n64_bots.c's way): its Covenant's
+	unit, where it goes */
+	boolean searching;
+	long search_unit;
+	real_point3d search_goal;
 	/* ticks until the next path may be found */
 	short path_cooldown;
 	/* (the log's: searches, no surface under one end, searches that
@@ -534,21 +543,78 @@ static long nearest_player_unit(
 	return best;
 }
 
+/* n64_bots.c's: a straight walk as a one-step path; the clusters' PVS */
+boolean n64_ai_direct_path(real_point3d const *start, long start_surface, real_point3d const *goal,
+	long goal_surface, struct path_result *path);
+boolean n64_ai_clusters_may_see(long object_a, long object_b);
+
 static boolean line_of_sight(
 	real_point3d const *from,
 	real_point3d const *to,
 	long ignore_object_index)
 {
+	extern int n64_collision_any_hit;
 	struct collision_result collision;
 	real_vector3d vector;
+	boolean blocked;
 
 	vector.i = to->x - from->x;
 	vector.j = to->y - from->y;
 	vector.k = to->z - from->z;
-	return !collision_test_vector(
+	/* (only whether anything is in the way: with the level in the way its
+	objects aren't tested -- collisions.c) */
+	n64_collision_any_hit = 1;
+	blocked = collision_test_vector(
 		FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_structure_bit) |
 			FLAG(_collision_test_objects_bit) | _collision_test_objects_sight_blocking_flags,
 		from, &vector, ignore_object_index, &collision);
+	n64_collision_any_hit = 0;
+	return !blocked;
+}
+
+/* the search going on: this tick's part (at most SEARCH_SURFACES_PER_TICK
+surfaces opened, ~1 ms), and once it is over the path to its Covenant (one
+gone since gives it up); the next search may begin TICKS_BETWEEN_PATHS
+after */
+#define SEARCH_SURFACES_PER_TICK 40
+
+static void firefight_search_step(
+	void)
+{
+	struct covenant *enemy = NULL;
+	boolean found = FALSE;
+	short i;
+
+	if (!firefight.searching || !firefight_path_state)
+		return;
+	for (i = 0; i < firefight.enemy_count; i++)
+	{
+		if (firefight.enemies[i].unit_index == firefight.search_unit)
+		{
+			enemy = &firefight.enemies[i];
+			break;
+		}
+	}
+	if (!enemy)
+	{
+		firefight.searching = FALSE;
+		firefight.path_cooldown = TICKS_BETWEEN_PATHS;
+		return;
+	}
+	if (!path_state_find_continue(firefight_path_state, SEARCH_SURFACES_PER_TICK, &found))
+		return;
+	firefight.searching = FALSE;
+	firefight.path_cooldown = TICKS_BETWEEN_PATHS;
+	if (found)
+		firefight.path_found++;
+	if (path_state_build_path(firefight_path_state, &enemy->path) && enemy->path.step_count > 0)
+	{
+		firefight.path_built++;
+		enemy->path_valid = TRUE;
+		enemy->path.step_index = 0;
+		enemy->path_age = 0;
+		enemy->path_goal = firefight.search_goal;
+	}
 }
 
 /* a path to the target, if this tick still has one to find: Halo's own
@@ -561,34 +627,65 @@ static void plan_path(
 	struct path_input input;
 	real_point3d start, goal;
 	long start_surface, goal_surface;
+	boolean search = !firefight.paths_this_tick && firefight.path_cooldown <= 0 && !firefight.searching;
+	boolean direct = game_time_get() >= enemy->direct_after && firefight.direct_tests_this_tick < 2;
 
-	if (firefight.paths_this_tick || firefight.path_cooldown > 0 || !firefight_path_state)
+	/* (its own search still going on: it waits for that) */
+	if (!firefight_path_state || (!search && !direct) ||
+		(firefight.searching && firefight.search_unit == enemy->unit_index))
+	{
+		return;
+	}
+	start_surface = biped_find_pathfinding_surface_index(enemy->unit_index, &start);
+	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
+	if (start_surface == NONE || goal_surface == NONE)
+	{
+		if (search)
+		{
+			firefight.paths_this_tick++;
+			firefight.path_cooldown = TICKS_BETWEEN_PATHS;
+			enemy->path_age = 0;
+			enemy->path_valid = FALSE;
+			firefight.path_searches++;
+			firefight.path_no_surface++;
+		}
+		return;
+	}
+	/* a straight walk there first (n64_bots.c): one test and no search
+	where it's clear, two a tick at most; blocked, not tested again for a
+	second */
+	if (direct)
+	{
+		firefight.direct_tests_this_tick++;
+		if (n64_ai_direct_path(&start, start_surface, &goal, goal_surface, &enemy->path))
+		{
+			enemy->path_valid = TRUE;
+			enemy->path_age = 0;
+			enemy->path_goal = goal;
+			return;
+		}
+		enemy->direct_after = game_time_get() + TICKS_PER_SECOND;
+	}
+	if (!search)
 		return;
 	firefight.paths_this_tick++;
 	firefight.path_cooldown = TICKS_BETWEEN_PATHS;
 	enemy->path_age = 0;
 	enemy->path_valid = FALSE;
-	start_surface = biped_find_pathfinding_surface_index(enemy->unit_index, &start);
-	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
 	firefight.path_searches++;
-	if (start_surface == NONE || goal_surface == NONE)
-	{
-		firefight.path_no_surface++;
-		return;
-	}
 	path_input_new(&input, 0.3f, FALSE, enemy->unit_index);
 	path_input_set_start(&input, &start, start_surface);
+	/* (Halo's own bound for its AI's searches) */
+	path_input_set_search_bounds(&input, 2.5f * distance3d(&start, &goal) + 15.f);
 	path_state_new(&input, firefight_path_state, NULL);
 	path_state_destination(firefight_path_state, &goal, goal_surface, 40.f);
-	if (path_state_find(firefight_path_state))
-		firefight.path_found++;
-	if (path_state_build_path(firefight_path_state, &enemy->path) && enemy->path.step_count > 0)
-	{
-		firefight.path_built++;
-		enemy->path_valid = TRUE;
-		enemy->path.step_index = 0;
-		enemy->path_goal = goal;
-	}
+	/* (in parts, firefight_search_step; the next search waits for its end) */
+	if (!path_state_find_begin(firefight_path_state))
+		return;
+	firefight.searching = TRUE;
+	firefight.search_unit = enemy->unit_index;
+	firefight.search_goal = goal;
+	firefight_search_step();
 }
 
 /* the way along the path from here (horizontal, unit length); FALSE when
@@ -657,7 +754,8 @@ static void think(
 	if (enemy->sight_timer <= 0)
 	{
 		enemy->sight_timer = 12;
-		enemy->target_visible = line_of_sight(&eye, &target_eye, enemy->unit_index);
+		enemy->target_visible = n64_ai_clusters_may_see(enemy->unit_index, target_unit) &&
+			line_of_sight(&eye, &target_eye, enemy->unit_index);
 	}
 	if (enemy->target_visible)
 	{
@@ -1064,6 +1162,7 @@ void n64_firefight_stop(
 	void)
 {
 	firefight.active = FALSE;
+	firefight.searching = FALSE;
 	if (firefight_path_state)
 	{
 		free(firefight_path_state);
@@ -1174,8 +1273,11 @@ void n64_firefight_tick(
 	}
 
 	firefight.paths_this_tick = 0;
+	firefight.direct_tests_this_tick = 0;
 	if (firefight.path_cooldown > 0)
 		firefight.path_cooldown--;
+	/* (the search going on: this tick's part) */
+	firefight_search_step();
 	{
 		/* (every fourth tick with ANIMATIONS HALF RATE: n64_menu.c) */
 		extern int n64_half_animation_rate;
@@ -1189,8 +1291,9 @@ void n64_firefight_tick(
 			think(&firefight.enemies[i]);
 	}
 
-	/* (the log, every two seconds: each Covenant's whereabouts) */
-	if (!(game_time_get() % (2 * TICKS_PER_SECOND)))
+	/* (the log, every two seconds with "debug_firefight_log": each Covenant's
+	whereabouts -- a few dozen float formats, a hitch in the tick it ran) */
+	if (!(game_time_get() % (2 * TICKS_PER_SECOND)) && n64_debug_flag("debug_firefight_log"))
 	{
 		char line[160];
 

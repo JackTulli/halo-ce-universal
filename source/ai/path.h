@@ -24,7 +24,12 @@ enum
 #else
 	PATH_NODE_LIST_SIZE = 0x400,
 #endif
+#ifdef HALO_N64
+	/* (512 nodes at most: half of the table, cleared for every search) */
+	PATH_HASH_TABLE_SIZE = 0x400,
+#else
 	PATH_HASH_TABLE_SIZE = 0x1000,
+#endif
 	MAXIMUM_DISC_COUNT = 128,
 	MAXIMUM_OBSTACLE_AVOIDANCE_STEPS = 128,
 	MAXIMUM_SMOOTHED_PATH_STEPS = 4,
@@ -38,8 +43,13 @@ enum
 enum
 {
 	PATH_HASH_TABLE_SIZE_PER_KEY = 8,
+#ifdef HALO_N64
+	PATH_HASH_KEY_MASK = 127,
+	PATH_HASH_TABLE_MASK = 1023,
+#else
 	PATH_HASH_KEY_MASK = 511,
 	PATH_HASH_TABLE_MASK = 4095,
+#endif
 	MAXIMUM_PATH_EDGES_PER_COLLISION_SURFACE = 64
 };
 
@@ -128,13 +138,19 @@ struct path_node
 	short quantized_cost_estimate;
 	short depth;
 	short heap_location;
+#ifndef HALO_N64
+	/* (only ai_debug.c reads these, not built for the N64: 52 bytes a node
+	instead of 68, fewer cache lines touched by a search) */
 	short last_render_id;
 	real closest_distance_to_attractor;
 	real_point3d closest_point_to_attractor;
+#endif
 };
 
+#ifndef HALO_N64
 typedef char path_node_size_assert[
 	sizeof(struct path_node) == 0x44 ? 1 : -1];
+#endif
 
 struct path_heap_element
 {
@@ -334,6 +350,11 @@ void path_input_set_attractor(
 	long object_index,
 	real weight);
 
+#ifdef HALO_N64
+/* a search in parts (path.c) */
+boolean path_state_find_begin(struct path_state *state);
+boolean path_state_find_continue(struct path_state *state, short budget, boolean *found);
+#endif
 void path_state_new(
 	struct path_input const *input,
 	struct path_state *state,

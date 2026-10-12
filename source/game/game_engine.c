@@ -4655,6 +4655,18 @@ boolean game_engine_should_end_game(
 {
 	boolean should_end_game = FALSE;
 
+#ifdef HALO_N64
+	{
+		/* (Firefight's players are one team against the Covenant, who
+		aren't players: with two or more, one team was all there was and
+		the game ended as it began. n64_firefight.c ends it itself, when
+		everyone is out) */
+		extern int n64_firefight_active(void);
+
+		if (n64_firefight_active())
+			return FALSE;
+	}
+#endif
 	if (game_engine && !multiple_teams_alive())
 		should_end_game = TRUE;
 

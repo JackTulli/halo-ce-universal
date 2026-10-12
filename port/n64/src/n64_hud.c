@@ -15,7 +15,9 @@ Halo's HUD code costs the N64 several milliseconds a view, so each view's
 HUD is recorded (an rspq block) and the game draws it every other frame,
 the views taking turns; in between the recording is shown again. Whatever
 a recording uses stays in memory: the sprites until the next map, the
-meters' textures in fixed slots.
+meters' textures in fixed slots. A recording is begun with room on the
+heap, models dropped from the cache for it if need be; without it the view
+is drawn as it goes, unrecorded, that frame.
 */
 
 #include <libdragon.h>
@@ -40,6 +42,11 @@ smaller) */
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 /* uploads of a sprite's rectangle kept as recordings (below) */
 #define UPLOAD_BLOCKS 48
+/* the heap a view's recording is begun with (n64_render_make_room): its
+commands come in pieces that double in size (rdpq's up to ~16 KB), and the
+sprites and uploads it loads come out of it too */
+#define RECORDING_ROOM_PIECE (18 * 1024)
+#define RECORDING_ROOM_PIECES 3
 
 /* the float helpers the quads need, inline: newlib's fminf and fmaxf asked
 __fpclassifyf about every argument, and floorf and ceilf were calls */
@@ -73,6 +80,7 @@ static struct
 	unsigned long view_frames[MAXIMUM_VIEWS];
 	int view;      /* the view begun */
 	int recording; /* the view being recorded, or -1 */
+	int live;      /* the view drawn as it goes, unrecorded (no room for a recording) */
 	/* statistics: microseconds in the HUD, its quads and meters, every 240
 	views; one view's quads are logged at view 600 */
 	unsigned long begin_ticks, ticks, quad_ticks, meter_ticks, quads, views;
@@ -188,6 +196,35 @@ void n64_hud_set_map(const char *map_name)
 	}
 }
 
+/* the memory a sprite file loads into: a compressed asset's header
+(libdragon's "DCA5": its flags, then the compressed size, the original size
+and the in-place margin as LEB128 varints) gives it, else the file's size */
+static unsigned long sprite_bytes(FILE *file)
+{
+	uint8_t header[16];
+	unsigned long fields[3] = {0, 0, 0};
+
+	if (fread(header, 1, sizeof(header), file) == sizeof(header) && !memcmp(header, "DCA", 3))
+	{
+		const uint8_t *p = header + 5;
+
+		for (int f = 0; f < 3; f++)
+		{
+			for (int shift = 0; p < header + sizeof(header); shift += 7)
+			{
+				uint8_t b = *p++;
+
+				fields[f] |= (unsigned long)(b & 0x7F) << shift;
+				if (!(b & 0x80))
+					break;
+			}
+		}
+		return fields[1] + fields[2];
+	}
+	fseek(file, 0, SEEK_END);
+	return (unsigned long)ftell(file);
+}
+
 static sprite_t *hud_sprite(int number)
 {
 	char path[64];
@@ -210,7 +247,16 @@ static sprite_t *hud_sprite(int number)
 			hud.missing[number] = 1;
 			return NULL;
 		}
-		fclose(file);
+		/* (asset_load doesn't check its allocation: the sprite's room is
+		looked for first, its quads left out until there is some) */
+		{
+			void *room = malloc(sprite_bytes(file) + 1024);
+
+			fclose(file);
+			if (!room)
+				return NULL;
+			free(room);
+		}
 		hud.sprites[number] = sprite_load(path);
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
 			debugf("hud sprite %d: %dx%d format %d\n", number, hud.sprites[number]->width,
@@ -267,6 +313,7 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	hud.tmem_pixels = NULL;
 	hud.begin_ticks = TICKS_READ();
 	hud.recording = -1;
+	hud.live = 0;
 	hud.view = view;
 	if (view < 0 || view >= MAXIMUM_VIEWS)
 		return 0;
@@ -282,10 +329,25 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 		if (hud.recordings[view] && (hud.view_frames[view]++ + turn) % interval)
 			return 0;
 	}
-	hud.recording = view;
+	/* the view's last recording let go first (its memory back once the RSP
+	is past it), then room made for the new one: the model cache fills the
+	heap down to its margin, and a recording that ran out of memory halted
+	the game ("Out of memory" in __rdpq_block_next_buffer). Without room the
+	view's HUD is drawn as it goes this time, unrecorded */
+	if (hud.recordings[view])
+	{
+		rdpq_call_deferred((void (*)(void *))rspq_block_free, hud.recordings[view]);
+		hud.recordings[view] = NULL;
+	}
 	hud.dump = hud.views == 600 || hud.views == 601;
 	n64_profile_zone = 1;
-	rspq_block_begin();
+	if (n64_render_make_room(RECORDING_ROOM_PIECE, RECORDING_ROOM_PIECES))
+	{
+		hud.recording = view;
+		rspq_block_begin();
+	}
+	else
+		hud.live = 1;
 	rdpq_sync_pipe();
 	rdpq_set_scissor(x0, y0, x1, y1);
 	return 1;
@@ -304,16 +366,28 @@ void n64_hud_end(void)
 		hud.recordings[hud.recording] = recording;
 		rspq_block_run(recording);
 		hud.recording = -1;
-		/* the uploads this recording made directly, recorded for the next */
+		/* the uploads this recording made directly, recorded for the next
+		(while the heap has room for one: else at a later recording) */
 		for (int i = 0; i < upload_count; i++)
 		{
 			if (!uploads[i].block)
 			{
+				void *room = malloc(2048);
+
+				if (!room)
+					break;
+				free(room);
 				rspq_block_begin();
 				rdpq_tex_upload_sub(TILE0, &uploads[i].surface, NULL, uploads[i].s0, uploads[i].t0, uploads[i].s1, uploads[i].t1);
 				uploads[i].block = rspq_block_end();
 			}
 		}
+		hud.tmem_pixels = NULL;
+	}
+	else if (hud.live)
+	{
+		/* (drawn already; recorded at the view's next frame, room allowing) */
+		hud.live = 0;
 		hud.tmem_pixels = NULL;
 	}
 	else if (hud.view >= 0 && hud.view < MAXIMUM_VIEWS && hud.recordings[hud.view])

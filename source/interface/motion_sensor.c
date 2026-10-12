@@ -807,10 +807,13 @@ void motion_sensor_tick(
 		sweep_theta = 0.4f;
 	}
 
-#ifdef HALO_LINUX
+#if defined(HALO_LINUX) || defined(HALO_N64)
 	/* The HUD is drawn once a frame, several frames per tick
 	(port/linux/game/render_interpolation.c), and each update moves the
-	blip history on a step: update once a tick, as on the Xbox. */
+	blip history on a step: update once a tick, as on the Xbox. (The N64
+	draws a view's HUD only every 2nd-6th frame, so hud_update calls this
+	each tick as well: with four views the history stepped only at view
+	0's recordings, and its scan, every 15th tick, seldom fell on one.) */
 	if (motion_sensor_globals->last_update_time != game_time_get())
 #endif
 	motion_sensor_update();
@@ -1141,7 +1144,7 @@ motion_sensor_initialize_for_new_map(
 	long player_count;
 
 	csmemset(motion_sensor_globals, 0, sizeof(*motion_sensor_globals));
-#ifdef HALO_LINUX
+#if defined(HALO_LINUX) || defined(HALO_N64)
 	motion_sensor_globals->last_update_time = NONE;
 #endif
 	player = motion_sensor_globals->players;
