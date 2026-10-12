@@ -3736,6 +3736,32 @@ second look the same, and its hits are tested against a pose a tick old */
 
 extern boolean n64_object_recently_seen(long object_index);
 
+/* Settings: ANIMATIONS HALF RATE (n64_half_animation_rate, n64_menu.c).
+A parentless biped's, vehicle's, scenery's or device's pose is made on its
+every other tick only (staggered), and the rules below count their turns on
+a clock that runs at half speed on those ticks: what was every tick is every
+other, what was every other (three or four views, unseen AI) every fourth,
+a bot's every second or third every fourth or sixth. Attached objects (held
+weapons, riders) still follow their parent's pose every tick; projectiles
+and items keep the full rate (their pose is their flight) */
+extern int n64_half_animation_rate;
+
+#define N64_HALF_RATE_TYPES (_object_mask_unit | _object_mask_scenery | _object_mask_device)
+
+static long n64_pose_clock(
+	long object_index)
+{
+	long time = game_time_get();
+
+	if (n64_half_animation_rate)
+	{
+		long index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+		time = ((time + index) >> 1) - index;
+	}
+	return time;
+}
+
 /* an AI's biped far from every player or in no view (the last frames):
 its pose (node matrices) and function values every other tick, staggered
 -- a jackal's shield functions and longer skeleton made it the dearest */
@@ -3756,19 +3782,19 @@ static boolean n64_far_ai_biped(
 		int interval = n64_bots_update_interval();
 
 		if (interval > 1)
-			return ((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) % interval) != 0;
+			return ((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) % interval) != 0;
 	}
 	/* with three or four views, every biped's pose (the players' too) every
 	other tick, staggered: a quarter-screen view hides it, and the bipeds were
 	most of a 4-player tick (a living biped's camera is its sight position,
 	not a node's) */
 	if (n64_view_total >= 3 && object->object.parent_object_index == NONE)
-		return ((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1) != 0;
+		return ((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1) != 0;
 	/* (a player on a controller: always; a bot -- a player with none,
 	port/n64/game/n64_bots.c -- as an AI) */
 	if ((unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index != NONE) ||
 		object->object.parent_object_index != NONE ||
-		((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
+		((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
 		return FALSE;
 	if (!n64_object_recently_seen(object_index))
 		return TRUE;
@@ -3791,6 +3817,13 @@ static boolean n64_object_unmoved(
 	struct object_datum *object,
 	struct object_definition *object_definition)
 {
+	/* (half the animation rate: the off ticks) */
+	if (n64_half_animation_rate && object->object.parent_object_index == NONE &&
+		TEST_FLAG(N64_HALF_RATE_TYPES, object->object.type) &&
+		((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
+	{
+		return TRUE;
+	}
 	if (object->object.type == _object_type_vehicle)
 		return n64_vehicle_unmoved(object_index, object);
 	if (object->object.type == _object_type_biped)
@@ -3829,7 +3862,7 @@ static boolean n64_object_unmoved(
 	if (!still && object->object.type == _object_type_scenery &&
 		object->object.parent_object_index == NONE && !animation->interpolation_frame_count &&
 		TEST_FLAG(object->object.flags, _object_animates_automatically_bit) &&
-		((game_time_get() + slot) & 1))
+		((n64_pose_clock(object_index) + slot) & 1))
 	{
 		return TRUE;
 	}

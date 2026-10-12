@@ -173,6 +173,18 @@ their pauses between bursts are half as long again, with 7 or 8 twice
 the Covenant think every third tick with five or more up or three or four
 players (every second), turning as fast a tick.
 
+12 October: Settings ANIMATIONS FULL RATE / HALF RATE (the user's ask).
+Half: a parentless biped's, vehicle's, scenery's or device's pose (node
+matrices, and a biped's function values) is made on its every other tick
+only, staggered, and the existing rules count their turns on a clock that
+runs at half speed on those ticks (objects.c n64_pose_clock): what was every
+tick is every other, three or four views' every other is every fourth,
+unseen AI's every fourth, bots' every second or third every fourth or
+sixth. Held weapons and riders still follow their parent every tick;
+projectiles and items keep the full rate; the first-person weapon follows
+the camera every frame as before. n64_half_animation_rate (n64_menu.c).
+Settings rows are 28 pixels apart now (eight and BACK).
+
 12 October, three of the user's asks (untested here). The HUD is recorded
 every sixth frame with three or four views (was fourth), the views' turns
 spread over the six (n64_hud_begin). Settings has two rows more: DISPLAY

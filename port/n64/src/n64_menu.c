@@ -19,7 +19,8 @@ mode (the game drawn
 half as wide, its pixels twice as wide: n64_render_set_chunky), the display
 (240p, or 480i where the map leaves the memory: n64_render_set_480i), the
 anamorphic widescreen picture (n64_render_set_anamorphic), the view
-models' quality (n64_render_set_view_model_quality), the HUD's inset from
+models' quality (n64_render_set_view_model_quality), the animation rate
+(full, or half: n64_half_animation_rate), the HUD's inset from
 the screen's edges for a television's overscan (n64_hud_set_inset), the FPS
 counter (off unless turned on). After a
 game, its results first. n64_menu_run returns the choices; the
@@ -34,6 +35,10 @@ game side (port/n64/game/n64_game.c) makes the game.
 #include <string.h>
 
 #include "n64.h"
+
+/* Settings: ANIMATIONS HALF RATE, read by the game's object updates
+(source/objects/objects.c n64_object_unmoved) */
+int n64_half_animation_rate;
 
 /* ---------- what can be played */
 
@@ -129,6 +134,8 @@ static struct
 	/* the game in 480i (n64_render_set_480i), the anamorphic picture */
 	int interlaced;
 	int widescreen;
+	/* the models' poses at half their rate (n64_half_animation_rate) */
+	int half_animation;
 	int no_particles;
 	/* 0 low, 1 medium, 2 high */
 	int view_model;
@@ -687,8 +694,8 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
 	CONTROL_COUNT };
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_DISPLAY, SETTING_WIDESCREEN, SETTING_PARTICLES, SETTING_VIEW_MODEL,
-	SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_DISPLAY,
+	SETTING_WIDESCREEN, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
 #define HUD_INSET_STEP 4
 #define HUD_INSET_MAXIMUM 20
 
@@ -837,10 +844,11 @@ static void draw_settings(int item)
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
 		{"THE GAME'S 3D DRAWN HALF AS WIDE, EACH PIXEL", "DOUBLED ACROSS (THE HUD STAYS SHARP)"},
-		{"480I: TWICE THE LINES, ON MAPS WITH THE", "MEMORY FOR IT (THE BIGGEST STAY 240P)"},
-		{"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
+		{"HALF: EVERYONE'S POSE EVERY OTHER TICK, HALVED", "AGAIN WHERE IT ALREADY IS (3 OR 4 PLAYERS)"},
 		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
 		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES", ""},
+		{"480I: TWICE THE LINES, ON MAPS WITH THE", "MEMORY FOR IT (THE BIGGEST STAY 240P)"},
+		{"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
 		{"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
 		{"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
 		{"BACK TO THE TITLE", ""},
@@ -848,20 +856,22 @@ static void draw_settings(int item)
 	char value[32];
 
 	page("SETTINGS", NULL);
-	setting_row(112, 528, 106, item == SETTING_CHUNKY, menu.large, "CHUNKY MODE", menu.chunky ? "ON" : "OFF");
-	setting_row(112, 528, 136, item == SETTING_DISPLAY, menu.large, "DISPLAY", menu.interlaced ? "480I" : "240P");
-	setting_row(112, 528, 166, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
-		menu.widescreen ? "ANAMORPHIC" : "OFF");
-	setting_row(112, 528, 196, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
-	setting_row(112, 528, 226, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
+	setting_row(112, 528, 100, item == SETTING_CHUNKY, menu.large, "CHUNKY MODE", menu.chunky ? "ON" : "OFF");
+	setting_row(112, 528, 128, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
+		menu.half_animation ? "HALF RATE" : "FULL RATE");
+	setting_row(112, 528, 156, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
+	setting_row(112, 528, 184, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
 		menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
 	if (menu.hud_inset)
 		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
 	else
 		snprintf(value, sizeof(value), "OFF");
-	setting_row(112, 528, 256, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
-	setting_row(112, 528, 286, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
-	list_item(SCREEN_W / 2, 324, 180, item == SETTING_BACK, "BACK");
+	setting_row(112, 528, 212, item == SETTING_DISPLAY, menu.large, "DISPLAY", menu.interlaced ? "480I" : "240P");
+	setting_row(112, 528, 240, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
+		menu.widescreen ? "ANAMORPHIC" : "OFF");
+	setting_row(112, 528, 268, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
+	setting_row(112, 528, 296, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
+	list_item(SCREEN_W / 2, 332, 180, item == SETTING_BACK, "BACK");
 	panel(112, 352, 528, 404, 0x80102040);
 	frame_line(112, 352, 528, 404, 0x806080A0);
 	for (int line = 0; line < 2; line++)
@@ -1101,6 +1111,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.chunky = !menu.chunky;
 				if (setting == SETTING_DISPLAY && (pad->left || pad->right || pad->pressed.a))
 					menu.interlaced = !menu.interlaced;
+				if (setting == SETTING_ANIMATIONS && (pad->left || pad->right || pad->pressed.a))
+					menu.half_animation = !menu.half_animation;
 				if (setting == SETTING_WIDESCREEN && (pad->left || pad->right || pad->pressed.a))
 					menu.widescreen = !menu.widescreen;
 				if (setting == SETTING_PARTICLES && (pad->left || pad->right || pad->pressed.a))
@@ -1274,6 +1286,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);
 			n64_render_set_480i(menu.interlaced);
+			n64_half_animation_rate = menu.half_animation;
 			n64_render_set_anamorphic(menu.widescreen);
 			/* everyone starts standing */
 			for (int p = 0; p < 4; p++)
