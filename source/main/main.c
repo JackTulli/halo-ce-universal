@@ -2288,10 +2288,12 @@ static void main_update_time_unthrottled(
 			/* the Xbox kept above 15 frames a second, and a slower frame
 			ran two ticks at most: the N64 below 15 (three or four views,
 			Firefight, bots) slowed the whole game down with it. A frame
-			may run up to 7 ticks now (game_time_update's own limit for a
-			local game): the game keeps to real time down to ~4 frames a
-			second */
-			seconds_elapsed = CEILING(seconds_elapsed, 0.25f);
+			may run up to 4 ticks: real time down to 7.5 frames a second.
+			(7, game_time_update's own limit, sank the frame rate where a
+			tick costs more than a thirtieth of a second -- many bots:
+			35 ms ticks gave ~4 frames a second at 90% speed, 4 ticks
+			give 6.5 at 86%) */
+			seconds_elapsed = CEILING(seconds_elapsed, 0.134f);
 #else
 			if (debug_force_frame_rate_update)
 				seconds_elapsed = CEILING(seconds_elapsed, 0.03333333507180214f);
@@ -2543,10 +2545,12 @@ static void main_update_time(
 			/* the Xbox kept above 15 frames a second, and a slower frame
 			ran two ticks at most: the N64 below 15 (three or four views,
 			Firefight, bots) slowed the whole game down with it. A frame
-			may run up to 7 ticks now (game_time_update's own limit for a
-			local game): the game keeps to real time down to ~4 frames a
-			second */
-			seconds_elapsed = CEILING(seconds_elapsed, 0.25f);
+			may run up to 4 ticks: real time down to 7.5 frames a second.
+			(7, game_time_update's own limit, sank the frame rate where a
+			tick costs more than a thirtieth of a second -- many bots:
+			35 ms ticks gave ~4 frames a second at 90% speed, 4 ticks
+			give 6.5 at 86%) */
+			seconds_elapsed = CEILING(seconds_elapsed, 0.134f);
 #else
 			if (debug_force_frame_rate_update)
 				seconds_elapsed = CEILING(seconds_elapsed, 0.03333333507180214f);

@@ -73,9 +73,15 @@ enum
 #define FIREFIGHT_TEAM _game_team_covenant
 /* the Covenant think at 15 Hz, half of them each tick (their units keep
 the last control between) */
-#define THINK_INTERVAL 2
+/* (ticks between a Covenant's thoughts: 2, or 3 with five or more up or
+three or four players -- n64_firefight_tick; its timers count by it) */
+static short think_interval = 2;
+#define THINK_INTERVAL think_interval
 /* a path is found again after this long, or when its target has moved */
-#define PATH_LIFETIME (3 * TICKS_PER_SECOND)
+#define PATH_LIFETIME (5 * TICKS_PER_SECOND)
+/* paths found at most every this many ticks, among all the Covenant (a
+search is the dearest thing an AI does: one every tick was too many) */
+#define TICKS_BETWEEN_PATHS 2
 
 static char const *const covenant_bipeds[NUMBER_OF_COVENANT_KINDS] =
 {
@@ -186,6 +192,8 @@ static struct
 	short enemy_count;
 	/* paths found this tick (one at most) */
 	short paths_this_tick;
+	/* ticks until the next path may be found */
+	short path_cooldown;
 	/* (the log's: searches, no surface under one end, searches that
 	reached, paths built) */
 	long path_searches, path_no_surface, path_found, path_built;
@@ -554,9 +562,10 @@ static void plan_path(
 	real_point3d start, goal;
 	long start_surface, goal_surface;
 
-	if (firefight.paths_this_tick || !firefight_path_state)
+	if (firefight.paths_this_tick || firefight.path_cooldown > 0 || !firefight_path_state)
 		return;
 	firefight.paths_this_tick++;
+	firefight.path_cooldown = TICKS_BETWEEN_PATHS;
 	enemy->path_age = 0;
 	enemy->path_valid = FALSE;
 	start_surface = biped_find_pathfinding_surface_index(enemy->unit_index, &start);
@@ -647,7 +656,7 @@ static void think(
 	enemy->sight_timer -= THINK_INTERVAL;
 	if (enemy->sight_timer <= 0)
 	{
-		enemy->sight_timer = 8;
+		enemy->sight_timer = 12;
 		enemy->target_visible = line_of_sight(&eye, &target_eye, enemy->unit_index);
 	}
 	if (enemy->target_visible)
@@ -679,7 +688,7 @@ static void think(
 	{
 		enemy->path_age += THINK_INTERVAL;
 		if (!enemy->path_valid || enemy->path_age > PATH_LIFETIME ||
-			horizontal_distance(&enemy->path_goal, &target_position) > 4.f)
+			horizontal_distance(&enemy->path_goal, &target_position) > 7.f)
 		{
 			plan_path(enemy, target_unit);
 		}
@@ -726,9 +735,14 @@ static void think(
 		desired.k = 0.f;
 	}
 	/* turning: a quick but not instant swing */
-	enemy->aim.i += (desired.i - enemy->aim.i) * 0.6f;
-	enemy->aim.j += (desired.j - enemy->aim.j) * 0.6f;
-	enemy->aim.k += (desired.k - enemy->aim.k) * 0.6f;
+	{
+		/* (as quick a turn a tick, thinking every two ticks or three) */
+		real turn = THINK_INTERVAL >= 3 ? 0.75f : 0.6f;
+
+		enemy->aim.i += (desired.i - enemy->aim.i) * turn;
+		enemy->aim.j += (desired.j - enemy->aim.j) * turn;
+		enemy->aim.k += (desired.k - enemy->aim.k) * turn;
+	}
 	normalize(&enemy->aim);
 
 	if (approaching)
@@ -1158,6 +1172,9 @@ void n64_firefight_tick(
 	}
 
 	firefight.paths_this_tick = 0;
+	if (firefight.path_cooldown > 0)
+		firefight.path_cooldown--;
+	think_interval = firefight.enemy_count >= 5 || firefight.player_count >= 3 ? 3 : 2;
 	for (i = 0; i < firefight.enemy_count; i++)
 	{
 		if ((game_time_get() + i) % THINK_INTERVAL == 0)

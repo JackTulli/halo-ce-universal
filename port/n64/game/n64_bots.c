@@ -52,10 +52,15 @@ a clear line (objects included) to the enemy.
 
 #define MAXIMUM_BOTS 12
 /* a path is found again after this long, or when its target has moved */
-#define PATH_LIFETIME (3 * TICKS_PER_SECOND)
+#define PATH_LIFETIME (5 * TICKS_PER_SECOND)
+/* paths found at most every this many ticks, among all the bots (a search
+is the dearest thing a bot does) */
+#define TICKS_BETWEEN_PATHS 3
+/* no line of sight looked for past this (world units): out of sight */
+#define SIGHT_RANGE 50.f
 /* how far a bot looks for a better weapon (world units), how often */
 #define WEAPON_SEARCH_RANGE 14.f
-#define WEAPON_SEARCH_TICKS 20
+#define WEAPON_SEARCH_TICKS 45
 /* a weapon it could not reach is left alone this long */
 #define WEAPON_GIVE_UP_TICKS (4 * TICKS_PER_SECOND)
 
@@ -142,6 +147,7 @@ static struct
 	short created;
 	unsigned long random;
 	short paths_this_tick;
+	short path_cooldown;
 	long weapon_definitions[NUMBER_OF_BOT_WEAPONS];
 	struct bot bots[MAXIMUM_BOTS];
 } bots;
@@ -430,9 +436,10 @@ static void plan_path(
 	real_point3d start, goal;
 	long start_surface, goal_surface;
 
-	if (bots.paths_this_tick || !bots_path_state)
+	if (bots.paths_this_tick || bots.path_cooldown > 0 || !bots_path_state)
 		return;
 	bots.paths_this_tick++;
+	bots.path_cooldown = TICKS_BETWEEN_PATHS;
 	bot->path_age = 0;
 	bot->path_valid = FALSE;
 	start_surface = biped_find_pathfinding_surface_index(bot->unit_index, &start);
@@ -489,8 +496,8 @@ static long find_better_weapon(
 	struct object_iterator iterator;
 	struct object_datum *object;
 	short carried = 0, worst = 99, i;
-	long best = NONE;
-	real best_value = 0.f;
+	long best = NONE, second = NONE;
+	real best_value = 0.f, second_value = 0.f;
 
 	for (i = 0; i < MAXIMUM_WEAPONS_PER_UNIT; i++)
 	{
@@ -513,7 +520,6 @@ static long find_better_weapon(
 		long weapon_index = iterator.index;
 		short score;
 		real distance, value;
-		real_point3d point;
 
 		if (object->object.parent_object_index != NONE || weapon_index == bot->given_up_weapon)
 			continue;
@@ -524,16 +530,33 @@ static long find_better_weapon(
 		if (distance > WEAPON_SEARCH_RANGE || fabsf(object->object.position.z - unit->object.position.z) > 2.5f)
 			continue;
 		value = (real)(score - worst) - distance * 0.25f;
-		if (value <= best_value)
-			continue;
-		point = object->object.position;
-		point.z += 0.15f;
-		if (!line_of_sight(eye, &point, bot->unit_index))
-			continue;
-		best_value = value;
-		best = weapon_index;
+		if (value > best_value)
+		{
+			second = best;
+			second_value = best_value;
+			best = weapon_index;
+			best_value = value;
+		}
+		else if (value > second_value)
+		{
+			second = weapon_index;
+			second_value = value;
+		}
 	}
-	return best;
+	/* (a line of sight for the two it wants most, no more) */
+	for (i = 0; i < 2; i++)
+	{
+		long weapon_index = i ? second : best;
+		real_point3d point;
+
+		if (weapon_index == NONE)
+			break;
+		point = object_get(weapon_index)->object.position;
+		point.z += 0.15f;
+		if (line_of_sight(eye, &point, bot->unit_index))
+			return weapon_index;
+	}
+	return NONE;
 }
 
 /* the bot's action for a tick: it thinks every step ticks (its timers
@@ -598,7 +621,7 @@ static void think(
 	{
 		long target = nearest_enemy(bot, &unit->object.position);
 
-		bot->choose_timer = 15;
+		bot->choose_timer = 20;
 		if (target != bot->target_unit)
 		{
 			bot->target_unit = target;
@@ -613,8 +636,10 @@ static void think(
 		target_position = object_get(bot->target_unit)->object.position;
 		if ((bot->sight_timer -= step) <= 0)
 		{
-			bot->sight_timer = 6;
-			bot->target_visible = line_of_sight(&eye, &target_eye, player->unit_index);
+			bot->sight_timer = 10;
+			bot->target_visible =
+				horizontal_distance(&unit->object.position, &target_position) < SIGHT_RANGE &&
+				line_of_sight(&eye, &target_eye, player->unit_index);
 		}
 		if (bot->target_visible || (bot->last_seen.x == 0.f && bot->last_seen.y == 0.f))
 			bot->last_seen = target_eye;
@@ -691,7 +716,7 @@ static void think(
 		{
 			bot->path_age += step;
 			if (!bot->path_valid || bot->path_age > PATH_LIFETIME ||
-				horizontal_distance(&bot->path_goal, &target_position) > 4.f)
+				horizontal_distance(&bot->path_goal, &target_position) > 7.f)
 			{
 				plan_path(bot, bot->target_unit);
 			}
@@ -863,8 +888,11 @@ static void think(
 				trigger = 1.f;
 				flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
 			}
+			/* (longer pauses with many bots: fewer shots in the air, each one
+			an object of its own a tick) */
 			if (bot->fire_timer <= 0)
-				bot->fire_timer = -(short)(pause_ticks[bots.skill] + bot_random() % 10);
+				bot->fire_timer = -(short)((pause_ticks[bots.skill] + bot_random() % 10) *
+					(step >= 3 ? 4 : step == 2 ? 3 : 2) / 2);
 		}
 		else
 		{
@@ -925,6 +953,8 @@ void n64_bots_actions(
 		return;
 	resolve_weapons();
 	bots.paths_this_tick = 0;
+	if (bots.path_cooldown > 0)
+		bots.path_cooldown--;
 	for (i = 0; i < bots.created; i++)
 	{
 		struct bot *bot = &bots.bots[i];

@@ -158,6 +158,21 @@ its pose made every other tick, with 7 or 8 every third, staggered
 reload, action, swap); its timers, turning and grenade chances count by the
 interval, so it plays the same, a little slower to react.
 
+Then the user found bots far slower since the real-time change: a frame
+could run 7 ticks, and where a tick costs more than a thirtieth of a
+second (many bots) the frame rate sank (35 ms ticks: ~4 frames a second at
+90% speed). A frame runs 4 ticks at most now (real time down to 7.5 frames
+a second; 6.5 at 86% there). The bots and the Covenant spend less: a path
+(the dearest thing an AI does) is found at most every 3 ticks among the
+bots and every 2 among the Covenant, kept 5 s and found again when the
+target has moved 7 units (3 s, 4); sight every 10 ticks for a bot (6) and
+none past 50 units, every 12 for a Covenant (8); a bot looks for weapons
+every 45 ticks (20) with two lines of sight at most; with 4 to 6 bots
+their pauses between bursts are half as long again, with 7 or 8 twice
+(fewer shots in the air: each projectile an object updated every tick);
+the Covenant think every third tick with five or more up or three or four
+players (every second), turning as fast a tick.
+
 12 October, an optimisation round without runs (the user tests the
 builds), from the 9 October measurements: idle objects -- an item lying at
 rest, an empty vehicle at rest, scenery that does not animate -- are
